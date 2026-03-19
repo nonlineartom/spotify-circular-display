@@ -71,7 +71,7 @@ A vinyl-inspired Spotify player for circular screens, built for the Raspberry Pi
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/spotify-circular-display.git
+git clone https://github.com/nonlineartom/spotify-circular-display.git
 cd spotify-circular-display
 ```
 
