@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1080, height=1080, user-scalable=no">
+<title>Spotify Vinyl Display</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --size: 1080px;
+    --center: 540px;
+    --groove-start: 100;
+    --groove-end: 530;
+    --label-radius: 80px;
+    --ring-radius: 74px;
+    --spindle-radius: 14px;
+    --pill-w: 460px;
+    --pill-h: 140px;
+    --pill-r: 22px;
+  }
+
+  html, body {
+    width: var(--size); height: var(--size);
+    overflow: hidden;
+    font-family: 'Montserrat', sans-serif;
+    background: #000;
+    color: #fff;
+    -webkit-font-smoothing: antialiased;
+    cursor: none;
+    user-select: none;
+  }
+
+  #viewport {
+    position: relative;
+    width: var(--size); height: var(--size);
+    border-radius: 50%;
+    overflow: hidden;
+  }
+
+  /* ── Vinyl record (rotates) ── */
+  #vinyl {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    will-change: transform;
+    transition: none;
+  }
+
+  /* Album art fills the vinyl */
+  #artwork {
+    position: absolute;
+    inset: 0;
+    width: 100%; height: 100%;
+    object-fit: cover;
+    border-radius: 50%;
+  }
+
+  /* Groove overlay — drawn by canvas */
+  #grooves {
+    position: absolute;
+    inset: 0;
+    width: 100%; height: 100%;
+    pointer-events: none;
+  }
+
+  /* Black center label */
+  #label-center {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: calc(var(--label-radius) * 2);
+    height: calc(var(--label-radius) * 2);
+    border-radius: 50%;
+    background: #000;
+  }
+
+  /* Spindle */
+  #spindle {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: calc(var(--spindle-radius) * 2);
+    height: calc(var(--spindle-radius) * 2);
+    border-radius: 50%;
+    background: #323232;
+    border: 1px solid #1e1e1e;
+    z-index: 10;
+  }
+  #spindle::after {
+    content: '';
+    position: absolute;
+    top: 4px; left: 4px; right: 4px; bottom: 4px;
+    border-radius: 50%;
+    border: 1px solid #464646;
+  }
+
+  /* ── Static layer (doesn't rotate) ── */
+  #static-layer {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 20;
+  }
+
+  /* ── SVG Progress ring (on the center label) ── */
+  #progress-ring-wrap {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: calc(var(--ring-radius) * 2);
+    height: calc(var(--ring-radius) * 2);
+    z-index: 25;
+    pointer-events: none;
+  }
+  #progress-ring-svg {
+    width: 100%; height: 100%;
+    transform: rotate(-90deg);
+  }
+  .ring-bg {
+    fill: none;
+    stroke: #3c3c3c;
+    stroke-width: 1;
+  }
+  .ring-progress {
+    fill: none;
+    stroke: #fff;
+    stroke-width: 4;
+    stroke-linecap: round;
+    transition: stroke-dashoffset 0.5s linear;
+  }
+  /* Progress dot */
+  #progress-dot {
+    position: absolute;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: #fff;
+    transform: translate(-50%, -50%);
+    z-index: 26;
+    pointer-events: none;
+    box-shadow: 0 0 6px rgba(255,255,255,0.4);
+  }
+
+  /* ── Player info (no background) ── */
+  #pill {
+    position: absolute;
+    left: 50%;
+    bottom: 100px;
+    transform: translateX(-50%);
+    width: var(--pill-w);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    z-index: 30;
+    pointer-events: auto;
+  }
+
+  /* Text shadow for readability on any artwork */
+  #pill-track, #pill-artist, #pill-time {
+    text-shadow: 0 1px 4px rgba(0,0,0,0.9), 0 0 12px rgba(0,0,0,0.7), 0 0 24px rgba(0,0,0,0.5);
+  }
+
+  #pill-track {
+    font-size: 28px;
+    font-weight: 500;
+    line-height: 1.3;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 440px;
+    text-align: center;
+    padding-bottom: 2px;
+  }
+
+  #pill-artist {
+    margin-top: 4px;
+    font-size: 19px;
+    font-weight: 300;
+    color: #ddd;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 440px;
+    text-align: center;
+  }
+
+  #pill-time {
+    margin-top: 6px;
+    font-size: 14px;
+    font-weight: 300;
+    color: #ddd;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+  }
+
+  #pill-controls {
+    margin-top: 8px;
+    display: flex;
+    align-items: center;
+    gap: 40px;
+  }
+
+  .pill-btn {
+    background: none;
+    border: none;
+    color: #fff;
+    cursor: pointer;
+    padding: 4px;
+    opacity: 0.9;
+    transition: opacity 0.15s, transform 0.15s;
+    filter: drop-shadow(0 1px 3px rgba(0,0,0,0.8));
+  }
+  .pill-btn:active { transform: scale(0.88); opacity: 1; }
+  .pill-btn svg { display: block; }
+
+  /* ── Lyrics overlay (top half) ── */
+  #lyrics-wrap {
+    position: absolute;
+    top: 80px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 600px;
+    height: 340px;
+    z-index: 28;
+    pointer-events: none;
+    overflow: hidden;
+    opacity: 0;
+    transition: opacity 0.6s;
+    /* Fade edges top and bottom */
+    -webkit-mask-image: linear-gradient(to bottom,
+      transparent 0%, white 15%, white 80%, transparent 100%);
+    mask-image: linear-gradient(to bottom,
+      transparent 0%, white 15%, white 80%, transparent 100%);
+  }
+  #lyrics-wrap.visible { opacity: 1; }
+
+  #lyrics-inner {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    transition: transform 0.4s cubic-bezier(0.25, 0.1, 0.25, 1);
+  }
+
+  .lyric-line {
+    font-size: 24px;
+    font-weight: 500;
+    line-height: 1.5;
+    text-align: center;
+    padding: 6px 20px;
+    color: rgba(255,255,255,0.35);
+    transition: color 0.4s, transform 0.4s;
+    text-shadow: 0 1px 6px rgba(0,0,0,0.9), 0 0 16px rgba(0,0,0,0.6);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 580px;
+  }
+  .lyric-line.active {
+    color: #fff;
+    transform: scale(1.05);
+  }
+  .lyric-line.past {
+    color: rgba(255,255,255,0.5);
+  }
+
+  /* ── Idle screen ── */
+  #idle {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+    font-size: 26px;
+    font-weight: 300;
+    color: #b4b4b4;
+    transition: opacity 0.5s;
+  }
+  #idle.hidden { opacity: 0; pointer-events: none; }
+</style>
+</head>
+<body>
+
+<div id="viewport">
+  <!-- Vinyl record — this whole div rotates -->
+  <div id="vinyl">
+    <img id="artwork" src="" alt="">
+    <canvas id="grooves" width="1080" height="1080"></canvas>
+    <div id="label-center"></div>
+  </div>
+
+  <!-- Spindle (static, doesn't rotate) -->
+  <div id="spindle"></div>
+
+  <!-- Static overlay layer -->
+  <div id="static-layer">
+    <!-- Circular progress ring -->
+    <div id="progress-ring-wrap">
+      <svg id="progress-ring-svg" viewBox="0 0 148 148">
+        <circle class="ring-bg" cx="74" cy="74" r="72" />
+        <circle id="ring-arc" class="ring-progress" cx="74" cy="74" r="72"
+                stroke-dasharray="452.39" stroke-dashoffset="452.39" />
+      </svg>
+      <div id="progress-dot" style="opacity:0"></div>
+    </div>
+
+    <!-- Lyrics -->
+    <div id="lyrics-wrap">
+      <div id="lyrics-inner"></div>
+    </div>
+
+    <!-- Player pill -->
+    <div id="pill">
+      <div id="pill-track"></div>
+      <div id="pill-artist"></div>
+      <div id="pill-time"></div>
+      <div id="pill-controls">
+        <button class="pill-btn" id="btn-prev" title="Previous">
+          <svg width="32" height="32" viewBox="0 0 32 32" fill="currentColor">
+            <rect x="2" y="4" width="4" height="24"/>
+            <polygon points="28,4 28,28 8,16"/>
+          </svg>
+        </button>
+        <button class="pill-btn" id="btn-play" title="Play/Pause">
+          <svg id="icon-play" width="40" height="40" viewBox="0 0 40 40" fill="currentColor">
+            <polygon points="8,4 8,36 36,20"/>
+          </svg>
+          <svg id="icon-pause" width="40" height="40" viewBox="0 0 40 40" fill="currentColor" style="display:none">
+            <rect x="8" y="4" width="8" height="32" rx="2"/>
+            <rect x="24" y="4" width="8" height="32" rx="2"/>
+          </svg>
+        </button>
+        <button class="pill-btn" id="btn-next" title="Next">
+          <svg width="32" height="32" viewBox="0 0 32 32" fill="currentColor">
+            <polygon points="4,4 4,28 24,16"/>
+            <rect x="26" y="4" width="4" height="24"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Idle screen -->
+  <div id="idle">Waiting for playback&hellip;</div>
+</div>
+
+<script>
+(function() {
+  "use strict";
+
+  // ── Constants ──
+  const SIZE = 1080;
+  const CENTER = SIZE / 2;
+  const GROOVE_COUNT = 120;
+  const GROOVE_START = 100;
+  const GROOVE_END = 530;
+  const LABEL_RADIUS = 80;
+  const RING_RADIUS = 74;
+  const RPM = 33.333;
+  const DEG_PER_MS = (RPM * 360) / 60000; // degrees per millisecond
+
+  // Eased spin-up / spin-down duration (ms)
+  const SPIN_RAMP = 4000;
+
+  // ── Elements ──
+  const $ = id => document.getElementById(id);
+  const vinyl      = $("vinyl");
+  const artworkEl  = $("artwork");
+  const idle       = $("idle");
+  const pillTrack  = $("pill-track");
+  const pillArtist = $("pill-artist");
+  const pillTime   = $("pill-time");
+  const btnPlay    = $("btn-play");
+  const iconPlay   = $("icon-play");
+  const iconPause  = $("icon-pause");
+  const btnPrev    = $("btn-prev");
+  const btnNext    = $("btn-next");
+  const ringArc    = $("ring-arc");
+  const progressDot = $("progress-dot");
+  const ringWrap   = $("progress-ring-wrap");
+  const lyricsWrap = $("lyrics-wrap");
+  const lyricsInner = $("lyrics-inner");
+
+  // Ring circumference
+  const CIRCUMFERENCE = 2 * Math.PI * 72; // matches SVG r=72
+
+  // ── State ──
+  let state = {
+    isPlaying: false,
+    progressMs: 0,
+    durationMs: 1,
+    trackId: null,
+    trackName: "",
+    artistName: "",
+    albumName: "",
+    artUrl: "",
+    lastUpdate: performance.now(),
+  };
+
+  // Lyrics state
+  let lyricsLines = [];      // [{time: ms, text: ""}, ...]
+  let lyricsTrackId = null;
+  let currentLyricIdx = -1;
+
+  // Vinyl rotation state
+  let currentAngle = 0;
+  let spinSpeed = 0;        // 0 = stopped, 1 = full speed
+  let spinTarget = 0;       // 0 or 1
+  let spinStartTime = 0;
+  let spinStartSpeed = 0;
+  let lastFrameTime = performance.now();
+
+  // Return-to-zero state
+  let returningToZero = false;
+  let returnStartAngle = 0;
+  let returnStartTime = 0;
+  const RETURN_DURATION = 1200; // ms to ease back to 0
+
+  // ── Draw grooves on canvas (once) ──
+  function drawGrooves() {
+    const canvas = $("grooves");
+    const ctx = canvas.getContext("2d");
+    const spacing = (GROOVE_END - GROOVE_START) / GROOVE_COUNT;
+
+    for (let i = 0; i < GROOVE_COUNT; i++) {
+      const r = GROOVE_START + i * spacing;
+      const alpha = (15 + (i % 3) * 5) / 255;
+      ctx.beginPath();
+      ctx.arc(CENTER, CENTER, r, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(0,0,0,${alpha})`;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // Outer rim
+    ctx.beginPath();
+    ctx.arc(CENTER, CENTER, SIZE / 2 - 2, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(0,0,0,0.157)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  // ── Helpers ──
+  function fmt(ms) {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+  }
+
+  async function api(method, path) {
+    try {
+      const resp = await fetch("/api" + path, { method });
+      if (resp.ok && resp.status !== 204) return resp.json();
+    } catch(e) {}
+    return null;
+  }
+
+  // ── Lyrics ──
+  function parseLRC(lrc) {
+    if (!lrc) return [];
+    const lines = [];
+    for (const line of lrc.split("\n")) {
+      const m = line.match(/^\[(\d+):(\d+)\.(\d+)\]\s*(.*)/);
+      if (m) {
+        const ms = parseInt(m[1]) * 60000 + parseInt(m[2]) * 1000 + parseInt(m[3]) * 10;
+        const text = m[4].trim();
+        if (text) lines.push({ time: ms, text });
+      }
+    }
+    return lines;
+  }
+
+  async function fetchLyrics(trackName, artistName, albumName, durationSec) {
+    try {
+      const params = new URLSearchParams({
+        track: trackName, artist: artistName,
+        album: albumName, duration: String(durationSec)
+      });
+      const resp = await fetch("/api/lyrics?" + params);
+      if (!resp.ok) return [];
+      const data = await resp.json();
+      return parseLRC(data.syncedLyrics);
+    } catch(e) { return []; }
+  }
+
+  function renderLyricLines() {
+    lyricsInner.innerHTML = "";
+    if (!lyricsLines.length) {
+      lyricsWrap.classList.remove("visible");
+      return;
+    }
+    for (const line of lyricsLines) {
+      const div = document.createElement("div");
+      div.className = "lyric-line";
+      div.textContent = line.text;
+      lyricsInner.appendChild(div);
+    }
+    lyricsWrap.classList.add("visible");
+    currentLyricIdx = -1;
+  }
+
+  function updateLyrics(nowMs) {
+    if (!lyricsLines.length) return;
+
+    let p = state.progressMs;
+    if (state.isPlaying) p += nowMs - state.lastUpdate;
+    p = Math.min(p, state.durationMs);
+
+    // Find current line
+    let idx = -1;
+    for (let i = lyricsLines.length - 1; i >= 0; i--) {
+      if (p >= lyricsLines[i].time) { idx = i; break; }
+    }
+
+    if (idx === currentLyricIdx) return;
+    currentLyricIdx = idx;
+
+    const els = lyricsInner.children;
+    for (let i = 0; i < els.length; i++) {
+      els[i].classList.toggle("active", i === idx);
+      els[i].classList.toggle("past", i < idx);
+    }
+
+    // Scroll so active line is near top of visible area
+    if (idx >= 0 && els[idx]) {
+      const lineH = els[idx].offsetHeight;
+      const offset = els[idx].offsetTop - 100; // 100px from top of container
+      lyricsInner.style.transform = `translateY(${-offset}px)`;
+    }
+  }
+
+  // ── Easing: cubic ease-in-out ──
+  function easeInOut(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  }
+
+  // ── Animation loop ──
+  function animate(now) {
+    requestAnimationFrame(animate);
+
+    const dt = now - lastFrameTime;
+    lastFrameTime = now;
+
+    // --- Spin easing ---
+    if (spinSpeed !== spinTarget) {
+      const elapsed = now - spinStartTime;
+      const t = Math.min(elapsed / SPIN_RAMP, 1);
+      const eased = easeInOut(t);
+      spinSpeed = spinStartSpeed + (spinTarget - spinStartSpeed) * eased;
+      if (t >= 1) {
+        spinSpeed = spinTarget;
+        // When fully stopped, start return-to-zero
+        if (spinTarget === 0 && !returningToZero && Math.abs(currentAngle % 360) > 0.5) {
+          returningToZero = true;
+          returnStartAngle = currentAngle % 360;
+          returnStartTime = now;
+        }
+      }
+    }
+
+    // --- Return to 0 degrees when stopped ---
+    if (returningToZero && spinSpeed === 0) {
+      const elapsed = now - returnStartTime;
+      const t = Math.min(elapsed / RETURN_DURATION, 1);
+      const eased = easeInOut(t);
+      // Take shortest path to 0
+      let target = 0;
+      if (returnStartAngle > 180) target = 360;
+      currentAngle = returnStartAngle + (target - returnStartAngle) * eased;
+      if (t >= 1) {
+        currentAngle = 0;
+        returningToZero = false;
+      }
+      vinyl.style.transform = `rotate(${currentAngle.toFixed(2)}deg)`;
+    }
+    // --- Rotate vinyl ---
+    else if (spinSpeed > 0.001) {
+      returningToZero = false;
+      currentAngle += DEG_PER_MS * dt * spinSpeed;
+      currentAngle %= 360;
+      vinyl.style.transform = `rotate(${currentAngle.toFixed(2)}deg)`;
+    }
+
+    // --- Progress ring ---
+    updateProgressRing(now);
+
+    // --- Lyrics ---
+    updateLyrics(now);
+  }
+
+  function updateProgressRing(now) {
+    let p = state.progressMs;
+    if (state.isPlaying) {
+      p += now - state.lastUpdate;
+    }
+    p = Math.min(p, state.durationMs);
+    const pct = p / Math.max(state.durationMs, 1);
+
+    // SVG arc
+    const offset = CIRCUMFERENCE * (1 - pct);
+    ringArc.style.strokeDashoffset = offset;
+
+    // Dot position
+    if (pct > 0) {
+      progressDot.style.opacity = "1";
+      const angle = pct * Math.PI * 2 - Math.PI / 2; // start from top
+      const r = RING_RADIUS;
+      const cx = r + r * Math.cos(angle);
+      const cy = r + r * Math.sin(angle);
+      progressDot.style.left = cx + "px";
+      progressDot.style.top = cy + "px";
+    } else {
+      progressDot.style.opacity = "0";
+    }
+
+    // Time display
+    pillTime.textContent = fmt(p) + "  /  -" + fmt(state.durationMs - p);
+  }
+
+  // ── Spin control ──
+  function setSpinTarget(target) {
+    if (spinTarget === target) return;
+    spinTarget = target;
+    spinStartTime = performance.now();
+    spinStartSpeed = spinSpeed;
+  }
+
+  // ── Poll Spotify ──
+  async function poll() {
+    const data = await api("GET", "/now-playing");
+    if (!data || !data.item) {
+      idle.classList.remove("hidden");
+      state.trackId = null;
+      setSpinTarget(0);
+      return;
+    }
+    idle.classList.add("hidden");
+
+    const track = data.item;
+    const newId = track.id;
+
+    // Art
+    const images = (track.album || {}).images || [];
+    const artUrl = images.length ? images[0].url : "";
+    if (artUrl && artUrl !== state.artUrl) {
+      state.artUrl = artUrl;
+      artworkEl.src = artUrl;
+    }
+
+    // Track info
+    if (newId !== state.trackId) {
+      state.trackId = newId;
+      state.trackName = track.name || "";
+      state.artistName = (track.artists || []).map(a => a.name).join(", ");
+      state.albumName = (track.album || {}).name || "";
+      pillTrack.textContent = state.trackName;
+      pillArtist.textContent = state.artistName;
+
+      // Fetch lyrics for new track
+      if (newId !== lyricsTrackId) {
+        lyricsTrackId = newId;
+        lyricsLines = [];
+        lyricsWrap.classList.remove("visible");
+        currentLyricIdx = -1;
+        const durSec = Math.round((track.duration_ms || 0) / 1000);
+        fetchLyrics(state.trackName, state.artistName, state.albumName, durSec)
+          .then(lines => {
+            if (lyricsTrackId === newId) {
+              lyricsLines = lines;
+              renderLyricLines();
+            }
+          });
+      }
+    }
+
+    // Playback
+    state.isPlaying = data.is_playing || false;
+    state.progressMs = data.progress_ms || 0;
+    state.durationMs = track.duration_ms || 1;
+    state.lastUpdate = performance.now();
+
+    // Play/pause icons
+    iconPlay.style.display  = state.isPlaying ? "none" : "block";
+    iconPause.style.display = state.isPlaying ? "block" : "none";
+
+    // Spin
+    setSpinTarget(state.isPlaying ? 1 : 0);
+  }
+
+  // ── Controls ──
+  btnPlay.addEventListener("click", () => {
+    api("PUT", state.isPlaying ? "/pause" : "/play");
+    state.isPlaying = !state.isPlaying;
+    state.lastUpdate = performance.now();
+    iconPlay.style.display  = state.isPlaying ? "none" : "block";
+    iconPause.style.display = state.isPlaying ? "block" : "none";
+    setSpinTarget(state.isPlaying ? 1 : 0);
+  });
+
+  btnNext.addEventListener("click", () => api("POST", "/next"));
+  btnPrev.addEventListener("click", () => api("POST", "/previous"));
+
+  // Tap outside pill → play/pause
+  $("viewport").addEventListener("click", (e) => {
+    if (e.target.closest("#pill")) return;
+    api("PUT", state.isPlaying ? "/pause" : "/play");
+    state.isPlaying = !state.isPlaying;
+    state.lastUpdate = performance.now();
+    iconPlay.style.display  = state.isPlaying ? "none" : "block";
+    iconPause.style.display = state.isPlaying ? "block" : "none";
+    setSpinTarget(state.isPlaying ? 1 : 0);
+  });
+
+  // ── Init ──
+  drawGrooves();
+  requestAnimationFrame(animate);
+  poll();
+  setInterval(poll, 2000);
+
+})();
+</script>
+</body>
+</html>

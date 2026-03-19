@@ -1,0 +1,30 @@
+[Unit]
+Description=Spotify Pi Display — Chromium Kiosk
+After=graphical.target spotify-display.service
+Wants=spotify-display.service
+
+[Service]
+Type=simple
+User=pi
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/pi/.Xauthority
+ExecStartPre=/bin/sleep 5
+ExecStart=/usr/bin/chromium-browser \
+    --noerrdialogs \
+    --disable-infobars \
+    --disable-session-crashed-bubble \
+    --disable-restore-session-state \
+    --kiosk \
+    --incognito \
+    --disable-translate \
+    --disable-features=TranslateUI \
+    --overscroll-history-navigation=0 \
+    --disk-cache-size=48000000 \
+    --window-size=1080,1080 \
+    --window-position=0,0 \
+    http://localhost:5000
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=graphical.target

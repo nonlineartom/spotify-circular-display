@@ -1,0 +1,16 @@
+[Unit]
+Description=Spotify Pi Display — GPIO Buttons
+After=spotify-display.service
+Wants=spotify-display.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/pi/spotify-pi
+ExecStart=/home/pi/spotify-pi/venv/bin/python gpio_buttons.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
