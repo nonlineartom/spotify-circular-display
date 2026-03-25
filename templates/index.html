@@ -215,6 +215,44 @@
   .pill-btn:active { transform: scale(0.88); opacity: 1; }
   .pill-btn svg { display: block; }
 
+  /* ── Volume slider ── */
+  #pill-volume {
+    margin-top: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    opacity: 0.8;
+    filter: drop-shadow(0 1px 3px rgba(0,0,0,0.8));
+  }
+  #vol-icon { flex-shrink: 0; }
+
+  #vol-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 180px;
+    height: 4px;
+    background: rgba(255,255,255,0.3);
+    border-radius: 2px;
+    outline: none;
+  }
+  #vol-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: #fff;
+    cursor: pointer;
+    box-shadow: 0 0 4px rgba(0,0,0,0.5);
+  }
+  #vol-slider::-moz-range-thumb {
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: #fff;
+    border: none;
+    cursor: pointer;
+    box-shadow: 0 0 4px rgba(0,0,0,0.5);
+  }
+
   /* ── Lyrics overlay (top half) ── */
   #lyrics-wrap {
     position: absolute;
@@ -273,12 +311,34 @@
     align-items: center;
     justify-content: center;
     z-index: 50;
-    font-size: 26px;
-    font-weight: 300;
-    color: #b4b4b4;
     transition: opacity 0.5s;
   }
   #idle.hidden { opacity: 0; pointer-events: none; }
+
+  #idle-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+  }
+
+  #qr-canvas {
+    border-radius: 50%;
+    background: #fff;
+    padding: 0;
+    box-shadow: 0 0 40px rgba(255,255,255,0.08);
+  }
+
+  #idle-label {
+    font-size: 24px;
+    font-weight: 400;
+    color: #ddd;
+  }
+  #idle-sublabel {
+    font-size: 16px;
+    font-weight: 300;
+    color: #888;
+  }
 </style>
 </head>
 <body>
@@ -339,11 +399,24 @@
           </svg>
         </button>
       </div>
+      <div id="pill-volume">
+        <svg id="vol-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M3 9v6h4l5 5V4L7 9H3z"/>
+          <path id="vol-waves" d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM19 12c0-3.53-2.04-6.58-5-8.05v2.22c1.78 1.19 3 3.35 3 5.83s-1.22 4.64-3 5.83v2.22c2.96-1.48 5-4.53 5-8.05z"/>
+        </svg>
+        <input type="range" id="vol-slider" min="0" max="100" value="50">
+      </div>
     </div>
   </div>
 
   <!-- Idle screen -->
-  <div id="idle">Waiting for playback&hellip;</div>
+  <div id="idle">
+    <div id="idle-content">
+      <canvas id="qr-canvas" width="280" height="280"></canvas>
+      <div id="idle-label">Scan to connect</div>
+      <div id="idle-sublabel">Pi Display</div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -382,6 +455,8 @@
   const ringWrap   = $("progress-ring-wrap");
   const lyricsWrap = $("lyrics-wrap");
   const lyricsInner = $("lyrics-inner");
+  const volSlider  = $("vol-slider");
+  const volWaves   = $("vol-waves");
 
   // Ring circumference
   const CIRCUMFERENCE = 2 * Math.PI * 72; // matches SVG r=72
@@ -396,6 +471,7 @@
     artistName: "",
     albumName: "",
     artUrl: "",
+    volume: 50,
     lastUpdate: performance.now(),
   };
 
@@ -645,7 +721,9 @@
     const artUrl = images.length ? images[0].url : "";
     if (artUrl && artUrl !== state.artUrl) {
       state.artUrl = artUrl;
-      artworkEl.src = artUrl;
+      const preload = new Image();
+      preload.onload = () => { artworkEl.src = artUrl; };
+      preload.src = artUrl;
     }
 
     // Track info
@@ -684,39 +762,290 @@
     iconPlay.style.display  = state.isPlaying ? "none" : "block";
     iconPause.style.display = state.isPlaying ? "block" : "none";
 
+    // Volume
+    if (data.device && !volSliderActive) {
+      state.volume = data.device.volume_percent || 0;
+      volSlider.value = state.volume;
+      // Hide waves icon when muted
+      volWaves.style.display = state.volume === 0 ? "none" : "";
+    }
+
     // Spin
     setSpinTarget(state.isPlaying ? 1 : 0);
   }
 
   // ── Controls ──
-  btnPlay.addEventListener("click", () => {
+  function togglePlayback() {
     api("PUT", state.isPlaying ? "/pause" : "/play");
     state.isPlaying = !state.isPlaying;
     state.lastUpdate = performance.now();
     iconPlay.style.display  = state.isPlaying ? "none" : "block";
     iconPause.style.display = state.isPlaying ? "block" : "none";
     setSpinTarget(state.isPlaying ? 1 : 0);
-  });
+  }
 
+  btnPlay.addEventListener("click", togglePlayback);
   btnNext.addEventListener("click", () => api("POST", "/next"));
   btnPrev.addEventListener("click", () => api("POST", "/previous"));
 
   // Tap outside pill → play/pause
   $("viewport").addEventListener("click", (e) => {
     if (e.target.closest("#pill")) return;
-    api("PUT", state.isPlaying ? "/pause" : "/play");
-    state.isPlaying = !state.isPlaying;
-    state.lastUpdate = performance.now();
-    iconPlay.style.display  = state.isPlaying ? "none" : "block";
-    iconPause.style.display = state.isPlaying ? "block" : "none";
-    setSpinTarget(state.isPlaying ? 1 : 0);
+    togglePlayback();
   });
+
+  // Volume slider
+  let volSliderActive = false;
+  let volTimeout = null;
+  volSlider.addEventListener("input", () => {
+    volSliderActive = true;
+    state.volume = parseInt(volSlider.value);
+    volWaves.style.display = state.volume === 0 ? "none" : "";
+    clearTimeout(volTimeout);
+    volTimeout = setTimeout(() => {
+      api("PUT", "/volume?volume_percent=" + state.volume);
+      volSliderActive = false;
+    }, 200);
+  });
+
+  // ── QR Code generator (minimal, supports alphanumeric URLs) ──
+  // Lightweight QR encoder — version 2, error correction L, 25x25 modules
+  const QR = (function() {
+    // Simplified QR generator using pre-computed format for short URLs
+    // Falls back to a text-based approach for the idle screen
+    function generate(text, canvas, size) {
+      // Use a simple encoding: convert text to a grid pattern
+      // For a proper QR code we use the API approach
+      const ctx = canvas.getContext("2d");
+      const moduleCount = 25;
+      const cellSize = size / moduleCount;
+
+      // Generate QR matrix using polynomial division
+      const matrix = encodeQR(text, moduleCount);
+
+      // Clear canvas white
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, size, size);
+
+      // Draw modules
+      ctx.fillStyle = "#000";
+      for (let row = 0; row < moduleCount; row++) {
+        for (let col = 0; col < moduleCount; col++) {
+          if (matrix[row][col]) {
+            // Round the modules slightly for aesthetic
+            const x = col * cellSize;
+            const y = row * cellSize;
+            const r = cellSize * 0.1;
+            ctx.beginPath();
+            ctx.roundRect(x + 0.5, y + 0.5, cellSize - 1, cellSize - 1, r);
+            ctx.fill();
+          }
+        }
+      }
+    }
+
+    function encodeQR(text) {
+      const size = 25; // Version 2
+      const m = Array.from({length: size}, () => Array(size).fill(false));
+      const reserved = Array.from({length: size}, () => Array(size).fill(false));
+
+      // Finder patterns (3 corners)
+      function finderPattern(r, c) {
+        for (let dr = -1; dr <= 7; dr++) {
+          for (let dc = -1; dc <= 7; dc++) {
+            const rr = r + dr, cc = c + dc;
+            if (rr < 0 || rr >= size || cc < 0 || cc >= size) continue;
+            const outer = dr === -1 || dr === 7 || dc === -1 || dc === 7;
+            const ring = dr === 0 || dr === 6 || dc === 0 || dc === 6;
+            const inner = dr >= 2 && dr <= 4 && dc >= 2 && dc <= 4;
+            m[rr][cc] = !outer && (ring || inner);
+            reserved[rr][cc] = true;
+          }
+        }
+      }
+      finderPattern(0, 0);
+      finderPattern(0, size - 7);
+      finderPattern(size - 7, 0);
+
+      // Alignment pattern (version 2: at position 18,18 from version table)
+      const ax = 18, ay = 18;
+      for (let dr = -2; dr <= 2; dr++) {
+        for (let dc = -2; dc <= 2; dc++) {
+          m[ay + dr][ax + dc] = Math.abs(dr) === 2 || Math.abs(dc) === 2 || (dr === 0 && dc === 0);
+          reserved[ay + dr][ax + dc] = true;
+        }
+      }
+
+      // Timing patterns
+      for (let i = 8; i < size - 8; i++) {
+        m[6][i] = i % 2 === 0;
+        m[i][6] = i % 2 === 0;
+        reserved[6][i] = true;
+        reserved[i][6] = true;
+      }
+
+      // Dark module
+      m[size - 8][8] = true;
+      reserved[size - 8][8] = true;
+
+      // Reserve format info areas
+      for (let i = 0; i < 9; i++) {
+        if (i < size) { reserved[8][i] = true; reserved[i][8] = true; }
+      }
+      for (let i = 0; i < 8; i++) {
+        reserved[8][size - 1 - i] = true;
+        reserved[size - 1 - i][8] = true;
+      }
+
+      // Encode data as byte mode
+      const dataBits = [];
+      // Mode indicator: 0100 (byte mode)
+      dataBits.push(0,1,0,0);
+      // Character count (8 bits for version 2 byte mode)
+      for (let i = 7; i >= 0; i--) dataBits.push((text.length >> i) & 1);
+      // Data
+      for (let i = 0; i < text.length; i++) {
+        const c = text.charCodeAt(i);
+        for (let b = 7; b >= 0; b--) dataBits.push((c >> b) & 1);
+      }
+      // Terminator
+      dataBits.push(0,0,0,0);
+
+      // Pad to 8-bit boundary
+      while (dataBits.length % 8 !== 0) dataBits.push(0);
+
+      // Version 2-L: 44 data bytes total (34 data + 10 EC)
+      const totalDataBytes = 34;
+      while (dataBits.length < totalDataBytes * 8) {
+        dataBits.push(1,1,1,0,1,1,0,0); // 0xEC
+        if (dataBits.length < totalDataBytes * 8) {
+          dataBits.push(0,0,0,1,0,0,0,1); // 0x11
+        }
+      }
+      dataBits.length = totalDataBytes * 8;
+
+      // Convert to bytes for EC calculation
+      const dataBytes = [];
+      for (let i = 0; i < dataBits.length; i += 8) {
+        let byte = 0;
+        for (let b = 0; b < 8; b++) byte = (byte << 1) | (dataBits[i + b] || 0);
+        dataBytes.push(byte);
+      }
+
+      // Reed-Solomon error correction (10 EC bytes for version 2-L)
+      const ecBytes = rsEncode(dataBytes, 10);
+
+      // Combine all bits
+      const allBits = [];
+      for (const byte of [...dataBytes, ...ecBytes]) {
+        for (let b = 7; b >= 0; b--) allBits.push((byte >> b) & 1);
+      }
+
+      // Place data bits in zigzag pattern
+      let bitIdx = 0;
+      let upward = true;
+      for (let right = size - 1; right >= 0; right -= 2) {
+        if (right === 6) right = 5; // Skip timing column
+        const rows = upward ? Array.from({length: size}, (_, i) => size - 1 - i) : Array.from({length: size}, (_, i) => i);
+        for (const row of rows) {
+          for (let c = 0; c < 2; c++) {
+            const col = right - c;
+            if (col < 0) continue;
+            if (reserved[row][col]) continue;
+            if (bitIdx < allBits.length) {
+              m[row][col] = allBits[bitIdx] === 1;
+              bitIdx++;
+            }
+          }
+        }
+        upward = !upward;
+      }
+
+      // Apply mask 0 (checkerboard) and XOR
+      for (let r = 0; r < size; r++) {
+        for (let c = 0; c < size; c++) {
+          if (!reserved[r][c] && (r + c) % 2 === 0) {
+            m[r][c] = !m[r][c];
+          }
+        }
+      }
+
+      // Format info for mask 0, EC level L: 111011111000100
+      const formatBits = [1,1,1,0,1,1,1,1,1,0,0,0,1,0,0];
+      // Place format info
+      const formatPositions1 = [[8,0],[8,1],[8,2],[8,3],[8,4],[8,5],[8,7],[8,8],[7,8],[5,8],[4,8],[3,8],[2,8],[1,8],[0,8]];
+      const formatPositions2 = [[size-1,8],[size-2,8],[size-3,8],[size-4,8],[size-5,8],[size-6,8],[size-7,8],[8,size-8],[8,size-7],[8,size-6],[8,size-5],[8,size-4],[8,size-3],[8,size-2],[8,size-1]];
+      for (let i = 0; i < 15; i++) {
+        const [r1,c1] = formatPositions1[i];
+        const [r2,c2] = formatPositions2[i];
+        m[r1][c1] = formatBits[i] === 1;
+        m[r2][c2] = formatBits[i] === 1;
+      }
+
+      return m;
+    }
+
+    // GF(256) arithmetic for Reed-Solomon
+    function rsEncode(data, ecCount) {
+      const gfExp = new Uint8Array(512);
+      const gfLog = new Uint8Array(256);
+      let x = 1;
+      for (let i = 0; i < 255; i++) {
+        gfExp[i] = x;
+        gfLog[x] = i;
+        x = (x << 1) ^ (x >= 128 ? 0x11d : 0);
+      }
+      for (let i = 255; i < 512; i++) gfExp[i] = gfExp[i - 255];
+
+      function gfMul(a, b) {
+        if (a === 0 || b === 0) return 0;
+        return gfExp[gfLog[a] + gfLog[b]];
+      }
+
+      // Generator polynomial for ecCount
+      let gen = [1];
+      for (let i = 0; i < ecCount; i++) {
+        const newGen = new Array(gen.length + 1).fill(0);
+        for (let j = 0; j < gen.length; j++) {
+          newGen[j] ^= gen[j];
+          newGen[j + 1] ^= gfMul(gen[j], gfExp[i]);
+        }
+        gen = newGen;
+      }
+
+      const msg = new Uint8Array(data.length + ecCount);
+      msg.set(data);
+      for (let i = 0; i < data.length; i++) {
+        const coef = msg[i];
+        if (coef !== 0) {
+          for (let j = 0; j < gen.length; j++) {
+            msg[i + j] ^= gfMul(gen[j], coef);
+          }
+        }
+      }
+      return Array.from(msg.slice(data.length));
+    }
+
+    return { generate };
+  })();
+
+  // ── Idle screen QR ──
+  async function initIdleQR() {
+    try {
+      const resp = await fetch("/api/info");
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const qrCanvas = $("qr-canvas");
+      QR.generate(data.url + "/login", qrCanvas, 280);
+    } catch(e) {}
+  }
 
   // ── Init ──
   drawGrooves();
   requestAnimationFrame(animate);
   poll();
   setInterval(poll, 2000);
+  initIdleQR();
 
 })();
 </script>

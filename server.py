@@ -3,6 +3,7 @@
 
 import json
 import os
+import socket
 import time
 import requests
 from flask import Flask, redirect, request, render_template, jsonify, session
@@ -181,6 +182,19 @@ def devices():
 def transfer():
     data = request.get_json()
     return spotify_request("PUT", "/me/player", json=data)
+
+
+@app.route("/api/info")
+def info():
+    """Return server info including local IP for QR code generation."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        ip = "127.0.0.1"
+    return jsonify({"ip": ip, "port": 5000, "url": f"http://{ip}:5000"})
 
 
 @app.route("/api/lyrics")
