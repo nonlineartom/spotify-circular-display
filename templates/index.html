@@ -221,63 +221,7 @@
     text-align: center;
   }
 
-  #pill-controls {
-    margin-top: 8px;
-    display: flex;
-    align-items: center;
-    gap: 40px;
-  }
-
-  .pill-btn {
-    background: none;
-    border: none;
-    color: #fff;
-    cursor: pointer;
-    padding: 4px;
-    opacity: 0.9;
-    transition: opacity 0.15s, transform 0.15s;
-    filter: drop-shadow(0 1px 3px rgba(0,0,0,0.9)) drop-shadow(0 0 6px rgba(0,0,0,0.8));
-  }
-  .pill-btn:active { transform: scale(0.88); opacity: 1; }
-  .pill-btn svg { display: block; }
-
-  /* ── Volume slider ── */
-  #pill-volume {
-    margin-top: 10px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    opacity: 0.8;
-    filter: drop-shadow(0 1px 3px rgba(0,0,0,0.8));
-  }
-  #vol-icon { flex-shrink: 0; }
-
-  #vol-slider {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 180px;
-    height: 4px;
-    background: rgba(255,255,255,0.3);
-    border-radius: 2px;
-    outline: none;
-  }
-  #vol-slider::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 16px; height: 16px;
-    border-radius: 50%;
-    background: #fff;
-    cursor: pointer;
-    box-shadow: 0 0 4px rgba(0,0,0,0.5);
-  }
-  #vol-slider::-moz-range-thumb {
-    width: 16px; height: 16px;
-    border-radius: 50%;
-    background: #fff;
-    border: none;
-    cursor: pointer;
-    box-shadow: 0 0 4px rgba(0,0,0,0.5);
-  }
+  /* Controls removed — playback controlled from Spotify app */
 
   /* ── Lyrics overlay (top half) ── */
   #lyrics-wrap {
@@ -382,7 +326,7 @@
 <div id="viewport">
   <!-- Vinyl record — this whole div rotates -->
   <div id="vinyl">
-    <img id="artwork" src="" alt="">
+    <img id="artwork" src="" alt="" draggable="false" ondragstart="return false" onmousedown="return false">
     <canvas id="grooves" width="1080" height="1080"></canvas>
     <div id="label-center"></div>
   </div>
@@ -405,36 +349,7 @@
       <div id="pill-track"></div>
       <div id="pill-artist"></div>
       <div id="pill-time"></div>
-      <div id="pill-controls">
-        <button class="pill-btn" id="btn-prev" title="Previous">
-          <svg width="32" height="32" viewBox="0 0 32 32" fill="currentColor">
-            <rect x="2" y="4" width="4" height="24"/>
-            <polygon points="28,4 28,28 8,16"/>
-          </svg>
-        </button>
-        <button class="pill-btn" id="btn-play" title="Play/Pause">
-          <svg id="icon-play" width="40" height="40" viewBox="0 0 40 40" fill="currentColor">
-            <polygon points="8,4 8,36 36,20"/>
-          </svg>
-          <svg id="icon-pause" width="40" height="40" viewBox="0 0 40 40" fill="currentColor" style="display:none">
-            <rect x="8" y="4" width="8" height="32" rx="2"/>
-            <rect x="24" y="4" width="8" height="32" rx="2"/>
-          </svg>
-        </button>
-        <button class="pill-btn" id="btn-next" title="Next">
-          <svg width="32" height="32" viewBox="0 0 32 32" fill="currentColor">
-            <polygon points="4,4 4,28 24,16"/>
-            <rect x="26" y="4" width="4" height="24"/>
-          </svg>
-        </button>
-      </div>
-      <div id="pill-volume">
-        <svg id="vol-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M3 9v6h4l5 5V4L7 9H3z"/>
-          <path id="vol-waves" d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM19 12c0-3.53-2.04-6.58-5-8.05v2.22c1.78 1.19 3 3.35 3 5.83s-1.22 4.64-3 5.83v2.22c2.96-1.48 5-4.53 5-8.05z"/>
-        </svg>
-        <input type="range" id="vol-slider" min="0" max="100" value="50">
-      </div>
+      <!-- Controls removed: playback is controlled from the user's Spotify app -->
     </div>
   </div>
 
@@ -472,17 +387,10 @@
   const pillTrack  = $("pill-track");
   const pillArtist = $("pill-artist");
   const pillTime   = $("pill-time");
-  const btnPlay    = $("btn-play");
-  const iconPlay   = $("icon-play");
-  const iconPause  = $("icon-pause");
-  const btnPrev    = $("btn-prev");
-  const btnNext    = $("btn-next");
   const progressCanvas = $("progress-ring-canvas");
   const progressCtx = progressCanvas.getContext("2d");
   const lyricsWrap = $("lyrics-wrap");
   const lyricsInner = $("lyrics-inner");
-  const volSlider  = $("vol-slider");
-  const volWaves   = $("vol-waves");
   const qrLabel    = $("qr-label");
 
   // Progress ring constants (canvas is 296x296 = 2x the CSS size for retina)
@@ -910,26 +818,9 @@
       pausedSince = 0;
     }
 
-    // Play/pause icons
-    iconPlay.style.display  = state.isPlaying ? "none" : "block";
-    iconPause.style.display = state.isPlaying ? "block" : "none";
-
-    // Volume
-    if (data.device && !volSliderActive) {
-      state.volume = data.device.volume_percent || 0;
-      volSlider.value = state.volume;
-      // Hide waves icon when muted
-      volWaves.style.display = state.volume === 0 ? "none" : "";
-    }
-
     // Spin
     setSpinTarget(state.isPlaying ? 1 : 0);
   }
-
-  // ── Controls ──
-  // Controls are display-only — users control playback from their Spotify app.
-  // The display reads state locally from Raspotify's onevent handler.
-  let volSliderActive = false;
 
   // ── QR Code generator — uses server-side qrcode API for reliability ──
   const QR = {
