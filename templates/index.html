@@ -105,8 +105,8 @@
     z-index: 20;
   }
 
-  /* ── SVG Progress ring (on the center label) ── */
-  #progress-ring-wrap {
+  /* ── Canvas progress ring (on the center label) ── */
+  #progress-ring-canvas {
     position: absolute;
     top: 50%; left: 50%;
     transform: translate(-50%, -50%);
@@ -114,33 +114,6 @@
     height: calc(var(--ring-radius) * 2);
     z-index: 25;
     pointer-events: none;
-  }
-  #progress-ring-svg {
-    width: 100%; height: 100%;
-    transform: rotate(-90deg);
-  }
-  .ring-bg {
-    fill: none;
-    stroke: #3c3c3c;
-    stroke-width: 1;
-  }
-  .ring-progress {
-    fill: none;
-    stroke: #fff;
-    stroke-width: 4;
-    stroke-linecap: round;
-    transition: stroke-dashoffset 0.5s linear;
-  }
-  /* Progress dot */
-  #progress-dot {
-    position: absolute;
-    width: 12px; height: 12px;
-    border-radius: 50%;
-    background: #fff;
-    transform: translate(-50%, -50%);
-    z-index: 26;
-    pointer-events: none;
-    box-shadow: 0 0 6px rgba(255,255,255,0.4);
   }
 
   /* ── Player info (no background) ── */
@@ -351,15 +324,8 @@
 
   <!-- Static overlay layer -->
   <div id="static-layer">
-    <!-- Circular progress ring -->
-    <div id="progress-ring-wrap">
-      <svg id="progress-ring-svg" viewBox="0 0 148 148">
-        <circle class="ring-bg" cx="74" cy="74" r="72" />
-        <circle id="ring-arc" class="ring-progress" cx="74" cy="74" r="72"
-                stroke-dasharray="452.39" stroke-dashoffset="452.39" />
-      </svg>
-      <div id="progress-dot" style="opacity:0"></div>
-    </div>
+    <!-- Circular progress ring (canvas-based for smooth rendering) -->
+    <canvas id="progress-ring-canvas" width="296" height="296"></canvas>
 
     <!-- Lyrics -->
     <div id="lyrics-wrap">
@@ -440,17 +406,24 @@
   const iconPause  = $("icon-pause");
   const btnPrev    = $("btn-prev");
   const btnNext    = $("btn-next");
-  const ringArc    = $("ring-arc");
-  const progressDot = $("progress-dot");
-  const ringWrap   = $("progress-ring-wrap");
+  const progressCanvas = $("progress-ring-canvas");
+  const progressCtx = progressCanvas.getContext("2d");
   const lyricsWrap = $("lyrics-wrap");
   const lyricsInner = $("lyrics-inner");
   const volSlider  = $("vol-slider");
   const volWaves   = $("vol-waves");
   const qrLabel    = $("qr-label");
 
-  // Ring circumference
-  const CIRCUMFERENCE = 2 * Math.PI * 72; // matches SVG r=72
+  // Progress ring constants (canvas is 296x296 = 2x the CSS size for retina)
+  const RING_CX = 148;
+  const RING_CY = 148;
+  const RING_R = 128;          // main arc radius (leave room for ticks + glow)
+  const RING_TRACK_W = 1.5;    // background track width
+  const RING_ARC_W = 4.5;      // progress arc width
+  const RING_DOT_R = 7;        // dot outer radius
+  const RING_DOT_INNER = 3.5;  // dot inner radius (creates ring shape)
+  const TICK_COUNT = 60;        // minute-mark ticks around the ring
+  const TICK_MAJOR_EVERY = 5;   // every 5th tick is longer
 
   // ── State ──
   let state = {
@@ -682,22 +655,114 @@
     p = Math.min(p, state.durationMs);
     const pct = p / Math.max(state.durationMs, 1);
 
-    // SVG arc
-    const offset = CIRCUMFERENCE * (1 - pct);
-    ringArc.style.strokeDashoffset = offset;
+    const ctx = progressCtx;
+    const cx = RING_CX, cy = RING_CY, r = RING_R;
+    const startAngle = -Math.PI / 2; // 12 o'clock
 
-    // Dot position
-    if (pct > 0) {
-      progressDot.style.opacity = "1";
-      const angle = pct * Math.PI * 2 - Math.PI / 2; // start from top
-      const r = RING_RADIUS;
-      const cx = r + r * Math.cos(angle);
-      const cy = r + r * Math.sin(angle);
-      progressDot.style.left = cx + "px";
-      progressDot.style.top = cy + "px";
-    } else {
-      progressDot.style.opacity = "0";
+    ctx.clearRect(0, 0, 296, 296);
+
+    // ── Tick marks (watch-style) ──
+    for (let i = 0; i < TICK_COUNT; i++) {
+      const angle = startAngle + (i / TICK_COUNT) * Math.PI * 2;
+      const major = i % TICK_MAJOR_EVERY === 0;
+      const len = major ? 10 : 4;
+      const gap = 4;
+      const tickR1 = r + gap;
+      const tickR2 = r + gap + len;
+      const x1 = cx + tickR1 * Math.cos(angle);
+      const y1 = cy + tickR1 * Math.sin(angle);
+      const x2 = cx + tickR2 * Math.cos(angle);
+      const y2 = cy + tickR2 * Math.sin(angle);
+
+      // Ticks that have been "passed" by progress glow brighter
+      const tickPct = i / TICK_COUNT;
+      const passed = tickPct <= pct;
+
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      if (passed) {
+        ctx.strokeStyle = major ? "rgba(255,255,255,0.45)" : "rgba(255,255,255,0.2)";
+      } else {
+        ctx.strokeStyle = major ? "rgba(255,255,255,0.15)" : "rgba(255,255,255,0.06)";
+      }
+      ctx.lineWidth = major ? 1.5 : 0.8;
+      ctx.stroke();
     }
+
+    // ── Background track ──
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(255,255,255,0.1)";
+    ctx.lineWidth = RING_TRACK_W;
+    ctx.stroke();
+
+    if (pct <= 0) {
+      pillTime.textContent = fmt(p) + "  /  -" + fmt(state.durationMs - p);
+      return;
+    }
+
+    // ── Progress arc with gradient ──
+    const endAngle = startAngle + pct * Math.PI * 2;
+
+    // Create a conical-style gradient by drawing many small segments
+    const segments = Math.max(2, Math.floor(pct * 200));
+    for (let i = 0; i < segments; i++) {
+      const t0 = i / segments;
+      const t1 = (i + 1.5) / segments; // slight overlap to avoid gaps
+      const a0 = startAngle + t0 * pct * Math.PI * 2;
+      const a1 = startAngle + Math.min(t1, 1) * pct * Math.PI * 2;
+
+      // Gradient: dim warm → bright white along the arc
+      const t = t0;
+      const alpha = 0.3 + t * 0.7;
+      // Warm-to-white: start with subtle warm tint, end pure white
+      const rr = Math.round(180 + t * 75);
+      const gg = Math.round(170 + t * 85);
+      const bb = Math.round(160 + t * 95);
+
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, a0, a1);
+      ctx.strokeStyle = `rgba(${rr},${gg},${bb},${alpha})`;
+      ctx.lineWidth = RING_ARC_W;
+      ctx.lineCap = "round";
+      ctx.stroke();
+    }
+
+    // ── Glow behind the leading edge ──
+    const glowAngle = endAngle;
+    const glowX = cx + r * Math.cos(glowAngle);
+    const glowY = cy + r * Math.sin(glowAngle);
+    const glow = ctx.createRadialGradient(glowX, glowY, 0, glowX, glowY, 18);
+    glow.addColorStop(0, "rgba(255,255,255,0.25)");
+    glow.addColorStop(0.5, "rgba(255,255,255,0.08)");
+    glow.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.beginPath();
+    ctx.arc(glowX, glowY, 18, 0, Math.PI * 2);
+    ctx.fillStyle = glow;
+    ctx.fill();
+
+    // ── Dot at the leading edge ──
+    const dotX = cx + r * Math.cos(endAngle);
+    const dotY = cy + r * Math.sin(endAngle);
+
+    // Outer ring
+    ctx.beginPath();
+    ctx.arc(dotX, dotY, RING_DOT_R, 0, Math.PI * 2);
+    ctx.fillStyle = "#fff";
+    ctx.fill();
+
+    // Inner cutout (creates a ring/donut shape)
+    ctx.beginPath();
+    ctx.arc(dotX, dotY, RING_DOT_INNER, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(30,30,30,0.9)";
+    ctx.fill();
+
+    // Tiny bright center
+    ctx.beginPath();
+    ctx.arc(dotX, dotY, 1.5, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255,255,255,0.7)";
+    ctx.fill();
 
     // Time display
     pillTime.textContent = fmt(p) + "  /  -" + fmt(state.durationMs - p);
