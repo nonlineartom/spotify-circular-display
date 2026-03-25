@@ -8,8 +8,10 @@ Type=simple
 User=admin
 Environment=DISPLAY=:0
 Environment=XAUTHORITY=/home/admin/.Xauthority
-ExecStartPre=/bin/sleep 5
-ExecStart=/usr/bin/chromium-browser \
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStartPre=/bin/sleep 8
+ExecStart=/usr/bin/chromium \
     --noerrdialogs \
     --disable-infobars \
     --disable-session-crashed-bubble \
@@ -22,6 +24,7 @@ ExecStart=/usr/bin/chromium-browser \
     --disk-cache-size=48000000 \
     --window-size=1080,1080 \
     --window-position=0,0 \
+    --ozone-platform=wayland \
     http://localhost:5000
 Restart=on-failure
 RestartSec=10
