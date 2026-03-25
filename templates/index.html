@@ -372,7 +372,7 @@
 
   <!-- QR overlay (vinyl-styled, shown after 30s pause or idle) -->
   <canvas id="qr-overlay" width="1080" height="1080"></canvas>
-  <div id="qr-label">Scan to connect</div>
+  <div id="qr-label">Scan to play</div>
 </div>
 
 <script>
@@ -856,38 +856,9 @@
   }
 
   // ── Controls ──
-  function togglePlayback() {
-    api("PUT", state.isPlaying ? "/pause" : "/play");
-    state.isPlaying = !state.isPlaying;
-    state.lastUpdate = performance.now();
-    iconPlay.style.display  = state.isPlaying ? "none" : "block";
-    iconPause.style.display = state.isPlaying ? "block" : "none";
-    setSpinTarget(state.isPlaying ? 1 : 0);
-  }
-
-  btnPlay.addEventListener("click", togglePlayback);
-  btnNext.addEventListener("click", () => api("POST", "/next"));
-  btnPrev.addEventListener("click", () => api("POST", "/previous"));
-
-  // Tap outside pill → play/pause
-  $("viewport").addEventListener("click", (e) => {
-    if (e.target.closest("#pill")) return;
-    togglePlayback();
-  });
-
-  // Volume slider
+  // Controls are display-only — users control playback from their Spotify app.
+  // The display reads state locally from Raspotify's onevent handler.
   let volSliderActive = false;
-  let volTimeout = null;
-  volSlider.addEventListener("input", () => {
-    volSliderActive = true;
-    state.volume = parseInt(volSlider.value);
-    volWaves.style.display = state.volume === 0 ? "none" : "";
-    clearTimeout(volTimeout);
-    volTimeout = setTimeout(() => {
-      api("PUT", "/volume?volume_percent=" + state.volume);
-      volSliderActive = false;
-    }, 200);
-  });
 
   // ── QR Code generator — uses server-side qrcode API for reliability ──
   const QR = {
@@ -971,7 +942,7 @@
       const resp = await fetch("/api/info");
       if (!resp.ok) return;
       const data = await resp.json();
-      const matrix = await QR.encode(data.url + "/login");
+      const matrix = await QR.encode(data.url + "/connect");
       if (matrix) {
         qrMatrix = matrix;
         drawVinylQR(qrMatrix);

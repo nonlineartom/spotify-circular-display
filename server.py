@@ -1,28 +1,33 @@
 #!/usr/bin/env python3
-"""Flask server — Spotify auth, API proxy, and web UI for Pi Display."""
+"""Flask server — local metadata via Raspotify onevent + Spotify client credentials.
+
+No user OAuth required. Raspotify's --onevent writes playback state to
+/tmp/spotify-state.json. This server reads that state and enriches it with
+track metadata fetched via the Spotify client credentials flow (app-level
+token, no user login needed).
+"""
 
 import json
 import os
 import socket
 import time
 import requests
-from flask import Flask, redirect, request, render_template, jsonify, session
+from flask import Flask, request, render_template, jsonify
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+STATE_FILE = "/tmp/spotify-state.json"
 
-SPOTIFY_AUTH_URL = "https://accounts.spotify.com/authorize"
 SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
 SPOTIFY_API_BASE = "https://api.spotify.com/v1"
 
-SCOPES = (
-    "user-read-playback-state "
-    "user-modify-playback-state "
-    "user-read-currently-playing "
-    "streaming"
-)
+# ── In-memory caches ────────────────────────────────────────
+
+_client_token = None
+_client_token_expiry = 0
+_track_cache = {}  # track_id -> {name, artists, album, images, duration_ms}
 
 
 def load_config():
@@ -30,158 +35,169 @@ def load_config():
         return json.load(f)
 
 
-def save_config(config):
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(config, f, indent=2)
+def get_client_token():
+    """Get a Spotify app-level token via client credentials flow.
 
+    This does NOT require a user to log in — only the app's
+    client_id and client_secret are needed.
+    """
+    global _client_token, _client_token_expiry
 
-def get_token():
-    """Return a valid access token, refreshing if needed."""
+    if _client_token and _client_token_expiry > time.time() + 60:
+        return _client_token
+
     config = load_config()
-    if config.get("access_token") and config.get("token_expiry", 0) > time.time() + 60:
-        return config["access_token"]
-    # Refresh
-    if not config.get("refresh_token"):
-        return None
-    resp = requests.post(SPOTIFY_TOKEN_URL, data={
-        "grant_type": "refresh_token",
-        "refresh_token": config["refresh_token"],
-        "client_id": config["client_id"],
-        "client_secret": config["client_secret"],
-    })
-    if resp.status_code != 200:
-        return None
-    data = resp.json()
-    config["access_token"] = data["access_token"]
-    config["token_expiry"] = time.time() + data["expires_in"]
-    if "refresh_token" in data:
-        config["refresh_token"] = data["refresh_token"]
-    save_config(config)
-    return config["access_token"]
+    client_id = config.get("client_id", "")
+    client_secret = config.get("client_secret", "")
 
+    if not client_id or not client_secret:
+        return None
 
-def spotify_request(method, endpoint, **kwargs):
-    """Make an authenticated request to the Spotify API."""
-    token = get_token()
-    if not token:
-        return jsonify({"error": "Not authenticated"}), 401
-    headers = {"Authorization": f"Bearer {token}"}
-    url = f"{SPOTIFY_API_BASE}{endpoint}"
-    resp = requests.request(method, url, headers=headers, **kwargs)
-    if resp.status_code == 204:
-        return "", 204
     try:
-        return jsonify(resp.json()), resp.status_code
-    except Exception:
-        return "", resp.status_code
+        resp = requests.post(SPOTIFY_TOKEN_URL, data={
+            "grant_type": "client_credentials",
+        }, auth=(client_id, client_secret), timeout=5)
+
+        if resp.status_code != 200:
+            print(f"Client credentials error: {resp.status_code} {resp.text}")
+            return None
+
+        data = resp.json()
+        _client_token = data["access_token"]
+        _client_token_expiry = time.time() + data.get("expires_in", 3600)
+        return _client_token
+
+    except Exception as e:
+        print(f"Client credentials request failed: {e}")
+        return None
 
 
-# ── Auth routes ──────────────────────────────────────────────
+def lookup_track(track_id):
+    """Look up track metadata from Spotify using client credentials token.
 
-@app.route("/login")
-def login():
-    config = load_config()
-    params = {
-        "client_id": config["client_id"],
-        "response_type": "code",
-        "redirect_uri": config["redirect_uri"],
-        "scope": SCOPES,
+    Results are cached in memory by track_id to avoid repeated API calls.
+    """
+    if not track_id:
+        return None
+
+    if track_id in _track_cache:
+        return _track_cache[track_id]
+
+    token = get_client_token()
+    if not token:
+        return None
+
+    try:
+        resp = requests.get(
+            f"{SPOTIFY_API_BASE}/tracks/{track_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=5,
+        )
+        if resp.status_code != 200:
+            print(f"Track lookup error for {track_id}: {resp.status_code}")
+            return None
+
+        data = resp.json()
+        track_info = {
+            "id": data.get("id", track_id),
+            "name": data.get("name", "Unknown Track"),
+            "duration_ms": data.get("duration_ms", 0),
+            "artists": [{"name": a.get("name", "")} for a in data.get("artists", [])],
+            "album": {
+                "name": data.get("album", {}).get("name", ""),
+                "images": data.get("album", {}).get("images", []),
+            },
+        }
+        _track_cache[track_id] = track_info
+        return track_info
+
+    except Exception as e:
+        print(f"Track lookup failed for {track_id}: {e}")
+        return None
+
+
+def read_playback_state():
+    """Read the state file written by onevent.sh and merge with cached metadata.
+
+    Returns a dict matching the Spotify /me/player response shape that the
+    frontend already expects.
+    """
+    try:
+        with open(STATE_FILE, "r") as f:
+            state = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+    track_id = state.get("track_id")
+    if not track_id:
+        return None
+
+    # Check for stale state — if no event for 5 minutes and not playing, treat as idle
+    age = time.time() - state.get("timestamp", 0)
+    if age > 300 and not state.get("is_playing", False):
+        return None
+
+    # Look up track metadata
+    track_info = lookup_track(track_id)
+    if not track_info:
+        # Return minimal info without metadata
+        track_info = {
+            "id": track_id,
+            "name": "Loading...",
+            "duration_ms": state.get("duration_ms", 0),
+            "artists": [{"name": ""}],
+            "album": {"name": "", "images": []},
+        }
+
+    # Interpolate position if playing
+    position_ms = state.get("position_ms", 0)
+    is_playing = state.get("is_playing", False)
+    if is_playing and "timestamp" in state:
+        elapsed = (time.time() - state["timestamp"]) * 1000
+        position_ms = int(position_ms + elapsed)
+        duration = track_info.get("duration_ms") or state.get("duration_ms", 0)
+        if duration > 0:
+            position_ms = min(position_ms, duration)
+
+    # Build response matching Spotify /me/player shape
+    return {
+        "is_playing": is_playing,
+        "progress_ms": position_ms,
+        "item": {
+            "id": track_info["id"],
+            "name": track_info["name"],
+            "duration_ms": track_info.get("duration_ms") or state.get("duration_ms", 0),
+            "artists": track_info["artists"],
+            "album": track_info["album"],
+        },
+        "device": {
+            "volume_percent": state.get("volume_percent", 50),
+        },
     }
-    url = SPOTIFY_AUTH_URL + "?" + "&".join(f"{k}={v}" for k, v in params.items())
-    return redirect(url)
 
 
-@app.route("/callback")
-def callback():
-    code = request.args.get("code")
-    error = request.args.get("error")
-    if error:
-        return f"Auth error: {error}", 400
-    config = load_config()
-    resp = requests.post(SPOTIFY_TOKEN_URL, data={
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": config["redirect_uri"],
-        "client_id": config["client_id"],
-        "client_secret": config["client_secret"],
-    })
-    if resp.status_code != 200:
-        return f"Token error: {resp.text}", 400
-    data = resp.json()
-    config["access_token"] = data["access_token"]
-    config["refresh_token"] = data["refresh_token"]
-    config["token_expiry"] = time.time() + data["expires_in"]
-    save_config(config)
-    return "<h1>Authenticated! You can close this tab.</h1>"
-
-
-# ── UI route ─────────────────────────────────────────────────
+# ── UI routes ────────────────────────────────────────────────
 
 @app.route("/")
 def index():
     return render_template("index.html")
 
 
-# ── Playback API proxy ───────────────────────────────────────
+@app.route("/connect")
+def connect():
+    """Mobile-friendly page explaining how to connect to Pi Display."""
+    return render_template("connect.html")
+
+
+# ── API routes ───────────────────────────────────────────────
 
 @app.route("/api/now-playing")
 def now_playing():
-    return spotify_request("GET", "/me/player")
-
-
-@app.route("/api/play", methods=["PUT"])
-def play():
-    return spotify_request("PUT", "/me/player/play")
-
-
-@app.route("/api/pause", methods=["PUT"])
-def pause():
-    return spotify_request("PUT", "/me/player/pause")
-
-
-@app.route("/api/next", methods=["POST"])
-def next_track():
-    return spotify_request("POST", "/me/player/next")
-
-
-@app.route("/api/previous", methods=["POST"])
-def previous_track():
-    return spotify_request("POST", "/me/player/previous")
-
-
-@app.route("/api/shuffle", methods=["PUT"])
-def shuffle():
-    state = request.args.get("state", "true")
-    return spotify_request("PUT", f"/me/player/shuffle?state={state}")
-
-
-@app.route("/api/repeat", methods=["PUT"])
-def repeat():
-    state = request.args.get("state", "off")
-    return spotify_request("PUT", f"/me/player/repeat?state={state}")
-
-
-@app.route("/api/seek", methods=["PUT"])
-def seek():
-    position_ms = request.args.get("position_ms", 0)
-    return spotify_request("PUT", f"/me/player/seek?position_ms={position_ms}")
-
-
-@app.route("/api/volume", methods=["PUT"])
-def volume():
-    volume_percent = request.args.get("volume_percent", 50)
-    return spotify_request("PUT", f"/me/player/volume?volume_percent={volume_percent}")
-
-
-@app.route("/api/devices")
-def devices():
-    return spotify_request("GET", "/me/player/devices")
-
-
-@app.route("/api/transfer", methods=["PUT"])
-def transfer():
-    data = request.get_json()
-    return spotify_request("PUT", "/me/player", json=data)
+    """Return current playback state from local Raspotify events."""
+    state = read_playback_state()
+    if state is None:
+        return "", 204  # No content — nothing playing
+    return jsonify(state)
 
 
 @app.route("/api/qr")
@@ -193,7 +209,7 @@ def qr_matrix():
     try:
         import qrcode
         qr = qrcode.QRCode(
-            version=None,  # auto-size
+            version=None,
             error_correction=qrcode.constants.ERROR_CORRECT_M,
             box_size=1,
             border=0,
@@ -201,10 +217,8 @@ def qr_matrix():
         qr.add_data(text)
         qr.make(fit=True)
         matrix = qr.get_matrix()
-        # Convert to list of lists of booleans
         return jsonify([[bool(cell) for cell in row] for row in matrix])
     except ImportError:
-        # Fallback: generate via qrcode not installed message
         return jsonify({"error": "qrcode library not installed"}), 500
 
 
@@ -236,7 +250,7 @@ def lyrics():
             "artist_name": artist_name,
             "album_name": album_name,
             "duration": duration,
-        }, headers={"User-Agent": "SpotifyPiDisplay/1.0"}, timeout=5)
+        }, headers={"User-Agent": "SpotifyPiDisplay/2.0"}, timeout=5)
         if resp.status_code == 200:
             data = resp.json()
             synced = data.get("syncedLyrics") or ""

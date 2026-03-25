@@ -1,8 +1,4 @@
 {
   "client_id": "YOUR_SPOTIFY_CLIENT_ID",
-  "client_secret": "YOUR_SPOTIFY_CLIENT_SECRET",
-  "redirect_uri": "http://127.0.0.1:5000/callback",
-  "access_token": "",
-  "refresh_token": "",
-  "token_expiry": 0
+  "client_secret": "YOUR_SPOTIFY_CLIENT_SECRET"
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────
 # Spotify Pi Display — One-shot setup script
-# Run on the Pi:  cd /home/pi/spotify-pi && chmod +x setup.sh && ./setup.sh
+# Run on the Pi:  cd /home/admin/circle-pi-display && chmod +x setup.sh && ./setup.sh
 # ─────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -36,13 +36,14 @@ else
     warn "Raspotify already installed, skipping."
 fi
 
-step "Configuring Raspotify…"
-sudo tee /etc/raspotify/conf > /dev/null <<'RASPOTIFY_CONF'
+step "Configuring Raspotify with onevent handler…"
+sudo tee /etc/raspotify/conf > /dev/null <<RASPOTIFY_CONF
 LIBRESPOT_NAME="Pi Display"
 LIBRESPOT_BITRATE="320"
 LIBRESPOT_FORMAT="S16"
 LIBRESPOT_INITIAL_VOLUME="80"
 LIBRESPOT_QUIET=""
+LIBRESPOT_ONEVENT="${PROJECT_DIR}/onevent.sh"
 RASPOTIFY_CONF
 sudo systemctl enable raspotify
 sudo systemctl restart raspotify
@@ -53,26 +54,32 @@ python3 -m venv "$PROJECT_DIR/venv"
 "$PROJECT_DIR/venv/bin/pip" install --upgrade pip -q
 "$PROJECT_DIR/venv/bin/pip" install -r "$PROJECT_DIR/requirements.txt" -q
 
-# ── 4. Spotify credentials ──────────────────────────────────
+# ── 4. Spotify API credentials ──────────────────────────────
 step "Spotify API credentials"
+echo "  These are used for track metadata lookup (no user login needed)."
+echo ""
 if [ -z "$(jq -r '.client_id // empty' "$CONFIG" 2>/dev/null)" ]; then
-    echo "  Go to https://developer.spotify.com/dashboard to get these."
+    echo "  Go to https://developer.spotify.com/dashboard to create an app."
     echo ""
     read -rp "  Client ID:     " CLIENT_ID
     read -rp "  Client Secret: " CLIENT_SECRET
 
-    PI_IP=$(hostname -I | awk '{print $1}')
-    jq --arg id "$CLIENT_ID" \
-       --arg secret "$CLIENT_SECRET" \
-       '.client_id = $id | .client_secret = $secret' \
-       "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
-
-    warn "Also add http://${PI_IP}:5000/callback as a Redirect URI in your Spotify app."
+    cat > "$CONFIG" <<EOF
+{
+  "client_id": "${CLIENT_ID}",
+  "client_secret": "${CLIENT_SECRET}"
+}
+EOF
+    warn "Credentials saved to config.json"
 else
     warn "Credentials already present in config.json, skipping."
 fi
 
-# ── 5. Install systemd services ─────────────────────────────
+# ── 5. Make onevent script executable ────────────────────────
+step "Setting up onevent handler…"
+chmod +x "$PROJECT_DIR/onevent.sh"
+
+# ── 6. Install systemd services ─────────────────────────────
 step "Installing systemd services…"
 for svc in spotify-display spotify-buttons spotify-kiosk; do
     sudo cp "$PROJECT_DIR/services/${svc}.service" /etc/systemd/system/
@@ -80,8 +87,8 @@ done
 sudo systemctl daemon-reload
 sudo systemctl enable spotify-display spotify-buttons spotify-kiosk
 
-# ── 6. Display & desktop config ─────────────────────────────
-step "Configuring display (1080×1080, no blanking)…"
+# ── 7. Display & desktop config ─────────────────────────────
+step "Configuring display (1080x1080, no blanking)…"
 
 # HDMI config
 BOOT_CONFIG=""
@@ -90,12 +97,10 @@ for f in /boot/firmware/config.txt /boot/config.txt; do
 done
 
 if [ -n "$BOOT_CONFIG" ]; then
-    # Remove any existing conflicting lines
     sudo sed -i '/^hdmi_force_hotplug/d; /^hdmi_group/d; /^hdmi_mode/d; /^hdmi_cvt/d' "$BOOT_CONFIG"
-    # Append display settings
     sudo tee -a "$BOOT_CONFIG" > /dev/null <<'HDMI'
 
-# Spotify Pi Display — 1080×1080 square
+# Spotify Pi Display — 1080x1080 square
 hdmi_force_hotplug=1
 hdmi_group=2
 hdmi_mode=87
@@ -103,14 +108,14 @@ hdmi_cvt=1080 1080 60 1 0 0 0
 HDMI
     warn "Added HDMI settings to $BOOT_CONFIG"
 else
-    warn "Could not find boot config — set HDMI manually (see DEPLOYMENT.md)."
+    warn "Could not find boot config — set HDMI manually."
 fi
 
 # Disable screen blanking
 sudo raspi-config nonint do_blanking 1 2>/dev/null || true
 
 # Auto-hide mouse cursor via unclutter (autostart)
-AUTOSTART_DIR="/home/pi/.config/lxsession/LXDE-pi"
+AUTOSTART_DIR="/home/${USER}/.config/lxsession/LXDE-pi"
 mkdir -p "$AUTOSTART_DIR"
 AUTOSTART_FILE="$AUTOSTART_DIR/autostart"
 if ! grep -q "unclutter" "$AUTOSTART_FILE" 2>/dev/null; then
@@ -126,37 +131,6 @@ if ! grep -q "xset s off" "$AUTOSTART_FILE" 2>/dev/null; then
 XSET
 fi
 
-# ── 7. Initial Spotify authentication ───────────────────────
-step "Starting server for initial Spotify authentication…"
-"$PROJECT_DIR/venv/bin/python" "$PROJECT_DIR/server.py" &
-SERVER_PID=$!
-sleep 2
-
-PI_IP=$(hostname -I | awk '{print $1}')
-echo ""
-echo "  ┌──────────────────────────────────────────────────────┐"
-echo "  │  Open a browser on any device on your network and go │"
-echo "  │  to one of these URLs to log in to Spotify:          │"
-echo "  │                                                      │"
-echo "  │    http://${PI_IP}:5000/login                        │"
-echo "  │    http://$(hostname).local:5000/login               │"
-echo "  │                                                      │"
-echo "  │  After you see 'Authenticated!', come back here.     │"
-echo "  └──────────────────────────────────────────────────────┘"
-echo ""
-read -rp "  Press Enter after you've authenticated in the browser… "
-
-kill $SERVER_PID 2>/dev/null || true
-wait $SERVER_PID 2>/dev/null || true
-
-# Verify token was saved
-if [ -n "$(jq -r '.refresh_token // empty' "$CONFIG" 2>/dev/null)" ]; then
-    echo -e "  ${GREEN}✓ Authentication successful!${NC}"
-else
-    warn "⚠ No refresh token found — you may need to re-authenticate after reboot."
-    warn "  Visit http://${PI_IP}:5000/login after services start."
-fi
-
 # ── Done ─────────────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}═══════════════════════════════════════════════════${NC}"
@@ -164,12 +138,12 @@ echo -e "${GREEN}  Setup complete! Reboot to start everything:${NC}"
 echo -e "${GREEN}    sudo reboot${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════${NC}"
 echo ""
-echo "  After reboot, four services will start automatically:"
-echo "    • raspotify       — Spotify Connect receiver"
-echo "    • spotify-display — Flask server (API + web UI)"
-echo "    • spotify-buttons — GPIO button monitor"
+echo "  After reboot, three services will start automatically:"
+echo "    • raspotify       — Spotify Connect receiver (\"Pi Display\")"
+echo "    • spotify-display — Flask server (metadata + web UI)"
 echo "    • spotify-kiosk   — Chromium fullscreen on the display"
 echo ""
-echo "  Open Spotify on your phone/computer and select 'Pi Display'"
-echo "  as the output device. The display will show album art + controls."
+echo "  To use: Open Spotify on your phone → Tap devices → Select \"Pi Display\""
+echo "  The display will show album art, lyrics, and progress automatically."
+echo "  No login or authentication required!"
 echo ""

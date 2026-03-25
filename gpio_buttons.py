@@ -3,15 +3,21 @@
 
 Each button is wired between a GPIO pin and GND.
 Internal pull-ups are enabled so the pin reads HIGH when open, LOW when pressed.
+
+Note: Play/pause, next, and previous controls require MPRIS support
+(future enhancement). Volume control uses amixer for local audio adjustment.
 """
 
+import subprocess
 import time
 import signal
 import sys
-import requests
-import RPi.GPIO as GPIO
 
-SERVER_URL = "http://localhost:5000"
+try:
+    import RPi.GPIO as GPIO
+except ImportError:
+    print("RPi.GPIO not available — GPIO buttons disabled.")
+    sys.exit(0)
 
 # GPIO pin → action mapping
 BUTTONS = {
@@ -25,61 +31,40 @@ BUTTONS = {
 DEBOUNCE_MS = 250
 VOLUME_STEP = 5
 
-current_volume = 50  # Will be updated from Spotify
 
-
-def get_current_state():
-    """Fetch current playback state from the local server."""
-    global current_volume
+def amixer_volume(direction):
+    """Adjust system volume using amixer."""
     try:
-        resp = requests.get(f"{SERVER_URL}/api/now-playing", timeout=3)
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("device"):
-                current_volume = data["device"].get("volume_percent", 50)
-            return data
-    except Exception:
-        pass
-    return None
+        if direction == "up":
+            subprocess.run(
+                ["amixer", "set", "Master", f"{VOLUME_STEP}%+"],
+                capture_output=True, timeout=3,
+            )
+        elif direction == "down":
+            subprocess.run(
+                ["amixer", "set", "Master", f"{VOLUME_STEP}%-"],
+                capture_output=True, timeout=3,
+            )
+    except Exception as e:
+        print(f"Volume control error: {e}")
 
 
 def handle_button(channel):
     """Handle a button press on the given GPIO channel."""
-    global current_volume
     action = BUTTONS.get(channel)
     if not action:
         return
 
-    try:
-        if action == "play_pause":
-            state = get_current_state()
-            if state and state.get("is_playing"):
-                requests.put(f"{SERVER_URL}/api/pause", timeout=3)
-            else:
-                requests.put(f"{SERVER_URL}/api/play", timeout=3)
+    if action == "volume_up":
+        amixer_volume("up")
+    elif action == "volume_down":
+        amixer_volume("down")
+    elif action in ("play_pause", "next", "previous"):
+        # TODO: Implement via playerctl/MPRIS when available
+        print(f"Button: {action} — requires MPRIS (not yet implemented)")
+        return
 
-        elif action == "next":
-            requests.post(f"{SERVER_URL}/api/next", timeout=3)
-
-        elif action == "previous":
-            requests.post(f"{SERVER_URL}/api/previous", timeout=3)
-
-        elif action == "volume_up":
-            current_volume = min(100, current_volume + VOLUME_STEP)
-            requests.put(
-                f"{SERVER_URL}/api/volume?volume_percent={current_volume}", timeout=3
-            )
-
-        elif action == "volume_down":
-            current_volume = max(0, current_volume - VOLUME_STEP)
-            requests.put(
-                f"{SERVER_URL}/api/volume?volume_percent={current_volume}", timeout=3
-            )
-
-        print(f"Button: {action} (GPIO {channel})")
-
-    except requests.exceptions.RequestException as e:
-        print(f"Error handling {action}: {e}")
+    print(f"Button: {action} (GPIO {channel})")
 
 
 def cleanup(signum, frame):
@@ -100,11 +85,8 @@ def main():
         )
 
     print(f"GPIO buttons active: {BUTTONS}")
+    print("Note: Volume uses amixer. Play/next/prev require MPRIS (future).")
 
-    # Fetch initial volume
-    get_current_state()
-
-    # Keep running
     try:
         while True:
             time.sleep(1)
