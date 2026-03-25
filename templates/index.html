@@ -146,7 +146,7 @@
     pointer-events: none;
   }
 
-  /* ── Player info (no background) ── */
+  /* ── Player info (frosted glass) ── */
   #pill {
     position: absolute;
     left: 50%;
@@ -158,33 +158,16 @@
     align-items: center;
     z-index: 30;
     pointer-events: auto;
+    background: rgba(0, 0, 0, 0.35);
+    -webkit-backdrop-filter: blur(20px);
+    backdrop-filter: blur(20px);
+    border-radius: 20px;
+    padding: 14px 28px;
   }
 
-  /* Full-viewport scrim layer for text readability on any artwork.
-     Uses a single overlay with top + bottom gradient zones so there
-     are no clipped pseudo-element edges. */
-  #text-scrim {
-    position: absolute;
-    inset: 0;
-    border-radius: 50%;
-    pointer-events: none;
-    z-index: 22;
-    background:
-      radial-gradient(ellipse 80% 35% at 50% 12%, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0.15) 40%, transparent 100%),
-      radial-gradient(ellipse 80% 30% at 50% 92%, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0.2) 40%, transparent 100%);
-  }
-
-  /* Heavy text shadow for readability on both light and dark artwork */
+  /* Subtle text shadow — backdrop-filter handles contrast now */
   #pill-track, #pill-artist, #pill-time {
-    text-shadow:
-      0 1px 2px rgba(0,0,0,1),
-      0 0 6px rgba(0,0,0,1),
-      0 0 12px rgba(0,0,0,0.9),
-      0 0 24px rgba(0,0,0,0.7),
-      0 0 40px rgba(0,0,0,0.5),
-      1px 1px 2px rgba(0,0,0,1),
-      -1px -1px 2px rgba(0,0,0,1),
-      2px 2px 4px rgba(0,0,0,0.8);
+    text-shadow: 0 1px 3px rgba(0,0,0,0.5);
   }
 
   #pill-track {
@@ -220,28 +203,66 @@
     text-align: center;
   }
 
-  /* Controls removed — playback controlled from Spotify app */
+  /* ── Playback controls ── */
+  .skip-btn {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 30;
+    width: 80px;
+    height: 120px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: auto;
+    opacity: 0;
+    transition: opacity 0.3s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .skip-btn.visible { opacity: 1; }
+  .skip-btn:active { opacity: 0.6; }
+  #skip-prev { left: 30px; }
+  #skip-next { right: 30px; }
+  .skip-btn svg {
+    width: 28px;
+    height: 28px;
+    fill: rgba(255,255,255,0.45);
+    filter: drop-shadow(0 1px 4px rgba(0,0,0,0.6));
+  }
+  #pause-btn {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: 148px; height: 148px;
+    border-radius: 50%;
+    z-index: 26;
+    pointer-events: auto;
+    -webkit-tap-highlight-color: transparent;
+  }
 
-  /* ── Lyrics overlay (top half) ── */
+  /* ── Lyrics overlay (top half, frosted glass) ── */
   #lyrics-wrap {
     position: absolute;
     top: -20px;
     left: 50%;
     transform: translateX(-50%);
-    width: 800px;
+    width: 660px;
     height: 560px;
-    padding: 80px 50px;
+    padding: 80px 40px;
     z-index: 28;
     pointer-events: none;
     overflow: hidden;
     opacity: 0;
     transition: opacity 0.6s;
-    /* Oversized container with generous padding so text-shadows
-       never reach the box edge. Mask feathers well within bounds. */
+    background: rgba(0, 0, 0, 0.25);
+    -webkit-backdrop-filter: blur(16px);
+    backdrop-filter: blur(16px);
+    border-radius: 30px;
+    /* Mask fades top/bottom — also softens the blur edges naturally */
     -webkit-mask-image: linear-gradient(to bottom,
-      transparent 0%, transparent 10%, white 25%, white 55%, transparent 85%, transparent 100%);
+      transparent 0%, transparent 8%, white 22%, white 58%, transparent 88%, transparent 100%);
     mask-image: linear-gradient(to bottom,
-      transparent 0%, transparent 10%, white 25%, white 55%, transparent 85%, transparent 100%);
+      transparent 0%, transparent 8%, white 22%, white 58%, transparent 88%, transparent 100%);
   }
   #lyrics-wrap.visible { opacity: 1; }
 
@@ -260,7 +281,7 @@
     padding: 6px 20px;
     color: rgba(255,255,255,0.35);
     transition: color 0.4s, transform 0.4s;
-    text-shadow: 0 1px 4px rgba(0,0,0,0.8), 0 0 8px rgba(0,0,0,0.4);
+    text-shadow: 0 1px 2px rgba(0,0,0,0.3);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -320,9 +341,6 @@
   <!-- Spindle (static, doesn't rotate) -->
   <div id="spindle"></div>
 
-  <!-- Text readability scrim — smooth gradients at top and bottom -->
-  <div id="text-scrim"></div>
-
   <!-- Static overlay layer -->
   <div id="static-layer">
     <!-- Circular progress ring (canvas-based for smooth rendering) -->
@@ -338,8 +356,18 @@
       <div id="pill-track"></div>
       <div id="pill-artist"></div>
       <div id="pill-time"></div>
-      <!-- Controls removed: playback is controlled from the user's Spotify app -->
     </div>
+
+    <!-- Skip buttons — semi-transparent triangles at outer edges -->
+    <div id="skip-prev" class="skip-btn">
+      <svg viewBox="0 0 24 24"><polygon points="19,20 9,12 19,4"/><rect x="5" y="4" width="3" height="16"/></svg>
+    </div>
+    <div id="skip-next" class="skip-btn">
+      <svg viewBox="0 0 24 24"><polygon points="5,4 15,12 5,20"/><rect x="16" y="4" width="3" height="16"/></svg>
+    </div>
+
+    <!-- Tap-to-pause zone over center label -->
+    <div id="pause-btn"></div>
   </div>
 
   <!-- QR overlay (vinyl-styled, shown after 30s pause or idle) -->
@@ -381,6 +409,9 @@
   const lyricsWrap = $("lyrics-wrap");
   const lyricsInner = $("lyrics-inner");
   const qrLabel    = $("qr-label");
+  const skipPrev   = $("skip-prev");
+  const skipNext   = $("skip-next");
+  const pauseBtn   = $("pause-btn");
 
   // Progress ring constants (canvas is 296x296 = 2x the CSS size for retina)
   const RING_CX = 148;
@@ -732,6 +763,18 @@
     ctx.fillStyle = "rgba(255,255,255,0.7)";
     ctx.fill();
 
+    // Pause icon — two vertical bars in center when paused
+    if (!state.isPlaying && state.trackId) {
+      const barW = 5, barH = 24, gap = 8;
+      ctx.fillStyle = "rgba(255,255,255,0.6)";
+      ctx.beginPath();
+      ctx.roundRect(cx - gap/2 - barW, cy - barH/2, barW, barH, 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.roundRect(cx + gap/2, cy - barH/2, barW, barH, 2);
+      ctx.fill();
+    }
+
     // Time display
     pillTime.textContent = fmt(p) + "  /  -" + fmt(state.durationMs - p);
   }
@@ -809,6 +852,10 @@
 
     // Spin
     setSpinTarget(state.isPlaying ? 1 : 0);
+
+    // Show controls when track is loaded
+    skipPrev.classList.toggle("visible", !!state.trackId);
+    skipNext.classList.toggle("visible", !!state.trackId);
   }
 
   // ── QR Code generator — uses server-side qrcode API for reliability ──
@@ -900,6 +947,37 @@
       }
     } catch(e) { console.error("QR init error:", e); }
   }
+
+  // ── Playback controls ──
+  async function controlAction(action) {
+    try {
+      await fetch("/api/control/" + action, { method: "POST" });
+      setTimeout(poll, 300);
+    } catch(e) {}
+  }
+
+  skipPrev.addEventListener("click", () => controlAction("previous"));
+  skipNext.addEventListener("click", () => controlAction("next"));
+  pauseBtn.addEventListener("click", () => controlAction("play-pause"));
+
+  // ── Swipe gestures (skip track) ──
+  let touchStartX = 0;
+  let touchStartTime = 0;
+  const SWIPE_THRESHOLD = 80;
+  const SWIPE_MAX_TIME = 500;
+
+  document.getElementById("viewport").addEventListener("touchstart", e => {
+    touchStartX = e.touches[0].clientX;
+    touchStartTime = performance.now();
+  }, { passive: true });
+
+  document.getElementById("viewport").addEventListener("touchend", e => {
+    const dx = e.changedTouches[0].clientX - touchStartX;
+    const dt = performance.now() - touchStartTime;
+    if (dt < SWIPE_MAX_TIME && Math.abs(dx) > SWIPE_THRESHOLD) {
+      controlAction(dx > 0 ? "previous" : "next");
+    }
+  }, { passive: true });
 
   // ── Prevent all image/element dragging ──
   document.addEventListener("dragstart", e => e.preventDefault());

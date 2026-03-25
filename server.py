@@ -10,6 +10,7 @@ token, no user login needed).
 import json
 import os
 import socket
+import subprocess
 import time
 import requests
 from flask import Flask, request, render_template, jsonify
@@ -176,6 +177,42 @@ def read_playback_state():
     }
 
 
+def control_playback(action):
+    """Send playback control via D-Bus MPRIS to Raspotify."""
+    mpris_methods = {
+        "next": "Next",
+        "previous": "Previous",
+        "play-pause": "PlayPause",
+    }
+    method = mpris_methods.get(action)
+    if not method:
+        return False, "Unknown action"
+
+    try:
+        result = subprocess.run(
+            [
+                "dbus-send", "--system", "--type=method_call",
+                "--dest=org.mpris.MediaPlayer2.raspotify",
+                "/org/mpris/MediaPlayer2",
+                f"org.mpris.MediaPlayer2.Player.{method}",
+            ],
+            capture_output=True, text=True, timeout=3,
+        )
+        if result.returncode == 0:
+            return True, "ok"
+        # Fallback to playerctl
+        playerctl_action = action if action != "play-pause" else "play-pause"
+        result = subprocess.run(
+            ["playerctl", playerctl_action],
+            capture_output=True, text=True, timeout=3,
+        )
+        return result.returncode == 0, result.stderr.strip() or "ok"
+    except FileNotFoundError:
+        return False, "dbus-send/playerctl not found"
+    except Exception as e:
+        return False, str(e)
+
+
 # ── UI routes ────────────────────────────────────────────────
 
 @app.route("/")
@@ -198,6 +235,17 @@ def now_playing():
     if state is None:
         return "", 204  # No content — nothing playing
     return jsonify(state)
+
+
+@app.route("/api/control/<action>", methods=["POST"])
+def control(action):
+    """Control playback via D-Bus MPRIS (next, previous, play-pause)."""
+    if action not in ("next", "previous", "play-pause"):
+        return jsonify({"error": "Invalid action"}), 400
+    ok, msg = control_playback(action)
+    if ok:
+        return jsonify({"status": "ok"})
+    return jsonify({"error": msg}), 500
 
 
 @app.route("/api/qr")
