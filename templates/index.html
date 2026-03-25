@@ -326,6 +326,18 @@
     text-shadow: 0 1px 6px rgba(0,0,0,0.9);
   }
   #qr-label.visible { opacity: 1; }
+
+  /* ── Screen dimmer (saves display after extended idle) ── */
+  #dimmer {
+    position: absolute;
+    inset: 0;
+    background: #000;
+    z-index: 50;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 3s ease-in-out;
+  }
+  #dimmer.dim { opacity: 0.85; }
 </style>
 </head>
 <body>
@@ -376,6 +388,9 @@
 
   <!-- Outer rim depth shadow — creates 3D recessed look -->
   <div id="rim-shadow"></div>
+
+  <!-- Screen dimmer — fades to near-black after extended idle -->
+  <div id="dimmer"></div>
 </div>
 
 <script>
@@ -412,6 +427,7 @@
   const skipPrev   = $("skip-prev");
   const skipNext   = $("skip-next");
   const pauseBtn   = $("pause-btn");
+  const dimmer     = $("dimmer");
 
   // Progress ring constants (canvas is 296x296 = 2x the CSS size for retina)
   const RING_CX = 148;
@@ -442,6 +458,8 @@
   let pausedSince = 0;
   let qrOverlayVisible = false;
   let qrMatrix = null;
+  let screenDimmed = false;
+  const DIM_DELAY = 5 * 60 * 1000; // 5 minutes after QR appears
 
   // Lyrics state
   let lyricsLines = [];      // [{time: ms, text: ""}, ...]
@@ -643,6 +661,16 @@
       qrOverlay.classList.remove("visible");
       qrLabel.classList.remove("visible");
       qrOverlayVisible = false;
+    }
+
+    // --- Screen dim after 5 min of QR visible ---
+    const shouldDim = qrOverlayVisible && timePaused >= 30000 + DIM_DELAY;
+    if (shouldDim && !screenDimmed) {
+      dimmer.classList.add("dim");
+      screenDimmed = true;
+    } else if (!shouldDim && screenDimmed) {
+      dimmer.classList.remove("dim");
+      screenDimmed = false;
     }
   }
 
