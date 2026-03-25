@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
-"""Flask server — local metadata via Raspotify onevent + Spotify client credentials.
+"""Flask server — Spotify Connect display with QR-based user takeover.
 
-No user OAuth required. Raspotify's --onevent writes playback state to
-/tmp/spotify-state.json. This server reads that state and enriches it with
-track metadata fetched via the Spotify client credentials flow (app-level
-token, no user login needed).
+Display: Raspotify's --onevent writes playback state to /tmp/spotify-state.json.
+Track metadata is enriched via Spotify client credentials (no user login needed).
+
+Controls: Users scan the QR code → OAuth login → their refresh token is stored.
+The Pi's touch controls (skip/pause) use that token via Spotify Web API.
+When a new user scans, their token replaces the previous one.
 """
 
 import json
 import os
 import socket
-import subprocess
 import time
+import urllib.parse
 import requests
-from flask import Flask, request, render_template, jsonify
+from flask import Flask, request, render_template, jsonify, redirect
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -21,13 +23,17 @@ app.secret_key = os.urandom(24)
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 STATE_FILE = "/tmp/spotify-state.json"
 
+SPOTIFY_AUTH_URL = "https://accounts.spotify.com/authorize"
 SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
 SPOTIFY_API_BASE = "https://api.spotify.com/v1"
+SCOPES = "user-modify-playback-state user-read-playback-state"
 
 # ── In-memory caches ────────────────────────────────────────
 
 _client_token = None
 _client_token_expiry = 0
+_user_token = None
+_user_token_expiry = 0
 _track_cache = {}  # track_id -> {name, artists, album, images, duration_ms}
 
 
@@ -177,38 +183,80 @@ def read_playback_state():
     }
 
 
-def control_playback(action):
-    """Send playback control via D-Bus MPRIS to Raspotify."""
-    mpris_methods = {
-        "next": "Next",
-        "previous": "Previous",
-        "play-pause": "PlayPause",
-    }
-    method = mpris_methods.get(action)
-    if not method:
-        return False, "Unknown action"
+def get_user_token():
+    """Get a user-level Spotify token using stored refresh_token."""
+    global _user_token, _user_token_expiry
+
+    if _user_token and _user_token_expiry > time.time() + 60:
+        return _user_token
+
+    config = load_config()
+    refresh_token = config.get("refresh_token")
+    if not refresh_token:
+        return None
+
+    client_id = config.get("client_id", "")
+    client_secret = config.get("client_secret", "")
 
     try:
-        result = subprocess.run(
-            [
-                "dbus-send", "--system", "--type=method_call",
-                "--dest=org.mpris.MediaPlayer2.raspotify",
-                "/org/mpris/MediaPlayer2",
-                f"org.mpris.MediaPlayer2.Player.{method}",
-            ],
-            capture_output=True, text=True, timeout=3,
-        )
-        if result.returncode == 0:
+        resp = requests.post(SPOTIFY_TOKEN_URL, data={
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+        }, auth=(client_id, client_secret), timeout=5)
+
+        if resp.status_code != 200:
+            print(f"User token refresh error: {resp.status_code}")
+            return None
+
+        data = resp.json()
+        _user_token = data["access_token"]
+        _user_token_expiry = time.time() + data.get("expires_in", 3600)
+
+        # Store new refresh token if rotated
+        if "refresh_token" in data and data["refresh_token"] != refresh_token:
+            config["refresh_token"] = data["refresh_token"]
+            save_config(config)
+
+        return _user_token
+    except Exception as e:
+        print(f"User token refresh failed: {e}")
+        return None
+
+
+def save_config(config):
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(config, f, indent=2)
+
+
+def control_playback(action):
+    """Control playback via Spotify Web API (requires user token)."""
+    token = get_user_token()
+    if not token:
+        return False, "No user token — visit /login to authorize controls"
+
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        if action == "next":
+            r = requests.post(f"{SPOTIFY_API_BASE}/me/player/next", headers=headers, timeout=5)
+        elif action == "previous":
+            r = requests.post(f"{SPOTIFY_API_BASE}/me/player/previous", headers=headers, timeout=5)
+        elif action == "play-pause":
+            # Check current state to toggle
+            state_resp = requests.get(f"{SPOTIFY_API_BASE}/me/player", headers=headers, timeout=5)
+            if state_resp.status_code == 200:
+                is_playing = state_resp.json().get("is_playing", False)
+                if is_playing:
+                    r = requests.put(f"{SPOTIFY_API_BASE}/me/player/pause", headers=headers, timeout=5)
+                else:
+                    r = requests.put(f"{SPOTIFY_API_BASE}/me/player/play", headers=headers, timeout=5)
+            else:
+                return False, f"Could not read player state: {state_resp.status_code}"
+        else:
+            return False, "Unknown action"
+
+        if r.status_code in (200, 202, 204):
             return True, "ok"
-        # Fallback to playerctl
-        playerctl_action = action if action != "play-pause" else "play-pause"
-        result = subprocess.run(
-            ["playerctl", playerctl_action],
-            capture_output=True, text=True, timeout=3,
-        )
-        return result.returncode == 0, result.stderr.strip() or "ok"
-    except FileNotFoundError:
-        return False, "dbus-send/playerctl not found"
+        return False, f"Spotify API error: {r.status_code}"
     except Exception as e:
         return False, str(e)
 
@@ -226,6 +274,56 @@ def connect():
     return render_template("connect.html")
 
 
+@app.route("/login")
+def login():
+    """One-time OAuth to enable playback controls (skip/pause)."""
+    config = load_config()
+    client_id = config.get("client_id", "")
+    # Build redirect URI from request
+    redirect_uri = request.url_root.rstrip("/") + "/callback"
+    params = urllib.parse.urlencode({
+        "client_id": client_id,
+        "response_type": "code",
+        "redirect_uri": redirect_uri,
+        "scope": SCOPES,
+    })
+    return redirect(f"{SPOTIFY_AUTH_URL}?{params}")
+
+
+@app.route("/callback")
+def callback():
+    """OAuth callback — stores refresh token for playback controls."""
+    code = request.args.get("code")
+    error = request.args.get("error")
+    if error or not code:
+        return f"Authorization failed: {error or 'no code'}", 400
+
+    config = load_config()
+    redirect_uri = request.url_root.rstrip("/") + "/callback"
+
+    try:
+        resp = requests.post(SPOTIFY_TOKEN_URL, data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect_uri,
+        }, auth=(config["client_id"], config["client_secret"]), timeout=10)
+
+        if resp.status_code != 200:
+            return f"Token exchange failed: {resp.status_code}", 500
+
+        data = resp.json()
+        config["refresh_token"] = data["refresh_token"]
+        save_config(config)
+
+        global _user_token, _user_token_expiry
+        _user_token = data["access_token"]
+        _user_token_expiry = time.time() + data.get("expires_in", 3600)
+
+        return redirect("/connect?auth=ok")
+    except Exception as e:
+        return f"Error: {e}", 500
+
+
 # ── API routes ───────────────────────────────────────────────
 
 @app.route("/api/now-playing")
@@ -239,7 +337,7 @@ def now_playing():
 
 @app.route("/api/control/<action>", methods=["POST"])
 def control(action):
-    """Control playback via D-Bus MPRIS (next, previous, play-pause)."""
+    """Control playback via Spotify Web API (next, previous, play-pause)."""
     if action not in ("next", "previous", "play-pause"):
         return jsonify({"error": "Invalid action"}), 400
     ok, msg = control_playback(action)

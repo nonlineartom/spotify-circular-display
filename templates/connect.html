@@ -27,6 +27,24 @@
     text-align: center;
   }
 
+  .check-icon {
+    width: 64px; height: 64px;
+    border-radius: 50%;
+    background: #1DB954;
+    margin: 0 auto 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .check-icon svg {
+    width: 32px; height: 32px;
+    fill: none;
+    stroke: #000;
+    stroke-width: 3;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
   .vinyl-icon {
     width: 80px;
     height: 80px;
@@ -116,42 +134,81 @@
   }
 
   .spotify-green { color: #1DB954; }
+
+  .hidden { display: none; }
 </style>
 </head>
 <body>
   <div class="card">
-    <div class="vinyl-icon"></div>
-    <h1>Play on <span class="spotify-green">Pi Display</span></h1>
-    <p class="subtitle">No account setup needed</p>
+    <!-- Success state (after OAuth) -->
+    <div id="success" class="hidden">
+      <div class="check-icon">
+        <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+      </div>
+      <h1><span class="spotify-green">Connected!</span></h1>
+      <p class="subtitle">You're now controlling Pi Display</p>
 
-    <ol class="steps">
-      <li>
-        <div class="step-text">
-          Open <strong>Spotify</strong> on your phone or computer
-        </div>
-      </li>
-      <li>
-        <div class="step-text">
-          Tap the <strong>devices icon</strong>
-          <br><span class="dim">Bottom of the now-playing screen</span>
-        </div>
-      </li>
-      <li>
-        <div class="step-text">
-          Select <strong class="spotify-green">Pi Display</strong>
-          <br><span class="dim">It appears automatically on your network</span>
-        </div>
-      </li>
-      <li>
-        <div class="step-text">
-          <strong>Play music</strong> &mdash; the display updates instantly
-        </div>
-      </li>
-    </ol>
+      <ol class="steps">
+        <li>
+          <div class="step-text">
+            Open <strong>Spotify</strong> and select <strong class="spotify-green">Pi Display</strong> as your device
+          </div>
+        </li>
+        <li>
+          <div class="step-text">
+            <strong>Play music</strong> &mdash; the display shows your artwork and lyrics
+          </div>
+        </li>
+        <li>
+          <div class="step-text">
+            Use the <strong>touch controls</strong> on the display to skip or pause
+          </div>
+        </li>
+      </ol>
+    </div>
+
+    <!-- Default state (instructions) -->
+    <div id="instructions">
+      <div class="vinyl-icon"></div>
+      <h1>Play on <span class="spotify-green">Pi Display</span></h1>
+      <p class="subtitle">Scan the QR code on the display to connect</p>
+
+      <ol class="steps">
+        <li>
+          <div class="step-text">
+            Open <strong>Spotify</strong> on your phone or computer
+          </div>
+        </li>
+        <li>
+          <div class="step-text">
+            Tap the <strong>devices icon</strong>
+            <br><span class="dim">Bottom of the now-playing screen</span>
+          </div>
+        </li>
+        <li>
+          <div class="step-text">
+            Select <strong class="spotify-green">Pi Display</strong>
+            <br><span class="dim">It appears automatically on your network</span>
+          </div>
+        </li>
+        <li>
+          <div class="step-text">
+            <strong>Play music</strong> &mdash; the display updates instantly
+          </div>
+        </li>
+      </ol>
+    </div>
 
     <p class="footer">
       Spotify Premium required for Spotify Connect playback
     </p>
   </div>
+
+  <script>
+    if (new URLSearchParams(location.search).get('auth') === 'ok') {
+      document.getElementById('success').classList.remove('hidden');
+      document.getElementById('instructions').classList.add('hidden');
+    }
+  </script>
 </body>
 </html>

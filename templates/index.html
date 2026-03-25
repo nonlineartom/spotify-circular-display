@@ -372,7 +372,7 @@
 
   <!-- QR overlay (vinyl-styled, shown after 30s pause or idle) -->
   <canvas id="qr-overlay" width="1080" height="1080"></canvas>
-  <div id="qr-label">Scan to play</div>
+  <div id="qr-label">Scan to connect</div>
 
   <!-- Outer rim depth shadow — creates 3D recessed look -->
   <div id="rim-shadow"></div>
@@ -940,7 +940,7 @@
       const resp = await fetch("/api/info");
       if (!resp.ok) return;
       const data = await resp.json();
-      const matrix = await QR.encode(data.url + "/connect");
+      const matrix = await QR.encode(data.url + "/login");
       if (matrix) {
         qrMatrix = matrix;
         drawVinylQR(qrMatrix);
