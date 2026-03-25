@@ -184,6 +184,30 @@ def transfer():
     return spotify_request("PUT", "/me/player", json=data)
 
 
+@app.route("/api/qr")
+def qr_matrix():
+    """Generate a QR code matrix (2D boolean array) for the given text."""
+    text = request.args.get("text", "")
+    if not text:
+        return jsonify({"error": "Missing text parameter"}), 400
+    try:
+        import qrcode
+        qr = qrcode.QRCode(
+            version=None,  # auto-size
+            error_correction=qrcode.constants.ERROR_CORRECT_M,
+            box_size=1,
+            border=0,
+        )
+        qr.add_data(text)
+        qr.make(fit=True)
+        matrix = qr.get_matrix()
+        # Convert to list of lists of booleans
+        return jsonify([[bool(cell) for cell in row] for row in matrix])
+    except ImportError:
+        # Fallback: generate via qrcode not installed message
+        return jsonify({"error": "qrcode library not installed"}), 500
+
+
 @app.route("/api/info")
 def info():
     """Return server info including local IP for QR code generation."""
@@ -224,4 +248,5 @@ def lyrics():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
