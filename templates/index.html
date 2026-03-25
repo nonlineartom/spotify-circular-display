@@ -303,42 +303,18 @@
     color: rgba(255,255,255,0.5);
   }
 
-  /* ── Idle screen ── */
-  #idle {
+  /* ── QR overlay (vinyl-styled, shown on pause/idle) ── */
+  #qr-overlay {
     position: absolute;
     inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 50;
-    transition: opacity 0.5s;
-  }
-  #idle.hidden { opacity: 0; pointer-events: none; }
-
-  #idle-content {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 16px;
-  }
-
-  #qr-canvas {
+    width: 100%; height: 100%;
     border-radius: 50%;
-    background: #fff;
-    padding: 0;
-    box-shadow: 0 0 40px rgba(255,255,255,0.08);
+    z-index: 35;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 1.5s ease-in-out;
   }
-
-  #idle-label {
-    font-size: 24px;
-    font-weight: 400;
-    color: #ddd;
-  }
-  #idle-sublabel {
-    font-size: 16px;
-    font-weight: 300;
-    color: #888;
-  }
+  #qr-overlay.visible { opacity: 1; }
 </style>
 </head>
 <body>
@@ -409,14 +385,8 @@
     </div>
   </div>
 
-  <!-- Idle screen -->
-  <div id="idle">
-    <div id="idle-content">
-      <canvas id="qr-canvas" width="280" height="280"></canvas>
-      <div id="idle-label">Scan to connect</div>
-      <div id="idle-sublabel">Pi Display</div>
-    </div>
-  </div>
+  <!-- QR overlay (vinyl-styled, shown after 30s pause or idle) -->
+  <canvas id="qr-overlay" width="1080" height="1080"></canvas>
 </div>
 
 <script>
@@ -441,7 +411,7 @@
   const $ = id => document.getElementById(id);
   const vinyl      = $("vinyl");
   const artworkEl  = $("artwork");
-  const idle       = $("idle");
+  const qrOverlay  = $("qr-overlay");
   const pillTrack  = $("pill-track");
   const pillArtist = $("pill-artist");
   const pillTime   = $("pill-time");
@@ -474,6 +444,11 @@
     volume: 50,
     lastUpdate: performance.now(),
   };
+
+  // QR overlay state
+  let pausedSince = 0;
+  let qrOverlayVisible = false;
+  let qrMatrix = null;
 
   // Lyrics state
   let lyricsLines = [];      // [{time: ms, text: ""}, ...]
@@ -663,6 +638,17 @@
 
     // --- Lyrics ---
     updateLyrics(now);
+
+    // --- QR overlay (show after 30s pause, or immediately when idle) ---
+    const timePaused = pausedSince > 0 ? now - pausedSince : 0;
+    const showQR = !state.trackId || (!state.isPlaying && timePaused >= 30000);
+    if (showQR && !qrOverlayVisible) {
+      qrOverlay.classList.add("visible");
+      qrOverlayVisible = true;
+    } else if (!showQR && qrOverlayVisible) {
+      qrOverlay.classList.remove("visible");
+      qrOverlayVisible = false;
+    }
   }
 
   function updateProgressRing(now) {
@@ -706,12 +692,12 @@
   async function poll() {
     const data = await api("GET", "/now-playing");
     if (!data || !data.item) {
-      idle.classList.remove("hidden");
       state.trackId = null;
+      state.isPlaying = false;
+      if (!pausedSince) pausedSince = performance.now();
       setSpinTarget(0);
       return;
     }
-    idle.classList.add("hidden");
 
     const track = data.item;
     const newId = track.id;
@@ -757,6 +743,13 @@
     state.progressMs = data.progress_ms || 0;
     state.durationMs = track.duration_ms || 1;
     state.lastUpdate = performance.now();
+
+    // Pause tracking for QR overlay
+    if (!state.isPlaying && !pausedSince) {
+      pausedSince = performance.now();
+    } else if (state.isPlaying) {
+      pausedSince = 0;
+    }
 
     // Play/pause icons
     iconPlay.style.display  = state.isPlaying ? "none" : "block";
@@ -1026,17 +1019,114 @@
       return Array.from(msg.slice(data.length));
     }
 
-    return { generate };
+    return { generate, encode: encodeQR };
   })();
 
-  // ── Idle screen QR ──
-  async function initIdleQR() {
+  // ── Vinyl-styled QR renderer ──
+  // Renders QR data modules as arc segments along concentric grooves,
+  // creating a vinyl-record aesthetic while remaining scannable.
+  function drawVinylQR(matrix) {
+    const canvas = qrOverlay;
+    const ctx = canvas.getContext("2d");
+    const W = 1080;
+    const C = W / 2;
+    const N = matrix.length; // 25
+    const qrSize = 750;
+    const cell = qrSize / N; // 30px per module
+    const off = (W - qrSize) / 2; // 165px offset
+
+    ctx.clearRect(0, 0, W, W);
+    ctx.save();
+
+    // Circular clip (matches viewport)
+    ctx.beginPath();
+    ctx.arc(C, C, C - 1, 0, Math.PI * 2);
+    ctx.clip();
+
+    // Semi-transparent dark base — artwork bleeds through
+    ctx.fillStyle = "rgba(0, 0, 0, 0.65)";
+    ctx.fillRect(0, 0, W, W);
+
+    // Concentric groove texture across entire surface
+    for (let r = 8; r < C; r += 5.5) {
+      ctx.beginPath();
+      ctx.arc(C, C, r, 0, Math.PI * 2);
+      ctx.strokeStyle = "rgba(255,255,255," + (0.025 + (Math.floor(r) % 17 === 0 ? 0.015 : 0)) + ")";
+      ctx.lineWidth = 0.5;
+      ctx.stroke();
+    }
+
+    // Subtle vinyl shine (diagonal highlight)
+    const shine = ctx.createLinearGradient(0, 0, W, W);
+    shine.addColorStop(0, "rgba(255,255,255,0.05)");
+    shine.addColorStop(0.35, "rgba(255,255,255,0)");
+    shine.addColorStop(0.65, "rgba(255,255,255,0.03)");
+    shine.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = shine;
+    ctx.fillRect(0, 0, W, W);
+
+    // Draw QR modules
+    for (let row = 0; row < N; row++) {
+      for (let col = 0; col < N; col++) {
+        if (!matrix[row][col]) continue;
+
+        const mx = off + col * cell + cell / 2;
+        const my = off + row * cell + cell / 2;
+
+        // Finder patterns (must stay square-ish for scanner detection)
+        const inFinder = (row <= 6 && col <= 6) ||
+                         (row <= 6 && col >= N - 7) ||
+                         (row >= N - 7 && col <= 6);
+
+        if (inFinder) {
+          ctx.fillStyle = "rgba(255,255,255,0.93)";
+          ctx.beginPath();
+          ctx.roundRect(off + col * cell + 1, off + row * cell + 1, cell - 2, cell - 2, 3);
+          ctx.fill();
+        } else {
+          // Data & alignment modules → groove arc segments
+          const dx = mx - C;
+          const dy = my - C;
+          const dist = Math.hypot(dx, dy);
+
+          if (dist < 4) {
+            // Center dot
+            ctx.beginPath();
+            ctx.arc(C, C, cell * 0.38, 0, Math.PI * 2);
+            ctx.fillStyle = "rgba(255,255,255,0.88)";
+            ctx.fill();
+          } else {
+            // Arc segment following the concentric groove at this radius
+            const angle = Math.atan2(dy, dx);
+            const span = (cell * 0.78) / dist;
+            ctx.beginPath();
+            ctx.arc(C, C, dist, angle - span / 2, angle + span / 2);
+            ctx.strokeStyle = "rgba(255,255,255,0.88)";
+            ctx.lineWidth = cell * 0.55;
+            ctx.lineCap = "round";
+            ctx.stroke();
+          }
+        }
+      }
+    }
+
+    // Center spindle accent
+    ctx.beginPath();
+    ctx.arc(C, C, 6, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(100,100,100,0.5)";
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  // ── Init QR overlay ──
+  async function initQR() {
     try {
       const resp = await fetch("/api/info");
       if (!resp.ok) return;
       const data = await resp.json();
-      const qrCanvas = $("qr-canvas");
-      QR.generate(data.url + "/login", qrCanvas, 280);
+      qrMatrix = QR.encode(data.url + "/login");
+      drawVinylQR(qrMatrix);
     } catch(e) {}
   }
 
@@ -1045,7 +1135,7 @@
   requestAnimationFrame(animate);
   poll();
   setInterval(poll, 2000);
-  initIdleQR();
+  initQR();
 
 })();
 </script>
