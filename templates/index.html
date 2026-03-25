@@ -71,6 +71,9 @@
     border-radius: 50%;
     will-change: transform;
     transition: none;
+    -webkit-user-drag: none;
+    -webkit-user-select: none;
+    user-select: none;
   }
 
   /* Album art fills the vinyl */
@@ -1017,6 +1020,9 @@
       }
     } catch(e) { console.error("QR init error:", e); }
   }
+
+  // ── Prevent all image/element dragging ──
+  document.addEventListener("dragstart", e => e.preventDefault());
 
   // ── Init ──
   drawGrooves();
