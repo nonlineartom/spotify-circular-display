@@ -160,18 +160,18 @@
     pointer-events: auto;
   }
 
-  /* Dark gradient scrim behind player text for readability on any artwork */
-  #pill::before {
-    content: '';
+  /* Full-viewport scrim layer for text readability on any artwork.
+     Uses a single overlay with top + bottom gradient zones so there
+     are no clipped pseudo-element edges. */
+  #text-scrim {
     position: absolute;
-    bottom: -60px;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 900px;
-    height: 400px;
-    background: radial-gradient(ellipse at center, rgba(0,0,0,0.6) 0%, rgba(0,0,0,0.3) 25%, rgba(0,0,0,0.1) 50%, rgba(0,0,0,0.02) 75%, transparent 100%);
+    inset: 0;
+    border-radius: 50%;
     pointer-events: none;
-    z-index: -1;
+    z-index: 22;
+    background:
+      radial-gradient(ellipse 80% 35% at 50% 12%, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0.15) 40%, transparent 100%),
+      radial-gradient(ellipse 80% 30% at 50% 92%, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0.2) 40%, transparent 100%);
   }
 
   /* Heavy text shadow for readability on both light and dark artwork */
@@ -225,37 +225,25 @@
   /* ── Lyrics overlay (top half) ── */
   #lyrics-wrap {
     position: absolute;
-    top: 80px;
+    top: -20px;
     left: 50%;
     transform: translateX(-50%);
-    width: 600px;
-    height: 340px;
+    width: 800px;
+    height: 560px;
+    padding: 80px 50px;
     z-index: 28;
     pointer-events: none;
     overflow: hidden;
     opacity: 0;
     transition: opacity 0.6s;
-    /* Fade edges top and bottom */
+    /* Oversized container with generous padding so text-shadows
+       never reach the box edge. Mask feathers well within bounds. */
     -webkit-mask-image: linear-gradient(to bottom,
-      transparent 0%, white 15%, white 80%, transparent 100%);
+      transparent 0%, transparent 10%, white 25%, white 55%, transparent 85%, transparent 100%);
     mask-image: linear-gradient(to bottom,
-      transparent 0%, white 15%, white 80%, transparent 100%);
+      transparent 0%, transparent 10%, white 25%, white 55%, transparent 85%, transparent 100%);
   }
   #lyrics-wrap.visible { opacity: 1; }
-
-  /* Dark scrim behind lyrics for readability on light artwork */
-  #lyrics-wrap::before {
-    content: '';
-    position: absolute;
-    top: -40px;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 900px;
-    height: 130%;
-    background: radial-gradient(ellipse at center, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0.2) 25%, rgba(0,0,0,0.06) 55%, rgba(0,0,0,0.01) 80%, transparent 100%);
-    pointer-events: none;
-    z-index: -1;
-  }
 
   #lyrics-inner {
     display: flex;
@@ -272,7 +260,7 @@
     padding: 6px 20px;
     color: rgba(255,255,255,0.35);
     transition: color 0.4s, transform 0.4s;
-    text-shadow: 0 1px 6px rgba(0,0,0,0.9), 0 0 16px rgba(0,0,0,0.6);
+    text-shadow: 0 1px 4px rgba(0,0,0,0.8), 0 0 8px rgba(0,0,0,0.4);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -331,6 +319,9 @@
 
   <!-- Spindle (static, doesn't rotate) -->
   <div id="spindle"></div>
+
+  <!-- Text readability scrim — smooth gradients at top and bottom -->
+  <div id="text-scrim"></div>
 
   <!-- Static overlay layer -->
   <div id="static-layer">
