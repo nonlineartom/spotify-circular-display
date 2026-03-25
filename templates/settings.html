@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Settings — Spotify Vinyl Display</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    min-height: 100vh;
+    font-family: 'Montserrat', sans-serif;
+    background: #000;
+    color: #fff;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .container {
+    max-width: 480px;
+    margin: 0 auto;
+    padding: 40px 24px 60px;
+  }
+
+  .back-link {
+    display: inline-block;
+    margin-bottom: 24px;
+    color: #888;
+    text-decoration: none;
+    font-size: 14px;
+    font-weight: 400;
+    transition: color 0.2s;
+  }
+  .back-link:hover { color: #fff; }
+  .back-link::before { content: "\2190\00a0"; }
+
+  h1 {
+    font-size: 32px;
+    font-weight: 600;
+    margin-bottom: 36px;
+    letter-spacing: -0.5px;
+  }
+
+  /* ── Form fields ── */
+  .field {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 0;
+    border-bottom: 1px solid #1a1a1a;
+  }
+  .field:first-child { border-top: 1px solid #1a1a1a; }
+
+  .field-label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .field-label span {
+    font-size: 15px;
+    font-weight: 400;
+  }
+  .field-hint {
+    font-size: 12px;
+    font-weight: 300;
+    color: #666;
+  }
+
+  /* ── Toggle switch ── */
+  .toggle {
+    position: relative;
+    width: 48px;
+    height: 28px;
+    flex-shrink: 0;
+  }
+  .toggle input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+    position: absolute;
+  }
+  .toggle-track {
+    position: absolute;
+    inset: 0;
+    background: #333;
+    border-radius: 14px;
+    cursor: pointer;
+    transition: background 0.25s;
+  }
+  .toggle-track::after {
+    content: '';
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: #fff;
+    transition: transform 0.25s;
+  }
+  .toggle input:checked + .toggle-track {
+    background: #1db954;
+  }
+  .toggle input:checked + .toggle-track::after {
+    transform: translateX(20px);
+  }
+
+  /* ── Number input ── */
+  .num-input {
+    width: 90px;
+    padding: 8px 12px;
+    background: #111;
+    border: 1px solid #333;
+    border-radius: 8px;
+    color: #fff;
+    font-family: 'Montserrat', sans-serif;
+    font-size: 14px;
+    text-align: right;
+    outline: none;
+    transition: border-color 0.2s;
+    flex-shrink: 0;
+    -moz-appearance: textfield;
+  }
+  .num-input::-webkit-inner-spin-button,
+  .num-input::-webkit-outer-spin-button {
+    opacity: 1;
+  }
+  .num-input:focus {
+    border-color: #1db954;
+  }
+
+  /* ── Save button ── */
+  .btn-save {
+    display: block;
+    width: 100%;
+    margin-top: 36px;
+    padding: 14px;
+    background: #1db954;
+    border: none;
+    border-radius: 10px;
+    color: #fff;
+    font-family: 'Montserrat', sans-serif;
+    font-size: 16px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.1s;
+  }
+  .btn-save:hover { background: #1ed760; }
+  .btn-save:active { transform: scale(0.98); }
+  .btn-save:disabled {
+    background: #333;
+    cursor: not-allowed;
+  }
+
+  /* ── Toast ── */
+  .toast {
+    position: fixed;
+    bottom: 32px;
+    left: 50%;
+    transform: translateX(-50%) translateY(80px);
+    padding: 12px 24px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 400;
+    pointer-events: none;
+    opacity: 0;
+    transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1),
+                opacity 0.35s;
+    z-index: 100;
+  }
+  .toast.visible {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  .toast.success { background: #1db954; color: #fff; }
+  .toast.error   { background: #e22134; color: #fff; }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <a href="/" class="back-link">Back to display</a>
+  <h1>Settings</h1>
+
+  <form id="settings-form" autocomplete="off">
+    <!-- Screensaver enabled -->
+    <div class="field">
+      <div class="field-label">
+        <span>Screensaver enabled</span>
+        <span class="field-hint">Dim the display after inactivity</span>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="screensaver_enabled" checked>
+        <span class="toggle-track"></span>
+      </label>
+    </div>
+
+    <!-- Screensaver timeout -->
+    <div class="field">
+      <div class="field-label">
+        <span>Screensaver timeout</span>
+        <span class="field-hint">Minutes of inactivity before screensaver</span>
+      </div>
+      <input type="number" class="num-input" id="screensaver_timeout"
+             value="10" min="1" max="60" step="1">
+    </div>
+
+    <!-- Lyrics enabled -->
+    <div class="field">
+      <div class="field-label">
+        <span>Lyrics enabled</span>
+        <span class="field-hint">Show synced lyrics when available</span>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="lyrics_enabled" checked>
+        <span class="toggle-track"></span>
+      </label>
+    </div>
+
+    <!-- Spin speed -->
+    <div class="field">
+      <div class="field-label">
+        <span>Spin speed</span>
+        <span class="field-hint">Vinyl rotation speed in RPM</span>
+      </div>
+      <input type="number" class="num-input" id="spin_speed"
+             value="33.333" min="1" max="78" step="0.001">
+    </div>
+
+    <!-- Volume step -->
+    <div class="field">
+      <div class="field-label">
+        <span>Volume step</span>
+        <span class="field-hint">Volume change per step (%)</span>
+      </div>
+      <input type="number" class="num-input" id="volume_step"
+             value="5" min="1" max="25" step="1">
+    </div>
+
+    <button type="submit" class="btn-save" id="btn-save">Save Settings</button>
+  </form>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(function() {
+  "use strict";
+
+  const FIELDS = [
+    { id: "screensaver_enabled", key: "screensaver_enabled", type: "bool" },
+    { id: "screensaver_timeout", key: "screensaver_timeout_minutes", type: "number" },
+    { id: "lyrics_enabled",      key: "lyrics_enabled",             type: "bool" },
+    { id: "spin_speed",          key: "spin_speed_rpm",              type: "number" },
+    { id: "volume_step",         key: "volume_step",                 type: "number" },
+  ];
+
+  const form  = document.getElementById("settings-form");
+  const toast = document.getElementById("toast");
+  const btn   = document.getElementById("btn-save");
+
+  let toastTimer = null;
+
+  function showToast(msg, ok) {
+    clearTimeout(toastTimer);
+    toast.textContent = msg;
+    toast.className = "toast " + (ok ? "success" : "error");
+    // Force reflow so transition replays
+    void toast.offsetWidth;
+    toast.classList.add("visible");
+    toastTimer = setTimeout(() => toast.classList.remove("visible"), 2500);
+  }
+
+  function populate(settings) {
+    for (const f of FIELDS) {
+      const el = document.getElementById(f.id);
+      if (!el) continue;
+      const val = settings[f.key];
+      if (val === undefined) continue;
+      if (f.type === "bool") {
+        el.checked = !!val;
+      } else {
+        el.value = val;
+      }
+    }
+  }
+
+  function collect() {
+    const out = {};
+    for (const f of FIELDS) {
+      const el = document.getElementById(f.id);
+      if (!el) continue;
+      if (f.type === "bool") {
+        out[f.key] = el.checked;
+      } else if (f.key === "volume_step" || f.key === "screensaver_timeout_minutes") {
+        out[f.key] = parseInt(el.value, 10);
+      } else {
+        out[f.key] = parseFloat(el.value);
+      }
+    }
+    return out;
+  }
+
+  // Load settings on page load
+  async function load() {
+    try {
+      const resp = await fetch("/api/settings");
+      if (resp.ok) {
+        const data = await resp.json();
+        populate(data);
+      }
+    } catch (e) {
+      // Use defaults already set in the HTML
+    }
+  }
+
+  // Save settings
+  async function save() {
+    btn.disabled = true;
+    btn.textContent = "Saving\u2026";
+    try {
+      const resp = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(collect()),
+      });
+      if (resp.ok) {
+        showToast("Settings saved", true);
+      } else {
+        const text = await resp.text();
+        showToast("Error: " + (text || resp.statusText), false);
+      }
+    } catch (e) {
+      showToast("Network error — could not save", false);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Save Settings";
+    }
+  }
+
+  form.addEventListener("submit", function(e) {
+    e.preventDefault();
+    save();
+  });
+
+  load();
+})();
+</script>
+</body>
+</html>

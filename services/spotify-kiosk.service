@@ -5,9 +5,9 @@ Wants=spotify-display.service
 
 [Service]
 Type=simple
-User=pi
+User=__DEPLOY_USER__
 Environment=DISPLAY=:0
-Environment=XAUTHORITY=/home/pi/.Xauthority
+Environment=XAUTHORITY=__DEPLOY_HOME__/.Xauthority
 ExecStartPre=/bin/sleep 5
 ExecStart=/usr/bin/chromium-browser \
     --noerrdialogs \

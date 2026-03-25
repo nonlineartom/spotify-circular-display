@@ -1,5 +1,6 @@
 # Secrets & tokens
 config.json
+settings.json
 
 # Python
 __pycache__/

@@ -5,9 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=pi
-WorkingDirectory=/home/pi/spotify-pi
-ExecStart=/home/pi/spotify-pi/venv/bin/python server.py
+User=__DEPLOY_USER__
+WorkingDirectory=__DEPLOY_DIR__
+ExecStart=__DEPLOY_DIR__/venv/bin/python server.py
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1

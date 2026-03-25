@@ -2,8 +2,13 @@
 # ─────────────────────────────────────────────────────────────
 # Spotify Pi Display — One-shot setup script
 # Run on the Pi:  cd /home/pi/spotify-pi && chmod +x setup.sh && ./setup.sh
+# Override defaults: DEPLOY_USER=myuser DEPLOY_DIR=/opt/spotify ./setup.sh
 # ─────────────────────────────────────────────────────────────
 set -euo pipefail
+
+DEPLOY_USER="${DEPLOY_USER:-$(whoami)}"
+DEPLOY_HOME="${DEPLOY_HOME:-$(eval echo ~$DEPLOY_USER)}"
+DEPLOY_DIR="${DEPLOY_DIR:-$DEPLOY_HOME/spotify-pi}"
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFIG="$PROJECT_DIR/config.json"
@@ -75,7 +80,11 @@ fi
 # ── 5. Install systemd services ─────────────────────────────
 step "Installing systemd services…"
 for svc in spotify-display spotify-buttons spotify-kiosk; do
-    sudo cp "$PROJECT_DIR/services/${svc}.service" /etc/systemd/system/
+    sed -e "s|__DEPLOY_DIR__|$DEPLOY_DIR|g" \
+        -e "s|__DEPLOY_USER__|$DEPLOY_USER|g" \
+        -e "s|__DEPLOY_HOME__|$DEPLOY_HOME|g" \
+        "$PROJECT_DIR/services/${svc}.service" \
+        | sudo tee /etc/systemd/system/${svc}.service > /dev/null
 done
 sudo systemctl daemon-reload
 sudo systemctl enable spotify-display spotify-buttons spotify-kiosk
@@ -110,7 +119,7 @@ fi
 sudo raspi-config nonint do_blanking 1 2>/dev/null || true
 
 # Auto-hide mouse cursor via unclutter (autostart)
-AUTOSTART_DIR="/home/pi/.config/lxsession/LXDE-pi"
+AUTOSTART_DIR="$DEPLOY_HOME/.config/lxsession/LXDE-pi"
 mkdir -p "$AUTOSTART_DIR"
 AUTOSTART_FILE="$AUTOSTART_DIR/autostart"
 if ! grep -q "unclutter" "$AUTOSTART_FILE" 2>/dev/null; then
