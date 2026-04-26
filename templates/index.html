@@ -49,6 +49,13 @@
     left: 0; right: 0;
     z-index: 18;
     pointer-events: none;
+    opacity: 1;
+    transition: opacity 0.35s ease;
+  }
+
+  #viewport.playing::before,
+  #viewport.playing::after {
+    opacity: 0;
   }
 
   #viewport::before {
@@ -199,30 +206,30 @@
     pointer-events: none;
   }
 
-  /* ── Player info (frosted glass) ── */
+  /* ── Player info ── */
   #pill {
     position: absolute;
     left: 50%;
-    bottom: 82px;
+    bottom: 96px;
     transform: translateX(-50%) translateY(12px);
-    width: var(--pill-w);
+    width: fit-content;
+    min-width: 318px;
+    max-width: min(560px, calc(100vw - 260px));
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
     align-items: center;
     z-index: 30;
     pointer-events: auto;
-    background:
-      linear-gradient(to bottom, rgba(255,255,255,0.075), rgba(255,255,255,0.02)),
-      rgba(0, 0, 0, 0.62);
-    -webkit-backdrop-filter: blur(28px) saturate(1.08);
-    backdrop-filter: blur(28px) saturate(1.08);
-    border: 1px solid rgba(255,255,255,0.11);
-    border-radius: var(--pill-r);
+    background: rgba(5, 7, 8, 0.78);
+    -webkit-backdrop-filter: blur(18px) saturate(1.02);
+    backdrop-filter: blur(18px) saturate(1.02);
+    border: 1px solid rgba(255,255,255,0.09);
+    border-radius: 8px;
     box-shadow:
-      0 22px 60px rgba(0,0,0,0.42),
-      inset 0 1px 0 rgba(255,255,255,0.14),
-      inset 0 -1px 0 rgba(0,0,0,0.55);
-    padding: 16px 34px 18px;
+      0 18px 42px rgba(0,0,0,0.46),
+      inset 0 1px 0 rgba(255,255,255,0.08);
+    padding: 15px 30px 17px;
     opacity: 0;
     transition: opacity 0.45s ease, transform 0.45s ease;
   }
@@ -243,7 +250,7 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: calc(var(--pill-w) - 68px);
+    max-width: min(500px, calc(100vw - 330px));
     text-align: center;
     padding-bottom: 2px;
     transition: opacity 0.28s ease, transform 0.36s ease, filter 0.36s ease;
@@ -257,7 +264,7 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: calc(var(--pill-w) - 92px);
+    max-width: min(470px, calc(100vw - 350px));
     text-align: center;
     transition: opacity 0.28s ease, transform 0.36s ease, filter 0.36s ease;
   }
@@ -276,6 +283,7 @@
 
   #time-row {
     width: 100%;
+    min-width: 258px;
     margin-top: 13px;
     display: grid;
     grid-template-columns: 48px 1fr 58px;
@@ -512,8 +520,8 @@
     transition: opacity 0.35s ease, transform 0.35s ease;
   }
   #dash-chrome.playing #dash-dock {
-    opacity: 0.58;
-    transform: translateX(-50%) translateY(6px) scale(0.96);
+    opacity: 0;
+    transform: translateX(-50%) translateY(26px) scale(0.92);
   }
   .dock-item {
     width: 42px;
@@ -997,6 +1005,7 @@
   }
 
   function setIdleVisible(visible) {
+    viewport.classList.toggle("playing", !visible);
     dashChrome.classList.toggle("playing", !visible);
     if (idleHomeVisible === visible) return;
     idleHomeVisible = visible;
