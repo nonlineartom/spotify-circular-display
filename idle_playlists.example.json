@@ -1,0 +1,40 @@
+{
+  "playlists": [
+    {
+      "title": "Today's Top Hits",
+      "subtitle": "Big room pop",
+      "uri": "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M",
+      "accent": "#4cc9f0"
+    },
+    {
+      "title": "Chill Hits",
+      "subtitle": "Soft focus",
+      "uri": "spotify:playlist:37i9dQZF1DX4WYpdgoIcn6",
+      "accent": "#80ed99"
+    },
+    {
+      "title": "All Out 80s",
+      "subtitle": "Classic colour",
+      "uri": "spotify:playlist:37i9dQZF1DX4UtSsGT1Sbe",
+      "accent": "#f72585"
+    },
+    {
+      "title": "Rock Classics",
+      "subtitle": "Guitar shelf",
+      "uri": "spotify:playlist:37i9dQZF1DWXRqgorJj26U",
+      "accent": "#f77f00"
+    },
+    {
+      "title": "Lo-Fi Beats",
+      "subtitle": "Low light",
+      "uri": "spotify:playlist:37i9dQZF1DWWQRwui0ExPn",
+      "accent": "#9b5de5"
+    },
+    {
+      "title": "Jazz Classics",
+      "subtitle": "Late set",
+      "uri": "spotify:playlist:37i9dQZF1DXbITWG1ZJKYt",
+      "accent": "#ffd166"
+    }
+  ]
+}

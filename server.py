@@ -21,6 +21,8 @@ app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+IDLE_PLAYLISTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "idle_playlists.json")
+IDLE_PLAYLISTS_EXAMPLE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "idle_playlists.example.json")
 STATE_FILE = "/tmp/spotify-state.json"
 GO_LIBRESPOT_API_BASE = os.environ.get("GO_LIBRESPOT_API_BASE", "http://127.0.0.1:3678").rstrip("/")
 
@@ -28,6 +30,7 @@ SPOTIFY_AUTH_URL = "https://accounts.spotify.com/authorize"
 SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
 SPOTIFY_API_BASE = "https://api.spotify.com/v1"
 SCOPES = "user-modify-playback-state user-read-playback-state"
+PLAYLIST_SCOPES = "playlist-read-private user-read-playback-state user-modify-playback-state"
 
 # Raspotify/librespot events can occasionally be missed during Wi-Fi drops or
 # Spotify handoffs. These guards keep an old "playing" event from looking alive
@@ -50,11 +53,47 @@ _client_token_expiry = 0
 _user_token = None
 _user_token_expiry = 0
 _track_cache = {}  # track_id -> {name, artists, album, images, duration_ms}
+_playlist_cache = {"loaded_at": 0, "items": []}
 
 
 def load_config():
     with open(CONFIG_FILE, "r") as f:
         return json.load(f)
+
+
+def load_idle_playlists():
+    """Load configured idle launcher playlists.
+
+    The local idle launcher is deliberately config driven so the display can work
+    without requiring guests to authenticate first.
+    """
+    global _playlist_cache
+    if _playlist_cache["items"] and time.time() - _playlist_cache["loaded_at"] < 30:
+        return _playlist_cache["items"]
+
+    source = IDLE_PLAYLISTS_FILE if os.path.exists(IDLE_PLAYLISTS_FILE) else IDLE_PLAYLISTS_EXAMPLE_FILE
+    try:
+        with open(source, "r") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        data = {"playlists": []}
+
+    playlists = []
+    for idx, item in enumerate(data.get("playlists", [])):
+        uri = item.get("uri", "")
+        if not uri.startswith("spotify:"):
+            continue
+        playlists.append({
+            "id": f"house-{idx}",
+            "title": item.get("title", "Playlist"),
+            "subtitle": item.get("subtitle", "House pick"),
+            "uri": uri,
+            "image": item.get("image", ""),
+            "accent": item.get("accent", "#ffffff"),
+        })
+
+    _playlist_cache = {"loaded_at": time.time(), "items": playlists}
+    return playlists
 
 
 def get_client_token():
@@ -393,6 +432,27 @@ def control_playback_local(action):
     return False, f"Local player API error: {resp.status_code}"
 
 
+def play_uri_local(uri):
+    """Start playback of a Spotify URI through go-librespot's local API."""
+    if not uri or not uri.startswith("spotify:"):
+        return False, "Invalid Spotify URI"
+
+    try:
+        resp = requests.post(
+            f"{GO_LIBRESPOT_API_BASE}/player/play",
+            json={"uri": uri},
+            timeout=2.5,
+        )
+    except requests.RequestException as e:
+        return False, f"Local player API unavailable: {e}"
+
+    if resp.status_code == 200:
+        return True, "ok"
+    if resp.status_code == 204:
+        return False, "Local player is not ready yet"
+    return False, f"Local player API error: {resp.status_code}"
+
+
 def control_playback_web_api(action):
     """Legacy Spotify Web API fallback (requires a stored user token)."""
     token = get_user_token()
@@ -452,18 +512,25 @@ def connect():
     return render_template("connect.html")
 
 
+@app.route("/join")
+def join():
+    """Phone-friendly entry point for future guest personalization."""
+    return render_template("join.html")
+
+
 @app.route("/login")
 def login():
     """Legacy one-time OAuth fallback for Spotify Web API controls."""
     config = load_config()
     client_id = config.get("client_id", "")
+    scope = PLAYLIST_SCOPES if request.args.get("playlist") else SCOPES
     # Build redirect URI from request
     redirect_uri = request.url_root.rstrip("/") + "/callback"
     params = urllib.parse.urlencode({
         "client_id": client_id,
         "response_type": "code",
         "redirect_uri": redirect_uri,
-        "scope": SCOPES,
+        "scope": scope,
     })
     return redirect(f"{SPOTIFY_AUTH_URL}?{params}")
 
@@ -577,6 +644,31 @@ def control(action):
     if ok:
         return jsonify({"status": "ok"})
     status = 503 if "unavailable" in msg.lower() or "no active" in msg.lower() else 502
+    return jsonify({"error": msg}), status
+
+
+@app.route("/api/idle/playlists")
+def idle_playlists():
+    """Return house playlists for the idle launcher."""
+    return jsonify({
+        "playlists": load_idle_playlists(),
+        "join_url": f"{get_public_base_url()}/join",
+    })
+
+
+@app.route("/api/idle/play", methods=["POST"])
+def idle_play():
+    """Start playback from an idle launcher card."""
+    data = request.get_json(silent=True) or {}
+    uri = data.get("uri", "")
+    allowed = {item["uri"] for item in load_idle_playlists()}
+    if uri not in allowed:
+        return jsonify({"error": "Playlist is not configured for this display"}), 400
+
+    ok, msg = play_uri_local(uri)
+    if ok:
+        return jsonify({"status": "ok"})
+    status = 503 if "unavailable" in msg.lower() or "not ready" in msg.lower() else 502
     return jsonify({"error": msg}), status
 
 

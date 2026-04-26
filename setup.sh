@@ -134,6 +134,9 @@ fi
 step "Setting up onevent handler…"
 chmod +x "$PROJECT_DIR/onevent.sh"
 chmod +x "$PROJECT_DIR/network_watchdog.sh"
+if [ ! -f "$PROJECT_DIR/idle_playlists.json" ] && [ -f "$PROJECT_DIR/idle_playlists.example.json" ]; then
+    cp "$PROJECT_DIR/idle_playlists.example.json" "$PROJECT_DIR/idle_playlists.json"
+fi
 
 # ── 6. Install systemd services ─────────────────────────────
 step "Installing systemd services…"
