@@ -1,4 +1,6 @@
 {
   "client_id": "YOUR_SPOTIFY_CLIENT_ID",
-  "client_secret": "YOUR_SPOTIFY_CLIENT_SECRET"
+  "client_secret": "YOUR_SPOTIFY_CLIENT_SECRET",
+  "public_base_url": "",
+  "redirect_uri": ""
 }

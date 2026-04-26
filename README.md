@@ -106,7 +106,8 @@ cd spotify-circular-display
 2. Create a new app
 3. Note your **Client ID** and **Client Secret**
 
-> No redirect URI needed — this system uses client credentials only.
+> No redirect URI is needed for the main display controls. OAuth is only needed
+> if you enable the optional phone sign-in / personalized playlist flow.
 
 ### 3. Configure
 
@@ -119,9 +120,22 @@ Edit `config.json` with your Spotify app credentials:
 ```json
 {
   "client_id": "YOUR_SPOTIFY_CLIENT_ID",
-  "client_secret": "YOUR_SPOTIFY_CLIENT_SECRET"
+  "client_secret": "YOUR_SPOTIFY_CLIENT_SECRET",
+  "public_base_url": "",
+  "redirect_uri": ""
 }
 ```
+
+For optional Spotify sign-in, Spotify requires the redirect URI sent by the app
+to exactly match a URI in the Spotify Developer Dashboard. Set one of these:
+
+- `redirect_uri`: exact full callback URI, for example `https://your-domain.example/callback`
+- `public_base_url`: base URL for the display, used to build `/callback` and `/join`
+
+Spotify currently requires HTTPS for non-loopback redirects. A plain LAN URL
+like `http://192.168.68.80:5000/callback` may be rejected for newly created
+Spotify apps. Use an HTTPS tunnel/domain for phone sign-in, or leave OAuth off
+and keep using the zero-config local Spotify Connect controls.
 
 ### 4. Deploy to Raspberry Pi
 

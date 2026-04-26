@@ -461,7 +461,20 @@ def get_local_ip():
 
 
 def get_public_base_url():
+    config = load_config()
+    configured = os.environ.get("PUBLIC_BASE_URL") or config.get("public_base_url")
+    if configured:
+        return configured.rstrip("/")
     return f"http://{get_local_ip()}:5000"
+
+
+def get_oauth_redirect_uri(config=None):
+    """Return the exact Spotify OAuth redirect URI used for login and token exchange."""
+    config = config or load_config()
+    configured = os.environ.get("SPOTIFY_REDIRECT_URI") or config.get("redirect_uri")
+    if configured:
+        return configured
+    return f"{get_public_base_url()}/callback"
 
 
 def control_playback_local(action):
@@ -578,9 +591,10 @@ def login():
     """Legacy one-time OAuth fallback for Spotify Web API controls."""
     config = load_config()
     client_id = config.get("client_id", "")
+    if not client_id:
+        return "Spotify client_id is missing from config.json", 500
     scope = PLAYLIST_SCOPES if request.args.get("playlist") else SCOPES
-    # Build redirect URI from request
-    redirect_uri = request.url_root.rstrip("/") + "/callback"
+    redirect_uri = get_oauth_redirect_uri(config)
     params = urllib.parse.urlencode({
         "client_id": client_id,
         "response_type": "code",
@@ -599,7 +613,7 @@ def callback():
         return f"Authorization failed: {error or 'no code'}", 400
 
     config = load_config()
-    redirect_uri = request.url_root.rstrip("/") + "/callback"
+    redirect_uri = get_oauth_redirect_uri(config)
 
     try:
         resp = requests.post(SPOTIFY_TOKEN_URL, data={
