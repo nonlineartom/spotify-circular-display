@@ -156,6 +156,7 @@ After reboot, open Spotify on your phone, select **"Pi Display"** as the output 
 | `spotify-display` | Flask server — metadata lookup and web UI |
 | `spotify-kiosk` | Chromium in fullscreen kiosk mode |
 | `spotify-buttons` | GPIO button handler (optional) |
+| `spotify-network-watchdog` | Restarts Spotify services after Wi-Fi returns |
 | `raspotify` | Spotify Connect audio receiver + onevent |
 
 Useful commands:
@@ -165,6 +166,7 @@ sudo systemctl status spotify-display
 sudo systemctl restart spotify-kiosk
 sudo journalctl -u spotify-display -f
 sudo journalctl -u raspotify -f
+curl http://localhost:5000/api/health
 ```
 
 ## Display Configuration

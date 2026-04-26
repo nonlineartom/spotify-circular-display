@@ -1,0 +1,15 @@
+[Unit]
+Description=Spotify Pi Display - Network Recovery Watchdog
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/admin/circle-pi-display
+ExecStart=/home/admin/circle-pi-display/network_watchdog.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

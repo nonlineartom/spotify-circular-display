@@ -78,14 +78,15 @@ fi
 # ── 5. Make onevent script executable ────────────────────────
 step "Setting up onevent handler…"
 chmod +x "$PROJECT_DIR/onevent.sh"
+chmod +x "$PROJECT_DIR/network_watchdog.sh"
 
 # ── 6. Install systemd services ─────────────────────────────
 step "Installing systemd services…"
-for svc in spotify-display spotify-buttons spotify-kiosk; do
+for svc in spotify-display spotify-buttons spotify-kiosk spotify-network-watchdog; do
     sudo cp "$PROJECT_DIR/services/${svc}.service" /etc/systemd/system/
 done
 sudo systemctl daemon-reload
-sudo systemctl enable spotify-display spotify-buttons spotify-kiosk
+sudo systemctl enable spotify-display spotify-buttons spotify-kiosk spotify-network-watchdog
 
 # ── 7. Display & desktop config ─────────────────────────────
 step "Configuring display (1080x1080, no blanking)…"
@@ -138,10 +139,11 @@ echo -e "${GREEN}  Setup complete! Reboot to start everything:${NC}"
 echo -e "${GREEN}    sudo reboot${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════${NC}"
 echo ""
-echo "  After reboot, three services will start automatically:"
+echo "  After reboot, the display services will start automatically:"
 echo "    • raspotify       — Spotify Connect receiver (\"Pi Display\")"
 echo "    • spotify-display — Flask server (metadata + web UI)"
 echo "    • spotify-kiosk   — Chromium fullscreen on the display"
+echo "    • spotify-network-watchdog — restarts Spotify services after Wi-Fi returns"
 echo ""
 echo "  To use: Open Spotify on your phone → Tap devices → Select \"Pi Display\""
 echo "  The display will show album art, lyrics, and progress automatically."

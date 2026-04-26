@@ -1,7 +1,8 @@
 [Unit]
 Description=Spotify Pi Display — Chromium Kiosk
-After=graphical.target spotify-display.service
-Wants=spotify-display.service
+After=graphical.target network-online.target spotify-display.service
+Wants=network-online.target spotify-display.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -12,21 +13,24 @@ Environment=WAYLAND_DISPLAY=wayland-0
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 ExecStartPre=/bin/sleep 8
 ExecStart=/usr/bin/chromium \
+    --no-first-run \
     --noerrdialogs \
     --disable-infobars \
     --disable-session-crashed-bubble \
     --disable-restore-session-state \
+    --disable-pinch \
     --kiosk \
     --incognito \
     --disable-translate \
     --disable-features=TranslateUI \
+    --password-store=basic \
     --overscroll-history-navigation=0 \
     --disk-cache-size=48000000 \
     --window-size=1080,1080 \
     --window-position=0,0 \
     --ozone-platform=wayland \
     http://localhost:5000
-Restart=on-failure
+Restart=always
 RestartSec=10
 
 [Install]

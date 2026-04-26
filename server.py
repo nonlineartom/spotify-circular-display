@@ -28,6 +28,14 @@ SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
 SPOTIFY_API_BASE = "https://api.spotify.com/v1"
 SCOPES = "user-modify-playback-state user-read-playback-state"
 
+# Raspotify/librespot events can occasionally be missed during Wi-Fi drops or
+# Spotify handoffs. These guards keep an old "playing" event from looking alive
+# forever, while still allowing normal long tracks to run from their timestamp.
+PAUSED_IDLE_AFTER_SECONDS = 5 * 60
+PLAYING_UNKNOWN_DURATION_STALE_SECONDS = 30 * 60
+END_OF_TRACK_GRACE_SECONDS = 8
+STOPPED_IDLE_EVENTS = {"stopped", "end_of_track", "unavailable", "network_down"}
+
 # ── In-memory caches ────────────────────────────────────────
 
 _client_token = None
@@ -139,9 +147,17 @@ def read_playback_state():
     if not track_id:
         return None
 
+    now = time.time()
+    timestamp = state.get("timestamp") or 0
+    age = max(0, now - timestamp) if timestamp else float("inf")
+    event = state.get("event", "")
+    is_playing = bool(state.get("is_playing", False))
+
+    if event in STOPPED_IDLE_EVENTS:
+        return None
+
     # Check for stale state — if no event for 5 minutes and not playing, treat as idle
-    age = time.time() - state.get("timestamp", 0)
-    if age > 300 and not state.get("is_playing", False):
+    if age > PAUSED_IDLE_AFTER_SECONDS and not is_playing:
         return None
 
     # Look up track metadata
@@ -156,13 +172,27 @@ def read_playback_state():
             "album": {"name": "", "images": []},
         }
 
-    # Interpolate position if playing
+    duration = track_info.get("duration_ms") or state.get("duration_ms", 0)
+
+    # Interpolate position if playing. If the most recent event says "playing"
+    # but the timestamp is older than the remaining track duration plus a small
+    # grace period, assume the stop/change event was lost and stop the animation.
     position_ms = state.get("position_ms", 0)
-    is_playing = state.get("is_playing", False)
-    if is_playing and "timestamp" in state:
-        elapsed = (time.time() - state["timestamp"]) * 1000
+    stale_reason = None
+    if is_playing and timestamp:
+        if duration > 0:
+            remaining_ms = max(0, duration - position_ms)
+            if age * 1000 > remaining_ms + END_OF_TRACK_GRACE_SECONDS * 1000:
+                is_playing = False
+                position_ms = duration
+                stale_reason = "past_expected_track_end"
+        elif age > PLAYING_UNKNOWN_DURATION_STALE_SECONDS:
+            is_playing = False
+            stale_reason = "playing_state_too_old"
+
+    if is_playing and timestamp:
+        elapsed = (now - timestamp) * 1000
         position_ms = int(position_ms + elapsed)
-        duration = track_info.get("duration_ms") or state.get("duration_ms", 0)
         if duration > 0:
             position_ms = min(position_ms, duration)
 
@@ -173,12 +203,17 @@ def read_playback_state():
         "item": {
             "id": track_info["id"],
             "name": track_info["name"],
-            "duration_ms": track_info.get("duration_ms") or state.get("duration_ms", 0),
+            "duration_ms": duration,
             "artists": track_info["artists"],
             "album": track_info["album"],
         },
         "device": {
             "volume_percent": state.get("volume_percent", 50),
+        },
+        "source": {
+            "event": event,
+            "age_seconds": None if age == float("inf") else round(age, 1),
+            "stale_reason": stale_reason,
         },
     }
 
@@ -333,6 +368,32 @@ def now_playing():
     if state is None:
         return "", 204  # No content — nothing playing
     return jsonify(state)
+
+
+@app.route("/api/health")
+def health():
+    """Return raw local playback/event health for troubleshooting."""
+    try:
+        with open(STATE_FILE, "r") as f:
+            state = json.load(f)
+    except FileNotFoundError:
+        return jsonify({"ok": False, "reason": "state_file_missing", "path": STATE_FILE}), 503
+    except json.JSONDecodeError:
+        return jsonify({"ok": False, "reason": "state_file_invalid", "path": STATE_FILE}), 503
+
+    timestamp = state.get("timestamp") or 0
+    age = max(0, time.time() - timestamp) if timestamp else None
+    return jsonify({
+        "ok": True,
+        "path": STATE_FILE,
+        "event": state.get("event", ""),
+        "track_id": state.get("track_id"),
+        "is_playing": bool(state.get("is_playing", False)),
+        "position_ms": state.get("position_ms"),
+        "duration_ms": state.get("duration_ms"),
+        "volume_percent": state.get("volume_percent"),
+        "age_seconds": None if age is None else round(age, 1),
+    })
 
 
 @app.route("/api/control/<action>", methods=["POST"])

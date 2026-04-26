@@ -30,14 +30,18 @@ try:
 except Exception:
     pass
 
-if event in ("playing", "started", "preloading", "changed"):
+was_playing = bool(state.get("is_playing", False))
+
+if event in ("playing", "started"):
     is_playing = True
 elif event in ("paused", "stopped", "end_of_track", "unavailable"):
     is_playing = False
-elif event in ("volume_set", "seeked", "position_correction"):
-    is_playing = state.get("is_playing", True)
+elif event in ("preloading", "changed", "volume_set", "seeked", "position_correction"):
+    is_playing = was_playing
 else:
-    is_playing = True
+    # Unknown librespot events should not revive a stale player. Preserve the
+    # previous state until a real playing/paused/stopped event arrives.
+    is_playing = was_playing
 
 state["event"] = event
 state["timestamp"] = time.time()
@@ -55,6 +59,10 @@ if position_ms:
         state["position_ms"] = int(position_ms)
     except ValueError:
         pass
+elif event == "stopped":
+    state["position_ms"] = 0
+elif event == "end_of_track" and state.get("duration_ms"):
+    state["position_ms"] = state["duration_ms"]
 if volume:
     try:
         vol_int = int(volume)

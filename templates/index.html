@@ -675,6 +675,12 @@
   }
 
   function updateProgressRing(now) {
+    if (!state.trackId) {
+      progressCtx.clearRect(0, 0, 296, 296);
+      pillTime.textContent = "";
+      return;
+    }
+
     let p = state.progressMs;
     if (state.isPlaying) {
       p += now - state.lastUpdate;
@@ -821,7 +827,22 @@
     if (!data || !data.item) {
       state.trackId = null;
       state.isPlaying = false;
+      state.progressMs = 0;
+      state.durationMs = 1;
+      state.trackName = "";
+      state.artistName = "";
+      state.albumName = "";
       if (!pausedSince) pausedSince = performance.now();
+      pillTrack.textContent = "";
+      pillArtist.textContent = "";
+      pillTime.textContent = "";
+      skipPrev.classList.remove("visible");
+      skipNext.classList.remove("visible");
+      lyricsLines = [];
+      lyricsTrackId = null;
+      currentLyricIdx = -1;
+      lyricsInner.innerHTML = "";
+      lyricsWrap.classList.remove("visible");
       setSpinTarget(0);
       return;
     }

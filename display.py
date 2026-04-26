@@ -185,6 +185,11 @@ class SpotifyVinyl:
         if not data or not data.get("item"):
             with self.lock:
                 self.track_id = None
+                self.is_playing = False
+                self.track_name = ""
+                self.artist_name = ""
+                self.progress_ms = 0
+                self.duration_ms = 1
             return
 
         track = data["item"]
@@ -226,24 +231,18 @@ class SpotifyVinyl:
             pill_cx = PILL_WIDTH // 2
             if CONTROLS_Y - 25 < py < CONTROLS_Y + 25:
                 if abs(px - (pill_cx - 80)) < 30:
-                    self._api("POST", "/previous")
+                    self._api("POST", "/control/previous")
                     return
                 elif abs(px - pill_cx) < 35:
-                    with self.lock:
-                        playing = self.is_playing
-                    self._api("PUT", "/pause" if playing else "/play")
+                    self._api("POST", "/control/play-pause")
                     return
                 elif abs(px - (pill_cx + 80)) < 30:
-                    self._api("POST", "/next")
+                    self._api("POST", "/control/next")
                     return
-            with self.lock:
-                playing = self.is_playing
-            self._api("PUT", "/pause" if playing else "/play")
+            self._api("POST", "/control/play-pause")
             return
 
-        with self.lock:
-            playing = self.is_playing
-        self._api("PUT", "/pause" if playing else "/play")
+        self._api("POST", "/control/play-pause")
 
     def _api(self, method, path):
         try:
