@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Restart the Spotify display stack when the network comes back.
 #
-# Spotify Connect/librespot can survive a Wi-Fi drop in a half-connected state:
+# Spotify Connect receivers can survive a Wi-Fi drop in a half-connected state:
 # the process stays "active", but the device no longer appears in Spotify until
-# raspotify is restarted. This watchdog only acts on network state transitions.
+# the receiver is restarted. This watchdog only acts on network transitions.
 
 set -u
 
@@ -28,7 +28,11 @@ mark_display_idle() {
 }
 
 restart_spotify_stack() {
-    systemctl restart raspotify || true
+    if systemctl list-unit-files go-librespot.service --no-legend 2>/dev/null | grep -q '^go-librespot.service'; then
+        systemctl restart go-librespot || true
+    else
+        systemctl restart raspotify || true
+    fi
     systemctl restart spotify-display || true
     systemctl try-restart spotify-kiosk || true
 }

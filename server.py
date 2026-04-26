@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Flask server — Spotify Connect display with QR-based user takeover.
+"""Flask server — Spotify Connect display.
 
-Display: Raspotify's --onevent writes playback state to /tmp/spotify-state.json.
-Track metadata is enriched via Spotify client credentials (no user login needed).
+Display: go-librespot's local API is preferred for playback state and controls.
+Raspotify's --onevent state file remains as a fallback for older installs.
+Track metadata can also be enriched via Spotify client credentials.
 
-Controls: Users scan the QR code → OAuth login → their refresh token is stored.
-The Pi's touch controls (skip/pause) use that token via Spotify Web API.
-When a new user scans, their token replaces the previous one.
+Controls: the Pi's touch controls call the local Spotify Connect receiver API.
+The legacy Spotify Web API OAuth path is retained only as a fallback.
 """
 
 import json
@@ -22,6 +22,7 @@ app.secret_key = os.urandom(24)
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 STATE_FILE = "/tmp/spotify-state.json"
+GO_LIBRESPOT_API_BASE = os.environ.get("GO_LIBRESPOT_API_BASE", "http://127.0.0.1:3678").rstrip("/")
 
 SPOTIFY_AUTH_URL = "https://accounts.spotify.com/authorize"
 SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
@@ -137,7 +138,84 @@ def lookup_track(track_id):
         return None
 
 
-def read_playback_state():
+def spotify_uri_id(uri):
+    if not uri:
+        return None
+    parts = uri.split(":")
+    if len(parts) == 3 and parts[0] == "spotify":
+        return parts[2]
+    return uri
+
+
+def read_go_librespot_state():
+    """Read playback state from go-librespot's local API.
+
+    Returns (available, state). If the API is reachable but there is no active
+    session, available is True and state is None, preventing stale fallback data
+    from an old Raspotify state file from showing on the display.
+    """
+    try:
+        resp = requests.get(f"{GO_LIBRESPOT_API_BASE}/status", timeout=0.8)
+    except requests.RequestException:
+        return False, None
+
+    if resp.status_code == 204:
+        return True, None
+    if resp.status_code != 200:
+        print(f"go-librespot status error: {resp.status_code}")
+        return False, None
+
+    try:
+        status = resp.json()
+    except ValueError:
+        return False, None
+
+    track = status.get("track")
+    if status.get("stopped") or not track:
+        return True, None
+
+    uri = track.get("uri", "")
+    track_id = spotify_uri_id(uri)
+    artists = [{"name": name} for name in track.get("artist_names", [])]
+    cover_url = track.get("album_cover_url")
+    images = [{"url": cover_url}] if cover_url else []
+    duration = track.get("duration") or 0
+    position = track.get("position") or 0
+    volume_steps = status.get("volume_steps") or 100
+    volume = status.get("volume") or 0
+
+    try:
+        volume_percent = int(round((volume / max(volume_steps, 1)) * 100))
+    except TypeError:
+        volume_percent = 50
+
+    return True, {
+        "is_playing": not bool(status.get("paused")) and not bool(status.get("buffering")),
+        "progress_ms": position,
+        "item": {
+            "id": track_id,
+            "uri": uri,
+            "name": track.get("name", "Unknown Track"),
+            "duration_ms": duration,
+            "artists": artists or [{"name": ""}],
+            "album": {
+                "name": track.get("album_name", ""),
+                "images": images,
+            },
+        },
+        "device": {
+            "id": status.get("device_id"),
+            "name": status.get("device_name", "Pi Display"),
+            "volume_percent": max(0, min(100, volume_percent)),
+        },
+        "source": {
+            "backend": "go-librespot",
+            "play_origin": status.get("play_origin"),
+        },
+    }
+
+
+def read_raspotify_playback_state():
     """Read the state file written by onevent.sh and merge with cached metadata.
 
     Returns a dict matching the Spotify /me/player response shape that the
@@ -224,6 +302,13 @@ def read_playback_state():
     }
 
 
+def read_playback_state():
+    go_available, go_state = read_go_librespot_state()
+    if go_available:
+        return go_state
+    return read_raspotify_playback_state()
+
+
 def get_user_token():
     """Get a user-level Spotify token using stored refresh_token."""
     global _user_token, _user_token_expiry
@@ -269,11 +354,50 @@ def save_config(config):
         json.dump(config, f, indent=2)
 
 
-def control_playback(action):
-    """Control playback via Spotify Web API (requires user token)."""
+def get_local_ip():
+    """Return the LAN IP reachable by phones on the same network."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
+def get_public_base_url():
+    return f"http://{get_local_ip()}:5000"
+
+
+def control_playback_local(action):
+    """Control playback through go-librespot's local API."""
+    paths = {
+        "next": "/player/next",
+        "previous": "/player/prev",
+        "play-pause": "/player/playpause",
+    }
+    path = paths.get(action)
+    if not path:
+        return False, "Unknown action"
+
+    try:
+        resp = requests.post(f"{GO_LIBRESPOT_API_BASE}{path}", timeout=1.5)
+    except requests.RequestException as e:
+        return False, f"Local player API unavailable: {e}"
+
+    if resp.status_code == 200:
+        return True, "ok"
+    if resp.status_code == 204:
+        return False, "No active local player session"
+    return False, f"Local player API error: {resp.status_code}"
+
+
+def control_playback_web_api(action):
+    """Legacy Spotify Web API fallback (requires a stored user token)."""
     token = get_user_token()
     if not token:
-        return False, "No user token — visit /login to authorize controls"
+        return False, "No Spotify Web API token configured"
 
     headers = {"Authorization": f"Bearer {token}"}
     try:
@@ -302,6 +426,19 @@ def control_playback(action):
         return False, str(e)
 
 
+def control_playback(action):
+    """Control playback using the local receiver, with Web API fallback."""
+    ok, msg = control_playback_local(action)
+    if ok:
+        return True, msg
+
+    # If an owner has already configured OAuth, keep supporting it as a fallback.
+    if get_user_token():
+        return control_playback_web_api(action)
+
+    return False, msg
+
+
 # ── UI routes ────────────────────────────────────────────────
 
 @app.route("/")
@@ -317,7 +454,7 @@ def connect():
 
 @app.route("/login")
 def login():
-    """One-time OAuth to enable playback controls (skip/pause)."""
+    """Legacy one-time OAuth fallback for Spotify Web API controls."""
     config = load_config()
     client_id = config.get("client_id", "")
     # Build redirect URI from request
@@ -333,7 +470,7 @@ def login():
 
 @app.route("/callback")
 def callback():
-    """OAuth callback — stores refresh token for playback controls."""
+    """Legacy OAuth callback — stores refresh token for Web API fallback."""
     code = request.args.get("code")
     error = request.args.get("error")
     if error or not code:
@@ -369,7 +506,7 @@ def callback():
 
 @app.route("/api/now-playing")
 def now_playing():
-    """Return current playback state from local Raspotify events."""
+    """Return current playback state from the local Spotify Connect receiver."""
     state = read_playback_state()
     if state is None:
         return "", 204  # No content — nothing playing
@@ -378,39 +515,69 @@ def now_playing():
 
 @app.route("/api/health")
 def health():
-    """Return raw local playback/event health for troubleshooting."""
+    """Return local receiver and fallback event health for troubleshooting."""
+    go_available, go_state = read_go_librespot_state()
+
     try:
         with open(STATE_FILE, "r") as f:
             state = json.load(f)
     except FileNotFoundError:
-        return jsonify({"ok": False, "reason": "state_file_missing", "path": STATE_FILE}), 503
+        state = None
+        state_error = "state_file_missing"
     except json.JSONDecodeError:
-        return jsonify({"ok": False, "reason": "state_file_invalid", "path": STATE_FILE}), 503
+        state = None
+        state_error = "state_file_invalid"
+    else:
+        state_error = None
+
+    if state is None:
+        return jsonify({
+            "ok": go_available,
+            "go_librespot": {
+                "available": go_available,
+                "active": go_state is not None,
+                "api_base": GO_LIBRESPOT_API_BASE,
+            },
+            "raspotify_state": {
+                "ok": False,
+                "reason": state_error,
+                "path": STATE_FILE,
+            },
+        }), 200 if go_available else 503
 
     timestamp = state.get("timestamp") or 0
     age = max(0, time.time() - timestamp) if timestamp else None
     return jsonify({
-        "ok": True,
-        "path": STATE_FILE,
-        "event": state.get("event", ""),
-        "track_id": state.get("track_id"),
-        "is_playing": bool(state.get("is_playing", False)),
-        "position_ms": state.get("position_ms"),
-        "duration_ms": state.get("duration_ms"),
-        "volume_percent": state.get("volume_percent"),
-        "age_seconds": None if age is None else round(age, 1),
+        "ok": go_available or bool(state.get("track_id")),
+        "go_librespot": {
+            "available": go_available,
+            "active": go_state is not None,
+            "api_base": GO_LIBRESPOT_API_BASE,
+        },
+        "raspotify_state": {
+            "ok": True,
+            "path": STATE_FILE,
+            "event": state.get("event", ""),
+            "track_id": state.get("track_id"),
+            "is_playing": bool(state.get("is_playing", False)),
+            "position_ms": state.get("position_ms"),
+            "duration_ms": state.get("duration_ms"),
+            "volume_percent": state.get("volume_percent"),
+            "age_seconds": None if age is None else round(age, 1),
+        },
     })
 
 
 @app.route("/api/control/<action>", methods=["POST"])
 def control(action):
-    """Control playback via Spotify Web API (next, previous, play-pause)."""
+    """Control playback (next, previous, play-pause)."""
     if action not in ("next", "previous", "play-pause"):
         return jsonify({"error": "Invalid action"}), 400
     ok, msg = control_playback(action)
     if ok:
         return jsonify({"status": "ok"})
-    return jsonify({"error": msg}), 500
+    status = 503 if "unavailable" in msg.lower() or "no active" in msg.lower() else 502
+    return jsonify({"error": msg}), status
 
 
 @app.route("/api/qr")
@@ -438,13 +605,7 @@ def qr_matrix():
 @app.route("/api/info")
 def info():
     """Return server info including local IP for QR code generation."""
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-    except Exception:
-        ip = "127.0.0.1"
+    ip = get_local_ip()
     return jsonify({"ip": ip, "port": 5000, "url": f"http://{ip}:5000"})
 
 

@@ -11,6 +11,7 @@ A vinyl-inspired Spotify player for circular screens, built for the Raspberry Pi
 ## Features
 
 - **Zero-config playback** — No OAuth login needed. Anyone on the network selects "Pi Display" in Spotify and it just works
+- **Local touch controls** — Swipe/tap controls go through the on-device Spotify Connect receiver, not a personal Spotify Web API token
 - **Spinning vinyl record** — Album art fills a rotating platter at 33&#8531; RPM with smooth CSS GPU-accelerated animation
 - **Eased spin-up/spin-down** — 4-second cubic ease-in-out ramp when playback starts/stops, with return-to-zero when paused
 - **Vinyl grooves** — Canvas-rendered concentric groove lines overlaid on the artwork
@@ -18,7 +19,7 @@ A vinyl-inspired Spotify player for circular screens, built for the Raspberry Pi
 - **Synced scrolling lyrics** — Time-synced lyrics from LRCLIB scroll in the top half of the display, with the active line highlighted
 - **Track info** — Song title, artist name, and elapsed/remaining time
 - **QR code on idle** — When music pauses for 30+ seconds, a scannable QR code appears linking to connection instructions
-- **Spotify Connect** — Acts as a Spotify Connect speaker via Raspotify
+- **Spotify Connect** — Acts as a Spotify Connect speaker via go-librespot, with Raspotify kept as a fallback
 - **GPIO volume buttons** — Physical buttons for volume up/down via amixer (optional)
 - **Auto-start kiosk** — Boots straight into fullscreen Chromium displaying the player
 - **1080x1080** — Designed specifically for square/circular displays
@@ -55,12 +56,12 @@ That's it. No accounts to create, no QR codes to scan, no passwords. If the disp
 │  Raspberry Pi                                   │
 │                                                 │
 │  ┌─────────────┐                                │
-│  │ Raspotify   │── onevent.sh ──► state.json    │
-│  │ (audio out) │   (track ID, position, volume) │
+│  │go-librespot │── local API ─► playback state  │
+│  │ (audio out) │   (track, position, controls)  │
 │  └─────────────┘                                │
 │                   ┌──────────────────────────┐  │
 │                   │ Flask Server (server.py)  │  │
-│    state.json ──► │ - Reads local state       │  │
+│  localhost:3678 ► │ - Reads local state       │  │
 │                   │ - Track metadata lookup   │  │
 │                   │   (client credentials)    │  │
 │                   │ - Lyrics proxy (LRCLIB)   │  │
@@ -84,9 +85,9 @@ That's it. No accounts to create, no QR codes to scan, no passwords. If the disp
 
 ### How metadata works without user login
 
-1. **Raspotify** receives audio via Spotify Connect and fires `--onevent` on each playback event
-2. **`onevent.sh`** captures the track ID, position, duration, and volume, writing them to `/tmp/spotify-state.json`
-3. **Flask server** reads this state file and uses the Spotify **client credentials** flow (app-level token — no user login) to look up track metadata (name, artist, album, artwork) via `GET /v1/tracks/{id}`
+1. **go-librespot** receives audio via Spotify Connect and exposes local playback state/control endpoints on `127.0.0.1:3678`
+2. **Flask server** reads the local receiver API first, falling back to the old Raspotify `/tmp/spotify-state.json` event file on older installs
+3. **Touch controls** call the local receiver through Flask, so skip/pause does not need per-user Spotify Web API OAuth
 4. **Frontend** polls `/api/now-playing` every 2 seconds and renders the vinyl display
 
 ## Quick Start
@@ -135,7 +136,8 @@ chmod +x setup.sh
 
 The setup script will:
 - Install system dependencies (Python, Chromium, unclutter)
-- Install and configure Raspotify as a Spotify Connect receiver with onevent handler
+- Install and configure go-librespot as the primary Spotify Connect receiver
+- Install Raspotify as a disabled fallback receiver for older setups
 - Create a Python virtual environment and install packages
 - Prompt for Spotify API credentials (if not already in config.json)
 - Install systemd services for auto-start
@@ -157,15 +159,17 @@ After reboot, open Spotify on your phone, select **"Pi Display"** as the output 
 | `spotify-kiosk` | Chromium in fullscreen kiosk mode |
 | `spotify-buttons` | GPIO button handler (optional) |
 | `spotify-network-watchdog` | Restarts Spotify services after Wi-Fi returns |
-| `raspotify` | Spotify Connect audio receiver + onevent |
+| `go-librespot` | Spotify Connect audio receiver + local state/control API |
+| `raspotify` | Disabled fallback Spotify Connect receiver + onevent |
 
 Useful commands:
 
 ```bash
 sudo systemctl status spotify-display
+sudo systemctl status go-librespot
 sudo systemctl restart spotify-kiosk
 sudo journalctl -u spotify-display -f
-sudo journalctl -u raspotify -f
+sudo journalctl -u go-librespot -f
 curl http://localhost:5000/api/health
 ```
 
@@ -189,19 +193,19 @@ Wire momentary buttons between these BCM GPIO pins and GND:
 | 23 | Volume down (amixer) |
 | 24 | Volume up (amixer) |
 
-> Play/pause, next, and previous buttons (pins 17, 22, 27) are wired but require MPRIS support — a future enhancement.
+> Play/pause, next, and previous controls can be routed through the local go-librespot API. Volume buttons still use `amixer`.
 
 Internal pull-up resistors are enabled — no external resistors needed.
 
 ## Tech Stack
 
-- **Backend:** Python / Flask — local state reader, Spotify client credentials for metadata, LRCLIB lyrics proxy
-- **Metadata:** Raspotify `--onevent` handler writes playback state; Flask reads it and enriches with Spotify track API
+- **Backend:** Python / Flask — local receiver API proxy, fallback state reader, Spotify client credentials for metadata, LRCLIB lyrics proxy
+- **Metadata/Controls:** go-librespot local API, with Raspotify `--onevent` fallback support
 - **Frontend:** Vanilla HTML/CSS/JS — no build tools or frameworks
 - **Animation:** CSS `transform: rotate()` with `will-change` for GPU compositing
 - **Progress:** Canvas-based circular arc with warm-to-white gradient
 - **Lyrics:** [LRCLIB](https://lrclib.net) — free time-synced lyrics API
-- **Audio:** [Raspotify](https://github.com/dtcooper/raspotify) (librespot-based Spotify Connect)
+- **Audio:** [go-librespot](https://github.com/devgianlu/go-librespot) (librespot-based Spotify Connect)
 - **Fonts:** [Montserrat](https://fonts.google.com/specimen/Montserrat) via Google Fonts
 
 ## License

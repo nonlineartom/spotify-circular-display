@@ -1,0 +1,17 @@
+[Unit]
+Description=go-librespot Spotify Connect Receiver
+Wants=network-online.target sound.target avahi-daemon.service
+After=network-online.target sound.target avahi-daemon.service
+Conflicts=raspotify.service
+
+[Service]
+Type=simple
+User=admin
+WorkingDirectory=/home/admin/circle-pi-display
+Environment=HOME=/home/admin
+ExecStart=/usr/local/bin/go-librespot --config_dir /home/admin/circle-pi-display/go-librespot
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

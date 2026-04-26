@@ -14,12 +14,11 @@
     --center: 540px;
     --groove-start: 100;
     --groove-end: 530;
-    --label-radius: 80px;
-    --ring-radius: 74px;
+    --label-radius: 96px;
+    --ring-radius: 90px;
     --spindle-radius: 14px;
-    --pill-w: 460px;
-    --pill-h: 140px;
-    --pill-r: 22px;
+    --pill-w: 610px;
+    --pill-r: 18px;
   }
 
   html, body {
@@ -38,6 +37,32 @@
     width: var(--size); height: var(--size);
     border-radius: 50%;
     overflow: hidden;
+    touch-action: none;
+  }
+
+  #viewport::before,
+  #viewport::after {
+    content: '';
+    position: absolute;
+    left: 0; right: 0;
+    z-index: 18;
+    pointer-events: none;
+  }
+
+  #viewport::before {
+    top: 0;
+    height: 44%;
+    background:
+      radial-gradient(ellipse at 50% 12%, rgba(0,0,0,0.56) 0%, rgba(0,0,0,0.30) 38%, rgba(0,0,0,0) 76%),
+      linear-gradient(to bottom, rgba(0,0,0,0.34), rgba(0,0,0,0));
+  }
+
+  #viewport::after {
+    bottom: 0;
+    height: 35%;
+    background:
+      radial-gradient(ellipse at 50% 92%, rgba(0,0,0,0.68) 0%, rgba(0,0,0,0.42) 44%, rgba(0,0,0,0) 82%),
+      linear-gradient(to top, rgba(0,0,0,0.38), rgba(0,0,0,0));
   }
 
   /* ── Outer rim depth shadow (static, on top of everything) ── */
@@ -104,7 +129,11 @@
     width: calc(var(--label-radius) * 2);
     height: calc(var(--label-radius) * 2);
     border-radius: 50%;
-    background: #000;
+    background: radial-gradient(circle at 50% 48%, #060606 0%, #010101 68%, #000 100%);
+    box-shadow:
+      inset 0 0 0 1px rgba(255,255,255,0.05),
+      inset 0 0 18px rgba(255,255,255,0.035),
+      0 10px 34px rgba(0,0,0,0.36);
   }
 
   /* Spindle */
@@ -140,8 +169,8 @@
     position: absolute;
     top: 50%; left: 50%;
     transform: translate(-50%, -50%);
-    width: calc(var(--ring-radius) * 2);
-    height: calc(var(--ring-radius) * 2);
+    width: calc((var(--ring-radius) * 2) + 40px);
+    height: calc((var(--ring-radius) * 2) + 40px);
     z-index: 25;
     pointer-events: none;
   }
@@ -150,19 +179,32 @@
   #pill {
     position: absolute;
     left: 50%;
-    bottom: 100px;
-    transform: translateX(-50%);
+    bottom: 82px;
+    transform: translateX(-50%) translateY(12px);
     width: var(--pill-w);
     display: flex;
     flex-direction: column;
     align-items: center;
     z-index: 30;
     pointer-events: auto;
-    background: rgba(0, 0, 0, 0.35);
-    -webkit-backdrop-filter: blur(20px);
-    backdrop-filter: blur(20px);
-    border-radius: 20px;
-    padding: 14px 28px;
+    background:
+      linear-gradient(to bottom, rgba(255,255,255,0.075), rgba(255,255,255,0.02)),
+      rgba(0, 0, 0, 0.62);
+    -webkit-backdrop-filter: blur(28px) saturate(1.08);
+    backdrop-filter: blur(28px) saturate(1.08);
+    border: 1px solid rgba(255,255,255,0.11);
+    border-radius: var(--pill-r);
+    box-shadow:
+      0 22px 60px rgba(0,0,0,0.42),
+      inset 0 1px 0 rgba(255,255,255,0.14),
+      inset 0 -1px 0 rgba(0,0,0,0.55);
+    padding: 16px 34px 18px;
+    opacity: 0;
+    transition: opacity 0.45s ease, transform 0.45s ease;
+  }
+  #pill.visible {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
   }
 
   /* Subtle text shadow — backdrop-filter handles contrast now */
@@ -171,34 +213,34 @@
   }
 
   #pill-track {
-    font-size: 28px;
+    font-size: 31px;
     font-weight: 500;
-    line-height: 1.3;
+    line-height: 1.18;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 440px;
+    max-width: calc(var(--pill-w) - 68px);
     text-align: center;
     padding-bottom: 2px;
   }
 
   #pill-artist {
-    margin-top: 4px;
-    font-size: 19px;
+    margin-top: 7px;
+    font-size: 21px;
     font-weight: 300;
-    color: #eee;
+    color: rgba(255,255,255,0.86);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 440px;
+    max-width: calc(var(--pill-w) - 92px);
     text-align: center;
   }
 
   #pill-time {
-    margin-top: 6px;
-    font-size: 14px;
+    margin-top: 9px;
+    font-size: 16px;
     font-weight: 300;
-    color: #ddd;
+    color: rgba(255,255,255,0.72);
     font-variant-numeric: tabular-nums;
     text-align: center;
   }
@@ -209,31 +251,57 @@
     top: 50%;
     transform: translateY(-50%);
     z-index: 30;
-    width: 80px;
-    height: 120px;
+    --swipe-strength: 0;
+    width: 172px;
+    height: 360px;
     display: flex;
     align-items: center;
     justify-content: center;
     pointer-events: auto;
     opacity: 0;
-    transition: opacity 0.3s;
+    transition: opacity 0.22s ease, transform 0.22s ease, filter 0.22s ease;
     -webkit-tap-highlight-color: transparent;
   }
-  .skip-btn.visible { opacity: 1; }
-  .skip-btn:active { opacity: 0.6; }
-  #skip-prev { left: 30px; }
-  #skip-next { right: 30px; }
+  .skip-btn::before {
+    content: '';
+    position: absolute;
+    top: 24px; bottom: 24px;
+    width: 160px;
+    opacity: calc(var(--swipe-strength) * 0.78);
+    transition: opacity 0.22s ease;
+    pointer-events: none;
+  }
+  .skip-btn.visible { opacity: 0.22; }
+  .skip-btn.visible.dragging {
+    opacity: calc(0.28 + var(--swipe-strength) * 0.62);
+    transform: translateY(-50%) scale(calc(1 + var(--swipe-strength) * 0.08));
+    filter: drop-shadow(0 0 calc(18px + var(--swipe-strength) * 18px) rgba(255,255,255,0.18));
+  }
+  .skip-btn.confirm {
+    animation: edge-confirm 360ms ease-out;
+  }
+  .skip-btn:active { opacity: 0.78; }
+  #skip-prev { left: 0; }
+  #skip-next { right: 0; }
+  #skip-prev::before {
+    left: 0;
+    background: linear-gradient(to right, rgba(255,255,255,0.32), rgba(255,255,255,0));
+  }
+  #skip-next::before {
+    right: 0;
+    background: linear-gradient(to left, rgba(255,255,255,0.32), rgba(255,255,255,0));
+  }
   .skip-btn svg {
-    width: 28px;
-    height: 28px;
-    fill: rgba(255,255,255,0.45);
-    filter: drop-shadow(0 1px 4px rgba(0,0,0,0.6));
+    width: 58px;
+    height: 58px;
+    fill: rgba(255,255,255,0.78);
+    filter: drop-shadow(0 2px 10px rgba(0,0,0,0.65));
   }
   #pause-btn {
     position: absolute;
     top: 50%; left: 50%;
     transform: translate(-50%, -50%);
-    width: 148px; height: 148px;
+    width: 190px; height: 190px;
     border-radius: 50%;
     z-index: 26;
     pointer-events: auto;
@@ -243,26 +311,29 @@
   /* ── Lyrics overlay (top half, frosted glass) ── */
   #lyrics-wrap {
     position: absolute;
-    top: -20px;
+    top: 34px;
     left: 50%;
     transform: translateX(-50%);
-    width: 660px;
-    height: 560px;
-    padding: 80px 40px;
+    width: 720px;
+    height: 355px;
+    padding: 54px 52px 60px;
     z-index: 28;
     pointer-events: none;
     overflow: hidden;
     opacity: 0;
     transition: opacity 0.6s;
-    background: rgba(0, 0, 0, 0.25);
-    -webkit-backdrop-filter: blur(16px);
-    backdrop-filter: blur(16px);
-    border-radius: 30px;
+    background:
+      radial-gradient(ellipse at 50% 34%, rgba(255,255,255,0.06), rgba(255,255,255,0) 64%),
+      rgba(0, 0, 0, 0.26);
+    -webkit-backdrop-filter: blur(18px) saturate(1.05);
+    backdrop-filter: blur(18px) saturate(1.05);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 24px;
     /* Mask fades top/bottom — also softens the blur edges naturally */
     -webkit-mask-image: linear-gradient(to bottom,
-      transparent 0%, transparent 8%, white 22%, white 58%, transparent 88%, transparent 100%);
+      transparent 0%, transparent 9%, white 25%, white 66%, transparent 92%, transparent 100%);
     mask-image: linear-gradient(to bottom,
-      transparent 0%, transparent 8%, white 22%, white 58%, transparent 88%, transparent 100%);
+      transparent 0%, transparent 9%, white 25%, white 66%, transparent 92%, transparent 100%);
   }
   #lyrics-wrap.visible { opacity: 1; }
 
@@ -274,25 +345,36 @@
   }
 
   .lyric-line {
-    font-size: 24px;
-    font-weight: 500;
-    line-height: 1.5;
+    font-size: 23px;
+    font-weight: 400;
+    line-height: 1.28;
     text-align: center;
-    padding: 6px 20px;
-    color: rgba(255,255,255,0.35);
-    transition: color 0.4s, transform 0.4s;
-    text-shadow: 0 1px 2px rgba(0,0,0,0.3);
-    white-space: nowrap;
+    padding: 7px 20px;
+    color: rgba(255,255,255,0.24);
+    transition: color 0.35s, transform 0.35s, font-size 0.35s;
+    text-shadow: 0 2px 12px rgba(0,0,0,0.58);
+    white-space: normal;
     overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 580px;
+    text-overflow: clip;
+    max-width: 620px;
+    max-height: 2.65em;
   }
   .lyric-line.active {
     color: #fff;
-    transform: scale(1.05);
+    font-size: 31px;
+    font-weight: 500;
+    transform: translateY(-1px);
+    text-shadow:
+      0 2px 16px rgba(0,0,0,0.72),
+      0 0 28px rgba(255,255,255,0.18);
   }
   .lyric-line.past {
-    color: rgba(255,255,255,0.5);
+    color: rgba(255,255,255,0.38);
+  }
+
+  @keyframes edge-confirm {
+    0% { opacity: 0.98; filter: drop-shadow(0 0 32px rgba(255,255,255,0.25)); }
+    100% { opacity: 0.22; filter: drop-shadow(0 0 0 rgba(255,255,255,0)); }
   }
 
   /* ── QR overlay (vinyl-styled, shown on pause/idle) ── */
@@ -311,7 +393,7 @@
   /* "Scan to connect" label */
   #qr-label {
     position: absolute;
-    bottom: 58px;
+    bottom: 64px;
     left: 50%;
     transform: translateX(-50%);
     z-index: 36;
@@ -322,8 +404,14 @@
     font-weight: 300;
     letter-spacing: 4px;
     text-transform: uppercase;
-    color: rgba(255,255,255,0.7);
+    color: rgba(255,255,255,0.88);
     text-shadow: 0 1px 6px rgba(0,0,0,0.9);
+    background: rgba(0,0,0,0.42);
+    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: blur(14px);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 999px;
+    padding: 10px 18px 10px 22px;
   }
   #qr-label.visible { opacity: 1; }
 
@@ -403,8 +491,6 @@
   const GROOVE_COUNT = 120;
   const GROOVE_START = 100;
   const GROOVE_END = 530;
-  const LABEL_RADIUS = 80;
-  const RING_RADIUS = 74;
   const RPM = 33.333;
   const DEG_PER_MS = (RPM * 360) / 60000; // degrees per millisecond
 
@@ -413,9 +499,11 @@
 
   // ── Elements ──
   const $ = id => document.getElementById(id);
+  const viewport   = $("viewport");
   const vinyl      = $("vinyl");
   const artworkEl  = $("artwork");
   const qrOverlay  = $("qr-overlay");
+  const pill       = $("pill");
   const pillTrack  = $("pill-track");
   const pillArtist = $("pill-artist");
   const pillTime   = $("pill-time");
@@ -432,11 +520,11 @@
   // Progress ring constants (canvas is 296x296 = 2x the CSS size for retina)
   const RING_CX = 148;
   const RING_CY = 148;
-  const RING_R = 128;          // main arc radius (leave room for ticks + glow)
-  const RING_TRACK_W = 1.5;    // background track width
-  const RING_ARC_W = 4.5;      // progress arc width
-  const RING_DOT_R = 7;        // dot outer radius
-  const RING_DOT_INNER = 3.5;  // dot inner radius (creates ring shape)
+  const RING_R = 122;          // main arc radius (leave room for ticks + glow)
+  const RING_TRACK_W = 2.2;    // background track width
+  const RING_ARC_W = 6.5;      // progress arc width
+  const RING_DOT_R = 9;        // dot outer radius
+  const RING_DOT_INNER = 4.5;  // dot inner radius (creates ring shape)
   const TICK_COUNT = 60;        // minute-mark ticks around the ring
   const TICK_MAJOR_EVERY = 5;   // every 5th tick is longer
 
@@ -458,7 +546,9 @@
   let pausedSince = 0;
   let qrOverlayVisible = false;
   let qrMatrix = null;
+  let defaultQrUrl = "";
   let screenDimmed = false;
+  const QR_IDLE_LABEL = "Scan to connect";
   const DIM_DELAY = 5 * 60 * 1000; // 5 minutes after QR appears
 
   // Lyrics state
@@ -586,8 +676,7 @@
 
     // Scroll so active line is near top of visible area
     if (idx >= 0 && els[idx]) {
-      const lineH = els[idx].offsetHeight;
-      const offset = els[idx].offsetTop - 100; // 100px from top of container
+      const offset = els[idx].offsetTop - 118; // keep the active line in the focus lane
       lyricsInner.style.transform = `translateY(${-offset}px)`;
     }
   }
@@ -653,6 +742,10 @@
     // --- QR overlay (show after 30s pause, or immediately when idle) ---
     const timePaused = pausedSince > 0 ? now - pausedSince : 0;
     const showQR = !state.trackId || (!state.isPlaying && timePaused >= 30000);
+    if (qrLabel.textContent !== QR_IDLE_LABEL) {
+      qrLabel.textContent = QR_IDLE_LABEL;
+    }
+
     if (showQR && !qrOverlayVisible) {
       qrOverlay.classList.add("visible");
       qrLabel.classList.add("visible");
@@ -836,6 +929,7 @@
       pillTrack.textContent = "";
       pillArtist.textContent = "";
       pillTime.textContent = "";
+      pill.classList.remove("visible");
       skipPrev.classList.remove("visible");
       skipNext.classList.remove("visible");
       lyricsLines = [];
@@ -849,6 +943,7 @@
 
     const track = data.item;
     const newId = track.id;
+    pill.classList.add("visible");
 
     // Art
     const images = (track.album || {}).images || [];
@@ -989,7 +1084,8 @@
       const resp = await fetch("/api/info");
       if (!resp.ok) return;
       const data = await resp.json();
-      const matrix = await QR.encode(data.url + "/login");
+      defaultQrUrl = data.url + "/connect";
+      const matrix = await QR.encode(defaultQrUrl);
       if (matrix) {
         qrMatrix = matrix;
         drawVinylQR(qrMatrix);
@@ -997,36 +1093,164 @@
     } catch(e) { console.error("QR init error:", e); }
   }
 
+  async function readControlResponse(resp) {
+    try {
+      return await resp.json();
+    } catch(e) {
+      return {};
+    }
+  }
+
   // ── Playback controls ──
   async function controlAction(action) {
     try {
-      await fetch("/api/control/" + action, { method: "POST" });
+      const resp = await fetch("/api/control/" + action, { method: "POST" });
+      const data = await readControlResponse(resp);
+      if (!resp.ok) {
+        console.warn("Control failed:", action, data.error || resp.status);
+        return false;
+      }
       setTimeout(poll, 300);
-    } catch(e) {}
+      return true;
+    } catch(e) {
+      console.warn("Control request failed:", action, e);
+      return false;
+    }
   }
 
-  skipPrev.addEventListener("click", () => controlAction("previous"));
-  skipNext.addEventListener("click", () => controlAction("next"));
-  pauseBtn.addEventListener("click", () => controlAction("play-pause"));
+  skipPrev.addEventListener("click", async () => {
+    if (await controlAction("previous")) confirmSwipe("previous");
+  });
+  skipNext.addEventListener("click", async () => {
+    if (await controlAction("next")) confirmSwipe("next");
+  });
+  pauseBtn.addEventListener("click", async () => {
+    if (performance.now() < suppressTapUntil) return;
+    await controlAction("play-pause");
+  });
 
   // ── Swipe gestures (skip track) ──
-  let touchStartX = 0;
-  let touchStartTime = 0;
-  const SWIPE_THRESHOLD = 80;
-  const SWIPE_MAX_TIME = 500;
+  let swipeGesture = null;
+  let lastSwipeAt = 0;
+  let suppressTapUntil = 0;
+  const SWIPE_MAX_TIME = 800;
+  const SWIPE_COOLDOWN = 900;
+  const SWIPE_VERTICAL_RATIO = 0.55;
+  const SWIPE_MIN_VELOCITY = 0.25;
 
-  document.getElementById("viewport").addEventListener("touchstart", e => {
-    touchStartX = e.touches[0].clientX;
-    touchStartTime = performance.now();
-  }, { passive: true });
+  function swipeThreshold() {
+    return Math.max(96, viewport.clientWidth * 0.1);
+  }
 
-  document.getElementById("viewport").addEventListener("touchend", e => {
-    const dx = e.changedTouches[0].clientX - touchStartX;
-    const dt = performance.now() - touchStartTime;
-    if (dt < SWIPE_MAX_TIME && Math.abs(dx) > SWIPE_THRESHOLD) {
-      controlAction(dx > 0 ? "previous" : "next");
+  function clearSwipeFeedback() {
+    for (const el of [skipPrev, skipNext]) {
+      el.classList.remove("dragging");
+      el.style.setProperty("--swipe-strength", "0");
     }
-  }, { passive: true });
+  }
+
+  function showSwipeFeedback(dx) {
+    if (!state.trackId) return;
+    const target = dx > 0 ? skipPrev : skipNext;
+    const other = dx > 0 ? skipNext : skipPrev;
+    const strength = Math.min(Math.abs(dx) / swipeThreshold(), 1);
+
+    other.classList.remove("dragging");
+    other.style.setProperty("--swipe-strength", "0");
+    target.classList.add("dragging");
+    target.style.setProperty("--swipe-strength", strength.toFixed(2));
+  }
+
+  function confirmSwipe(direction) {
+    const target = direction === "previous" ? skipPrev : skipNext;
+    target.classList.remove("dragging");
+    target.classList.add("confirm");
+    target.style.setProperty("--swipe-strength", "1");
+    window.setTimeout(() => {
+      target.classList.remove("confirm");
+      target.style.setProperty("--swipe-strength", "0");
+    }, 360);
+  }
+
+  viewport.addEventListener("pointerdown", e => {
+    if (!state.trackId || swipeGesture) return;
+    swipeGesture = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      startTime: performance.now(),
+      captured: false,
+      swipeInProgress: false,
+    };
+    clearSwipeFeedback();
+  });
+
+  viewport.addEventListener("pointermove", e => {
+    if (!swipeGesture || e.pointerId !== swipeGesture.pointerId) return;
+
+    const dx = e.clientX - swipeGesture.startX;
+    const dy = e.clientY - swipeGesture.startY;
+    const horizontalEnough = Math.abs(dx) > 18 && Math.abs(dx) > Math.abs(dy) * 1.25;
+
+    swipeGesture.swipeInProgress = horizontalEnough;
+    if (horizontalEnough) {
+      if (!swipeGesture.captured && viewport.setPointerCapture) {
+        viewport.setPointerCapture(e.pointerId);
+        swipeGesture.captured = true;
+      }
+      showSwipeFeedback(dx);
+      e.preventDefault();
+    } else {
+      clearSwipeFeedback();
+    }
+  }, { passive: false });
+
+  viewport.addEventListener("pointerup", e => {
+    if (!swipeGesture || e.pointerId !== swipeGesture.pointerId) return;
+
+    const now = performance.now();
+    const dx = e.clientX - swipeGesture.startX;
+    const dy = e.clientY - swipeGesture.startY;
+    const dt = Math.max(now - swipeGesture.startTime, 1);
+    const absX = Math.abs(dx);
+    const absY = Math.abs(dy);
+    const threshold = swipeThreshold();
+    const velocity = absX / dt;
+    const canSwipeAgain = now - lastSwipeAt >= SWIPE_COOLDOWN;
+    const shouldSkip =
+      canSwipeAgain &&
+      dt <= SWIPE_MAX_TIME &&
+      absX >= threshold &&
+      absY <= absX * SWIPE_VERTICAL_RATIO &&
+      velocity >= SWIPE_MIN_VELOCITY;
+
+    if (shouldSkip) {
+      const action = dx < 0 ? "next" : "previous";
+      lastSwipeAt = now;
+      suppressTapUntil = now + 650;
+      clearSwipeFeedback();
+      controlAction(action).then(ok => {
+        if (ok) confirmSwipe(action);
+      });
+      e.preventDefault();
+    } else {
+      clearSwipeFeedback();
+    }
+
+    if (swipeGesture.captured && viewport.releasePointerCapture) {
+      viewport.releasePointerCapture(e.pointerId);
+    }
+    swipeGesture = null;
+  }, { passive: false });
+
+  viewport.addEventListener("pointercancel", e => {
+    if (!swipeGesture || e.pointerId !== swipeGesture.pointerId) return;
+    clearSwipeFeedback();
+    if (swipeGesture.captured && viewport.releasePointerCapture) {
+      viewport.releasePointerCapture(e.pointerId);
+    }
+    swipeGesture = null;
+  });
 
   // ── Prevent all image/element dragging ──
   document.addEventListener("dragstart", e => e.preventDefault());

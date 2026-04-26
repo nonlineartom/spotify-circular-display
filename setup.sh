@@ -26,17 +26,20 @@ sudo apt-get install -y -qq \
     chromium-browser \
     unclutter \
     jq \
-    curl
+    curl \
+    ca-certificates \
+    avahi-daemon \
+    alsa-utils
 
-# ── 2. Install Raspotify (Spotify Connect) ──────────────────
-step "Installing Raspotify…"
+# ── 2. Install Spotify Connect receiver ─────────────────────
+step "Installing Raspotify fallback…"
 if ! command -v raspotify &>/dev/null; then
     curl -sL https://dtcooper.github.io/raspotify/install.sh | sh
 else
     warn "Raspotify already installed, skipping."
 fi
 
-step "Configuring Raspotify with onevent handler…"
+step "Configuring Raspotify fallback with onevent handler…"
 sudo tee /etc/raspotify/conf > /dev/null <<RASPOTIFY_CONF
 LIBRESPOT_NAME="Pi Display"
 LIBRESPOT_BITRATE="320"
@@ -45,8 +48,60 @@ LIBRESPOT_INITIAL_VOLUME="80"
 LIBRESPOT_QUIET=""
 LIBRESPOT_ONEVENT="${PROJECT_DIR}/onevent.sh"
 RASPOTIFY_CONF
-sudo systemctl enable raspotify
-sudo systemctl restart raspotify
+sudo systemctl disable --now raspotify || true
+
+step "Installing go-librespot primary receiver…"
+GO_LIBRESPOT_VERSION="${GO_LIBRESPOT_VERSION:-v0.7.1}"
+case "$(uname -m)" in
+    aarch64|arm64)
+        GO_LIBRESPOT_ARCH="arm64"
+        ;;
+    x86_64|amd64)
+        GO_LIBRESPOT_ARCH="x86_64"
+        ;;
+    armv6l|armv7l)
+        GO_LIBRESPOT_ARCH="armv6_rpi"
+        ;;
+    *)
+        echo "Unsupported architecture for go-librespot: $(uname -m)" >&2
+        exit 1
+        ;;
+esac
+GO_LIBRESPOT_ARCHIVE="go-librespot_linux_${GO_LIBRESPOT_ARCH}.tar.gz"
+GO_LIBRESPOT_URL="https://github.com/devgianlu/go-librespot/releases/download/${GO_LIBRESPOT_VERSION}/${GO_LIBRESPOT_ARCHIVE}"
+TMP_DIR="$(mktemp -d)"
+curl -fsSL "$GO_LIBRESPOT_URL" -o "$TMP_DIR/$GO_LIBRESPOT_ARCHIVE"
+tar -xzf "$TMP_DIR/$GO_LIBRESPOT_ARCHIVE" -C "$TMP_DIR"
+sudo install -m 0755 "$TMP_DIR/go-librespot" /usr/local/bin/go-librespot
+rm -rf "$TMP_DIR"
+
+mkdir -p "$PROJECT_DIR/go-librespot"
+if [ ! -f "$PROJECT_DIR/go-librespot/config.yml" ]; then
+    cat > "$PROJECT_DIR/go-librespot/config.yml" <<'GO_LIBRESPOT_CONF'
+log_level: info
+device_name: Pi Display
+device_type: speaker
+audio_backend: alsa
+audio_device: default
+bitrate: 320
+initial_volume: 80
+volume_steps: 100
+ignore_last_volume: false
+zeroconf_enabled: true
+zeroconf_port: 0
+zeroconf_backend: avahi
+credentials:
+  type: zeroconf
+  zeroconf:
+    persist_credentials: false
+server:
+  enabled: true
+  address: 127.0.0.1
+  port: 3678
+  image_size: large
+mpris_enabled: false
+GO_LIBRESPOT_CONF
+fi
 
 # ── 3. Python virtual environment ───────────────────────────
 step "Creating Python virtual environment…"
@@ -82,11 +137,11 @@ chmod +x "$PROJECT_DIR/network_watchdog.sh"
 
 # ── 6. Install systemd services ─────────────────────────────
 step "Installing systemd services…"
-for svc in spotify-display spotify-buttons spotify-kiosk spotify-network-watchdog; do
+for svc in go-librespot spotify-display spotify-buttons spotify-kiosk spotify-network-watchdog; do
     sudo cp "$PROJECT_DIR/services/${svc}.service" /etc/systemd/system/
 done
 sudo systemctl daemon-reload
-sudo systemctl enable spotify-display spotify-buttons spotify-kiosk spotify-network-watchdog
+sudo systemctl enable go-librespot spotify-display spotify-buttons spotify-kiosk spotify-network-watchdog
 
 # ── 7. Display & desktop config ─────────────────────────────
 step "Configuring display (1080x1080, no blanking)…"
@@ -140,12 +195,12 @@ echo -e "${GREEN}    sudo reboot${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════${NC}"
 echo ""
 echo "  After reboot, the display services will start automatically:"
-echo "    • raspotify       — Spotify Connect receiver (\"Pi Display\")"
+echo "    • go-librespot    — Spotify Connect receiver (\"Pi Display\")"
 echo "    • spotify-display — Flask server (metadata + web UI)"
 echo "    • spotify-kiosk   — Chromium fullscreen on the display"
 echo "    • spotify-network-watchdog — restarts Spotify services after Wi-Fi returns"
 echo ""
 echo "  To use: Open Spotify on your phone → Tap devices → Select \"Pi Display\""
-echo "  The display will show album art, lyrics, and progress automatically."
-echo "  No login or authentication required!"
+echo "  The display will show album art, lyrics, progress, and local touch controls automatically."
+echo "  No QR login or Spotify Web API authentication required for controls."
 echo ""
