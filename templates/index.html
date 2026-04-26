@@ -38,6 +38,8 @@
     border-radius: 50%;
     overflow: hidden;
     touch-action: none;
+    perspective: 1600px;
+    perspective-origin: 50% 50%;
   }
 
   #viewport::before,
@@ -95,10 +97,25 @@
     inset: 0;
     border-radius: 50%;
     will-change: transform;
+    transform-style: preserve-3d;
+    transform-origin: 50% 50%;
     transition: none;
     -webkit-user-drag: none;
     -webkit-user-select: none;
     user-select: none;
+    --flip-sheen: 0;
+  }
+  #vinyl::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    pointer-events: none;
+    opacity: var(--flip-sheen);
+    background:
+      linear-gradient(105deg, rgba(255,255,255,0) 22%, rgba(255,255,255,0.34) 48%, rgba(255,255,255,0.03) 62%, rgba(0,0,0,0.48) 100%),
+      radial-gradient(circle at 50% 50%, rgba(0,0,0,0) 44%, rgba(0,0,0,0.38) 100%);
+    mix-blend-mode: screen;
   }
 
   /* Album art fills the vinyl */
@@ -111,6 +128,13 @@
     -webkit-user-drag: none;
     user-drag: none;
     pointer-events: none;
+    opacity: 1;
+    transition: opacity 0.36s ease, filter 0.5s ease, transform 0.5s ease;
+  }
+  #artwork.art-changing {
+    opacity: 0.72;
+    filter: saturate(0.86) brightness(0.78);
+    transform: scale(1.035);
   }
 
   /* Groove overlay — drawn by canvas */
@@ -208,7 +232,7 @@
   }
 
   /* Subtle text shadow — backdrop-filter handles contrast now */
-  #pill-track, #pill-artist, #pill-time {
+  #pill-track, #pill-artist, #time-row {
     text-shadow: 0 1px 3px rgba(0,0,0,0.5);
   }
 
@@ -222,6 +246,7 @@
     max-width: calc(var(--pill-w) - 68px);
     text-align: center;
     padding-bottom: 2px;
+    transition: opacity 0.28s ease, transform 0.36s ease, filter 0.36s ease;
   }
 
   #pill-artist {
@@ -234,15 +259,64 @@
     text-overflow: ellipsis;
     max-width: calc(var(--pill-w) - 92px);
     text-align: center;
+    transition: opacity 0.28s ease, transform 0.36s ease, filter 0.36s ease;
   }
 
-  #pill-time {
-    margin-top: 9px;
-    font-size: 16px;
+  #pill.metadata-out #pill-track,
+  #pill.metadata-out #pill-artist {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+    filter: blur(7px);
+  }
+
+  #pill.metadata-in #pill-track,
+  #pill.metadata-in #pill-artist {
+    animation: metadata-in 520ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  #time-row {
+    width: 100%;
+    margin-top: 13px;
+    display: grid;
+    grid-template-columns: 48px 1fr 58px;
+    align-items: center;
+    gap: 13px;
+    font-size: 14px;
     font-weight: 300;
-    color: rgba(255,255,255,0.72);
+    color: rgba(255,255,255,0.68);
     font-variant-numeric: tabular-nums;
-    text-align: center;
+  }
+
+  #time-elapsed {
+    text-align: right;
+  }
+
+  #time-remaining {
+    text-align: left;
+  }
+
+  #time-bar {
+    position: relative;
+    height: 4px;
+    overflow: hidden;
+    border-radius: 999px;
+    background:
+      linear-gradient(to right, rgba(255,255,255,0.12), rgba(255,255,255,0.05));
+    box-shadow:
+      inset 0 1px 1px rgba(255,255,255,0.05),
+      0 1px 7px rgba(0,0,0,0.28);
+  }
+
+  #time-fill {
+    position: absolute;
+    inset: 0;
+    transform-origin: 0 50%;
+    transform: scaleX(0);
+    border-radius: inherit;
+    background:
+      linear-gradient(to right, rgba(255,255,255,0.58), rgba(255,255,255,0.96));
+    box-shadow: 0 0 16px rgba(255,255,255,0.18);
+    transition: transform 0.38s linear;
   }
 
   /* ── Playback controls ── */
@@ -377,43 +451,18 @@
     100% { opacity: 0.22; filter: drop-shadow(0 0 0 rgba(255,255,255,0)); }
   }
 
-  /* ── QR overlay (vinyl-styled, shown on pause/idle) ── */
-  #qr-overlay {
-    position: absolute;
-    inset: 0;
-    width: 100%; height: 100%;
-    border-radius: 50%;
-    z-index: 35;
-    pointer-events: none;
-    opacity: 0;
-    transition: opacity 1.2s ease-in-out;
+  @keyframes metadata-in {
+    0% {
+      opacity: 0;
+      transform: translateY(-10px) scale(0.985);
+      filter: blur(8px);
+    }
+    100% {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      filter: blur(0);
+    }
   }
-  #qr-overlay.visible { opacity: 1; }
-
-  /* "Scan to connect" label */
-  #qr-label {
-    position: absolute;
-    bottom: 64px;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 36;
-    pointer-events: none;
-    opacity: 0;
-    transition: opacity 1.2s ease-in-out;
-    font-size: 22px;
-    font-weight: 300;
-    letter-spacing: 4px;
-    text-transform: uppercase;
-    color: rgba(255,255,255,0.88);
-    text-shadow: 0 1px 6px rgba(0,0,0,0.9);
-    background: rgba(0,0,0,0.42);
-    -webkit-backdrop-filter: blur(14px);
-    backdrop-filter: blur(14px);
-    border: 1px solid rgba(255,255,255,0.12);
-    border-radius: 999px;
-    padding: 10px 18px 10px 22px;
-  }
-  #qr-label.visible { opacity: 1; }
 
   /* ── Screen dimmer (saves display after extended idle) ── */
   #dimmer {
@@ -455,7 +504,11 @@
     <div id="pill">
       <div id="pill-track"></div>
       <div id="pill-artist"></div>
-      <div id="pill-time"></div>
+      <div id="time-row">
+        <span id="time-elapsed">0:00</span>
+        <div id="time-bar"><div id="time-fill"></div></div>
+        <span id="time-remaining">-0:00</span>
+      </div>
     </div>
 
     <!-- Skip buttons — semi-transparent triangles at outer edges -->
@@ -469,10 +522,6 @@
     <!-- Tap-to-pause zone over center label -->
     <div id="pause-btn"></div>
   </div>
-
-  <!-- QR overlay (vinyl-styled, shown after 30s pause or idle) -->
-  <canvas id="qr-overlay" width="1080" height="1080"></canvas>
-  <div id="qr-label">Scan to connect</div>
 
   <!-- Outer rim depth shadow — creates 3D recessed look -->
   <div id="rim-shadow"></div>
@@ -502,16 +551,16 @@
   const viewport   = $("viewport");
   const vinyl      = $("vinyl");
   const artworkEl  = $("artwork");
-  const qrOverlay  = $("qr-overlay");
   const pill       = $("pill");
   const pillTrack  = $("pill-track");
   const pillArtist = $("pill-artist");
-  const pillTime   = $("pill-time");
+  const timeElapsed = $("time-elapsed");
+  const timeRemaining = $("time-remaining");
+  const timeFill = $("time-fill");
   const progressCanvas = $("progress-ring-canvas");
   const progressCtx = progressCanvas.getContext("2d");
   const lyricsWrap = $("lyrics-wrap");
   const lyricsInner = $("lyrics-inner");
-  const qrLabel    = $("qr-label");
   const skipPrev   = $("skip-prev");
   const skipNext   = $("skip-next");
   const pauseBtn   = $("pause-btn");
@@ -542,14 +591,9 @@
     lastUpdate: performance.now(),
   };
 
-  // QR overlay state
   let pausedSince = 0;
-  let qrOverlayVisible = false;
-  let qrMatrix = null;
-  let defaultQrUrl = "";
   let screenDimmed = false;
-  const QR_IDLE_LABEL = "Scan to connect";
-  const DIM_DELAY = 5 * 60 * 1000; // 5 minutes after QR appears
+  const DIM_DELAY = 5 * 60 * 1000;
 
   // Lyrics state
   let lyricsLines = [];      // [{time: ms, text: ""}, ...]
@@ -569,6 +613,12 @@
   let returnStartAngle = 0;
   let returnStartTime = 0;
   const RETURN_DURATION = 1200; // ms to ease back to 0
+
+  // Track transition state
+  let metadataTimer = null;
+  let flipStartTime = 0;
+  let flipDirection = 1;
+  const FLIP_DURATION = 920;
 
   // ── Draw grooves on canvas (once) ──
   function drawGrooves() {
@@ -686,6 +736,70 @@
     return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
   }
 
+  function easeOutQuint(t) {
+    return 1 - Math.pow(1 - t, 5);
+  }
+
+  function applyVinylTransform(now) {
+    let flipAngle = 0;
+    let flipShift = 0;
+    let flipScale = 1;
+    let sheen = 0;
+
+    if (flipStartTime) {
+      const t = Math.min((now - flipStartTime) / FLIP_DURATION, 1);
+      const wave = Math.sin(t * Math.PI);
+      const resolve = easeOutQuint(t);
+      flipAngle = flipDirection * wave * 78;
+      flipShift = flipDirection * wave * 22;
+      flipScale = 1 - wave * 0.045 + resolve * 0.01;
+      sheen = wave * 0.82;
+
+      if (t >= 1) {
+        flipStartTime = 0;
+        sheen = 0;
+      }
+    }
+
+    vinyl.style.setProperty("--flip-sheen", sheen.toFixed(3));
+    vinyl.style.transform =
+      `translateX(${flipShift.toFixed(2)}px) rotateY(${flipAngle.toFixed(2)}deg) rotate(${currentAngle.toFixed(2)}deg) scale(${flipScale.toFixed(4)})`;
+  }
+
+  function startRecordFlip(direction) {
+    flipDirection = direction === "previous" ? 1 : -1;
+    flipStartTime = performance.now();
+    artworkEl.classList.add("art-changing");
+    window.setTimeout(() => artworkEl.classList.remove("art-changing"), FLIP_DURATION);
+  }
+
+  function setPillMetadata(trackName, artistName, animateChange) {
+    if (metadataTimer) {
+      window.clearTimeout(metadataTimer);
+      metadataTimer = null;
+    }
+
+    if (!animateChange) {
+      pill.classList.remove("metadata-out", "metadata-in");
+      pillTrack.textContent = trackName;
+      pillArtist.textContent = artistName;
+      return;
+    }
+
+    pill.classList.remove("metadata-in");
+    pill.classList.add("metadata-out");
+    metadataTimer = window.setTimeout(() => {
+      pillTrack.textContent = trackName;
+      pillArtist.textContent = artistName;
+      pill.classList.remove("metadata-out");
+      pill.classList.add("metadata-in");
+      metadataTimer = window.setTimeout(() => {
+        pill.classList.remove("metadata-in");
+        metadataTimer = null;
+      }, 560);
+    }, 190);
+  }
+
   // ── Animation loop ──
   function animate(now) {
     requestAnimationFrame(animate);
@@ -723,15 +837,15 @@
         currentAngle = 0;
         returningToZero = false;
       }
-      vinyl.style.transform = `rotate(${currentAngle.toFixed(2)}deg)`;
     }
     // --- Rotate vinyl ---
     else if (spinSpeed > 0.001) {
       returningToZero = false;
       currentAngle += DEG_PER_MS * dt * spinSpeed;
       currentAngle %= 360;
-      vinyl.style.transform = `rotate(${currentAngle.toFixed(2)}deg)`;
     }
+
+    applyVinylTransform(now);
 
     // --- Progress ring ---
     updateProgressRing(now);
@@ -739,25 +853,9 @@
     // --- Lyrics ---
     updateLyrics(now);
 
-    // --- QR overlay (show after 30s pause, or immediately when idle) ---
+    // --- Screen dim after extended idle/paused state ---
     const timePaused = pausedSince > 0 ? now - pausedSince : 0;
-    const showQR = !state.trackId || (!state.isPlaying && timePaused >= 30000);
-    if (qrLabel.textContent !== QR_IDLE_LABEL) {
-      qrLabel.textContent = QR_IDLE_LABEL;
-    }
-
-    if (showQR && !qrOverlayVisible) {
-      qrOverlay.classList.add("visible");
-      qrLabel.classList.add("visible");
-      qrOverlayVisible = true;
-    } else if (!showQR && qrOverlayVisible) {
-      qrOverlay.classList.remove("visible");
-      qrLabel.classList.remove("visible");
-      qrOverlayVisible = false;
-    }
-
-    // --- Screen dim after 5 min of QR visible ---
-    const shouldDim = qrOverlayVisible && timePaused >= 30000 + DIM_DELAY;
+    const shouldDim = !state.isPlaying && timePaused >= DIM_DELAY;
     if (shouldDim && !screenDimmed) {
       dimmer.classList.add("dim");
       screenDimmed = true;
@@ -770,7 +868,9 @@
   function updateProgressRing(now) {
     if (!state.trackId) {
       progressCtx.clearRect(0, 0, 296, 296);
-      pillTime.textContent = "";
+      timeElapsed.textContent = "0:00";
+      timeRemaining.textContent = "-0:00";
+      timeFill.style.transform = "scaleX(0)";
       return;
     }
 
@@ -824,7 +924,9 @@
     ctx.stroke();
 
     if (pct <= 0) {
-      pillTime.textContent = fmt(p) + "  /  -" + fmt(state.durationMs - p);
+      timeElapsed.textContent = fmt(p);
+      timeRemaining.textContent = "-" + fmt(state.durationMs - p);
+      timeFill.style.transform = "scaleX(0)";
       return;
     }
 
@@ -903,7 +1005,9 @@
     }
 
     // Time display
-    pillTime.textContent = fmt(p) + "  /  -" + fmt(state.durationMs - p);
+    timeElapsed.textContent = fmt(p);
+    timeRemaining.textContent = "-" + fmt(state.durationMs - p);
+    timeFill.style.transform = `scaleX(${pct.toFixed(4)})`;
   }
 
   // ── Spin control ──
@@ -926,9 +1030,10 @@
       state.artistName = "";
       state.albumName = "";
       if (!pausedSince) pausedSince = performance.now();
-      pillTrack.textContent = "";
-      pillArtist.textContent = "";
-      pillTime.textContent = "";
+      setPillMetadata("", "", false);
+      timeElapsed.textContent = "0:00";
+      timeRemaining.textContent = "-0:00";
+      timeFill.style.transform = "scaleX(0)";
       pill.classList.remove("visible");
       skipPrev.classList.remove("visible");
       skipNext.classList.remove("visible");
@@ -957,12 +1062,15 @@
 
     // Track info
     if (newId !== state.trackId) {
+      const hadTrack = !!state.trackId;
       state.trackId = newId;
       state.trackName = track.name || "";
       state.artistName = (track.artists || []).map(a => a.name).join(", ");
       state.albumName = (track.album || {}).name || "";
-      pillTrack.textContent = state.trackName;
-      pillArtist.textContent = state.artistName;
+      setPillMetadata(state.trackName, state.artistName, hadTrack);
+      if (hadTrack && !flipStartTime) {
+        startRecordFlip("next");
+      }
 
       // Fetch lyrics for new track
       if (newId !== lyricsTrackId) {
@@ -987,7 +1095,7 @@
     state.durationMs = track.duration_ms || 1;
     state.lastUpdate = performance.now();
 
-    // Pause tracking for QR overlay
+    // Pause/idle tracking for screen dimming
     if (!state.isPlaying && !pausedSince) {
       pausedSince = performance.now();
     } else if (state.isPlaying) {
@@ -1000,97 +1108,6 @@
     // Show controls when track is loaded
     skipPrev.classList.toggle("visible", !!state.trackId);
     skipNext.classList.toggle("visible", !!state.trackId);
-  }
-
-  // ── QR Code generator — uses server-side qrcode API for reliability ──
-  const QR = {
-    // Fetch QR matrix from server (generated by python-qrcode, guaranteed correct)
-    encode: async function(text) {
-      try {
-        const resp = await fetch("/api/qr?text=" + encodeURIComponent(text));
-        if (!resp.ok) return null;
-        return await resp.json(); // 2D array of booleans
-      } catch(e) { return null; }
-    }
-  };
-
-  // ── Vinyl-styled QR renderer ──
-  // Standard dark-on-light QR (scannable) with semi-transparent white background
-  // so artwork bleeds through, plus vinyl groove aesthetics in the margin.
-  function drawVinylQR(matrix) {
-    const canvas = qrOverlay;
-    const ctx = canvas.getContext("2d");
-    const W = 1080;
-    const C = W / 2;
-    const N = matrix.length;
-
-    // Size QR so all corners + quiet zone fit inside the circle.
-    const quietModules = 4;
-    const totalModules = N + quietModules * 2;
-    const inscribed = W / Math.SQRT2;
-    const cell = Math.floor(inscribed / totalModules);
-    const qrSize = cell * N;
-    const off = Math.round((W - qrSize) / 2);
-
-    ctx.clearRect(0, 0, W, W);
-    ctx.save();
-
-    // Circular clip
-    ctx.beginPath();
-    ctx.arc(C, C, C - 1, 0, Math.PI * 2);
-    ctx.clip();
-
-    // Semi-transparent WHITE background — artwork shows through
-    // This serves as the QR "light" zone (standard QR = dark modules on light bg)
-    ctx.fillStyle = "rgba(255, 255, 255, 0.75)";
-    ctx.fillRect(0, 0, W, W);
-
-    // Subtle vinyl grooves in the outer margin only
-    const halfQR = qrSize / 2 + cell * quietModules;
-    for (let r = halfQR; r < C - 4; r += 3.5) {
-      ctx.beginPath();
-      ctx.arc(C, C, r, 0, Math.PI * 2);
-      ctx.strokeStyle = "rgba(0,0,0,0.06)";
-      ctx.lineWidth = 0.8;
-      ctx.stroke();
-    }
-
-    // Draw standard dark QR modules on the light background
-    for (let row = 0; row < N; row++) {
-      for (let col = 0; col < N; col++) {
-        if (!matrix[row][col]) continue;
-
-        const x = off + col * cell;
-        const y = off + row * cell;
-
-        ctx.fillStyle = "rgba(0, 0, 0, 0.92)";
-        ctx.fillRect(x, y, cell, cell);
-      }
-    }
-
-    // Outer rim accent
-    ctx.beginPath();
-    ctx.arc(C, C, C - 3, 0, Math.PI * 2);
-    ctx.strokeStyle = "rgba(0,0,0,0.1)";
-    ctx.lineWidth = 2;
-    ctx.stroke();
-
-    ctx.restore();
-  }
-
-  // ── Init QR overlay ──
-  async function initQR() {
-    try {
-      const resp = await fetch("/api/info");
-      if (!resp.ok) return;
-      const data = await resp.json();
-      defaultQrUrl = data.url + "/connect";
-      const matrix = await QR.encode(defaultQrUrl);
-      if (matrix) {
-        qrMatrix = matrix;
-        drawVinylQR(qrMatrix);
-      }
-    } catch(e) { console.error("QR init error:", e); }
   }
 
   async function readControlResponse(resp) {
@@ -1119,10 +1136,16 @@
   }
 
   skipPrev.addEventListener("click", async () => {
-    if (await controlAction("previous")) confirmSwipe("previous");
+    if (await controlAction("previous")) {
+      startRecordFlip("previous");
+      confirmSwipe("previous");
+    }
   });
   skipNext.addEventListener("click", async () => {
-    if (await controlAction("next")) confirmSwipe("next");
+    if (await controlAction("next")) {
+      startRecordFlip("next");
+      confirmSwipe("next");
+    }
   });
   pauseBtn.addEventListener("click", async () => {
     if (performance.now() < suppressTapUntil) return;
@@ -1230,7 +1253,10 @@
       suppressTapUntil = now + 650;
       clearSwipeFeedback();
       controlAction(action).then(ok => {
-        if (ok) confirmSwipe(action);
+        if (ok) {
+          startRecordFlip(action);
+          confirmSwipe(action);
+        }
       });
       e.preventDefault();
     } else {
@@ -1260,7 +1286,6 @@
   requestAnimationFrame(animate);
   poll();
   setInterval(poll, 2000);
-  initQR();
 
 })();
 </script>

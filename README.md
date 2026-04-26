@@ -18,7 +18,7 @@ A vinyl-inspired Spotify player for circular screens, built for the Raspberry Pi
 - **Circular progress ring** — Canvas arc on the center label with an animated dot tip, warm-to-white gradient
 - **Synced scrolling lyrics** — Time-synced lyrics from LRCLIB scroll in the top half of the display, with the active line highlighted
 - **Track info** — Song title, artist name, and elapsed/remaining time
-- **QR code on idle** — When music pauses for 30+ seconds, a scannable QR code appears linking to connection instructions
+- **Premium transitions** — Track skips flip the record, metadata crossfades, and the bottom time bar updates smoothly
 - **Spotify Connect** — Acts as a Spotify Connect speaker via go-librespot, with Raspotify kept as a fallback
 - **GPIO volume buttons** — Physical buttons for volume up/down via amixer (optional)
 - **Auto-start kiosk** — Boots straight into fullscreen Chromium displaying the player
@@ -31,7 +31,7 @@ A vinyl-inspired Spotify player for circular screens, built for the Raspberry Pi
 3. **Select "Pi Display"**
 4. **Play music** — the display shows your artwork, lyrics, and progress instantly
 
-That's it. No accounts to create, no QR codes to scan, no passwords. If the display is idle, a QR code appears linking to a simple instruction page.
+That's it. No accounts to create, no QR codes to scan, no passwords.
 
 ## Hardware
 

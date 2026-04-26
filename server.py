@@ -580,31 +580,9 @@ def control(action):
     return jsonify({"error": msg}), status
 
 
-@app.route("/api/qr")
-def qr_matrix():
-    """Generate a QR code matrix (2D boolean array) for the given text."""
-    text = request.args.get("text", "")
-    if not text:
-        return jsonify({"error": "Missing text parameter"}), 400
-    try:
-        import qrcode
-        qr = qrcode.QRCode(
-            version=None,
-            error_correction=qrcode.constants.ERROR_CORRECT_M,
-            box_size=1,
-            border=0,
-        )
-        qr.add_data(text)
-        qr.make(fit=True)
-        matrix = qr.get_matrix()
-        return jsonify([[bool(cell) for cell in row] for row in matrix])
-    except ImportError:
-        return jsonify({"error": "qrcode library not installed"}), 500
-
-
 @app.route("/api/info")
 def info():
-    """Return server info including local IP for QR code generation."""
+    """Return server info including the LAN URL."""
     ip = get_local_ip()
     return jsonify({"ip": ip, "port": 5000, "url": f"http://{ip}:5000"})
 

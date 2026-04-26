@@ -202,5 +202,5 @@ echo "    • spotify-network-watchdog — restarts Spotify services after Wi-Fi
 echo ""
 echo "  To use: Open Spotify on your phone → Tap devices → Select \"Pi Display\""
 echo "  The display will show album art, lyrics, progress, and local touch controls automatically."
-echo "  No QR login or Spotify Web API authentication required for controls."
+echo "  No Spotify Web API authentication required for controls."
 echo ""
