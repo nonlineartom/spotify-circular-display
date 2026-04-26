@@ -34,7 +34,7 @@ was_playing = bool(state.get("is_playing", False))
 
 if event in ("playing", "started"):
     is_playing = True
-elif event in ("paused", "stopped", "end_of_track", "unavailable"):
+elif event in ("paused", "stopped", "end_of_track", "unavailable", "session_disconnected"):
     is_playing = False
 elif event in ("preloading", "changed", "volume_set", "seeked", "position_correction"):
     is_playing = was_playing

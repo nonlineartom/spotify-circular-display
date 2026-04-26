@@ -34,7 +34,13 @@ SCOPES = "user-modify-playback-state user-read-playback-state"
 PAUSED_IDLE_AFTER_SECONDS = 5 * 60
 PLAYING_UNKNOWN_DURATION_STALE_SECONDS = 30 * 60
 END_OF_TRACK_GRACE_SECONDS = 8
-STOPPED_IDLE_EVENTS = {"stopped", "end_of_track", "unavailable", "network_down"}
+STOPPED_IDLE_EVENTS = {
+    "stopped",
+    "end_of_track",
+    "unavailable",
+    "session_disconnected",
+    "network_down",
+}
 
 # ── In-memory caches ────────────────────────────────────────
 
