@@ -57,8 +57,11 @@ _playlist_cache = {"loaded_at": 0, "items": []}
 
 
 def load_config():
-    with open(CONFIG_FILE, "r") as f:
-        return json.load(f)
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
 
 
 def load_idle_playlists():
@@ -175,6 +178,58 @@ def lookup_track(track_id):
     except Exception as e:
         print(f"Track lookup failed for {track_id}: {e}")
         return None
+
+
+def fetch_user_playlists(limit=6):
+    """Fetch playlists for the currently authorized Spotify user, if present."""
+    token = get_user_token()
+    if not token:
+        return []
+
+    try:
+        resp = requests.get(
+            f"{SPOTIFY_API_BASE}/me/playlists",
+            params={"limit": limit, "offset": 0},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=5,
+        )
+    except requests.RequestException as e:
+        print(f"User playlist lookup failed: {e}")
+        return []
+
+    if resp.status_code != 200:
+        print(f"User playlist lookup error: {resp.status_code}")
+        return []
+
+    playlists = []
+    for idx, item in enumerate(resp.json().get("items", [])):
+        uri = item.get("uri", "")
+        if not uri.startswith("spotify:"):
+            continue
+        owner = item.get("owner", {}).get("display_name") or "Your playlist"
+        images = item.get("images") or []
+        playlists.append({
+            "id": f"user-{idx}",
+            "title": item.get("name", "Playlist"),
+            "subtitle": owner,
+            "uri": uri,
+            "image": images[0].get("url", "") if images else "",
+            "accent": "#1db954",
+            "source": "user",
+        })
+    return playlists
+
+
+def idle_launcher_payload():
+    user_playlists = fetch_user_playlists()
+    house_playlists = load_idle_playlists()
+    if user_playlists:
+        playlists = (user_playlists + house_playlists)[:6]
+        title = "Your playlists"
+    else:
+        playlists = house_playlists[:6]
+        title = "House picks"
+    return {"playlists": playlists, "title": title}
 
 
 def spotify_uri_id(uri):
@@ -650,8 +705,10 @@ def control(action):
 @app.route("/api/idle/playlists")
 def idle_playlists():
     """Return house playlists for the idle launcher."""
+    payload = idle_launcher_payload()
     return jsonify({
-        "playlists": load_idle_playlists(),
+        "playlists": payload["playlists"],
+        "title": payload["title"],
         "join_url": f"{get_public_base_url()}/join",
     })
 
@@ -661,7 +718,7 @@ def idle_play():
     """Start playback from an idle launcher card."""
     data = request.get_json(silent=True) or {}
     uri = data.get("uri", "")
-    allowed = {item["uri"] for item in load_idle_playlists()}
+    allowed = {item["uri"] for item in idle_launcher_payload()["playlists"]}
     if uri not in allowed:
         return jsonify({"error": "Playlist is not configured for this display"}), 400
 

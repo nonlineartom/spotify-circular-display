@@ -709,6 +709,7 @@
   const idleHome   = $("idle-home");
   const idleGrid   = $("idle-grid");
   const idleJoin   = $("idle-join");
+  const idleTitleSub = $("idle-title-sub");
 
   // Progress ring constants (canvas is 296x296 = 2x the CSS size for retina)
   const RING_CX = 148;
@@ -841,6 +842,7 @@
     if (!data) return;
     idlePlaylists = data.playlists || [];
     idleJoinUrl = data.join_url || "";
+    idleTitleSub.textContent = data.title || "House picks";
     renderIdlePlaylists();
   }
 

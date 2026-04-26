@@ -154,7 +154,7 @@ After reboot, open Spotify on your phone, select **"Pi Display"** as the output 
 
 ## Idle Launcher
 
-Copy `idle_playlists.example.json` to `idle_playlists.json` and edit the Spotify playlist URIs, titles, subtitles, and accent colors. When the display is idle, those cards appear on the circular interface. Tapping a card starts the playlist through go-librespot's local `/player/play` endpoint.
+Copy `idle_playlists.example.json` to `idle_playlists.json` and edit the Spotify playlist URIs, titles, subtitles, and accent colors. When the display is idle, those cards appear on the circular interface. Tapping a card starts the playlist through go-librespot's local `/player/play` endpoint. If someone signs in from `/join`, the launcher prefers that account's playlists and fills any spare cards with the house defaults.
 
 ## Systemd Services
 
