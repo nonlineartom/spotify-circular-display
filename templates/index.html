@@ -382,6 +382,156 @@
     -webkit-tap-highlight-color: transparent;
   }
 
+  /* ── Circular dashboard chrome ── */
+  #dash-chrome {
+    position: absolute;
+    inset: 0;
+    z-index: 36;
+    pointer-events: none;
+    color: #fff;
+  }
+
+  #dash-top {
+    position: absolute;
+    top: 35px;
+    left: 126px;
+    right: 126px;
+    height: 112px;
+    opacity: 1;
+    transition: opacity 0.35s ease, transform 0.35s ease;
+  }
+  #dash-chrome.playing #dash-top {
+    opacity: 0;
+    transform: translateY(-24px);
+  }
+
+  .dash-arc {
+    position: absolute;
+    top: 34px;
+    width: 126px;
+    height: 42px;
+    border-top: 4px solid rgba(255,255,255,0.74);
+    opacity: 0.74;
+  }
+  .dash-arc.left {
+    left: 0;
+    border-left: 1px solid rgba(255,255,255,0.16);
+    border-radius: 100% 0 0 0;
+    transform: rotate(-18deg);
+  }
+  .dash-arc.right {
+    right: 0;
+    border-right: 1px solid rgba(255,255,255,0.16);
+    border-radius: 0 100% 0 0;
+    transform: rotate(18deg);
+  }
+
+  .dash-label {
+    position: absolute;
+    top: 56px;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.62);
+    writing-mode: vertical-rl;
+  }
+  .dash-label.left {
+    left: 24px;
+    transform: rotate(180deg);
+  }
+  .dash-label.right {
+    right: 24px;
+  }
+
+  #dash-readout {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    transform: translateX(-50%);
+    min-width: 220px;
+    text-align: center;
+  }
+  #dash-main-value {
+    font-size: 70px;
+    line-height: 0.9;
+    font-weight: 600;
+    letter-spacing: 0;
+  }
+  #dash-unit {
+    margin-top: 7px;
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.7);
+  }
+  #dash-state {
+    position: absolute;
+    right: 188px;
+    top: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 13px;
+    border-radius: 999px;
+    background: rgba(0,0,0,0.28);
+    border: 1px solid rgba(255,255,255,0.1);
+    -webkit-backdrop-filter: blur(16px);
+    backdrop-filter: blur(16px);
+    font-size: 13px;
+    font-weight: 500;
+    color: rgba(255,255,255,0.82);
+  }
+  #dash-state::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #35f2b1;
+    box-shadow: 0 0 14px rgba(53,242,177,0.58);
+  }
+
+  #dash-dock {
+    position: absolute;
+    left: 50%;
+    bottom: 30px;
+    transform: translateX(-50%);
+    width: 468px;
+    height: 58px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 26px;
+    border-radius: 999px;
+    background: rgba(246, 249, 249, 0.92);
+    box-shadow:
+      0 22px 54px rgba(0,0,0,0.38),
+      inset 0 1px 0 rgba(255,255,255,0.78);
+    opacity: 1;
+    transition: opacity 0.35s ease, transform 0.35s ease;
+  }
+  #dash-chrome.playing #dash-dock {
+    opacity: 0.58;
+    transform: translateX(-50%) translateY(6px) scale(0.96);
+  }
+  .dock-item {
+    width: 42px;
+    height: 42px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    color: #0b4248;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0;
+  }
+  .dock-item.active {
+    background: #0d8ea0;
+    color: #fff;
+    box-shadow: 0 8px 18px rgba(13,142,160,0.3);
+  }
+
   /* ── Lyrics overlay (top half, frosted glass) ── */
   #lyrics-wrap {
     position: absolute;
@@ -456,8 +606,10 @@
     transform: scale(0.985);
     transition: opacity 0.55s ease, transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
     background:
-      linear-gradient(to bottom, rgba(0,0,0,0.86), rgba(0,0,0,0.68) 38%, rgba(0,0,0,0.88)),
-      radial-gradient(ellipse at 50% 50%, rgba(255,255,255,0.08), rgba(255,255,255,0) 66%);
+      radial-gradient(circle at 50% 43%, rgba(255,255,255,0.13), rgba(255,255,255,0) 28%),
+      radial-gradient(circle at 18% 73%, rgba(20,194,207,0.42), rgba(20,194,207,0) 26%),
+      radial-gradient(circle at 88% 28%, rgba(0,62,84,0.62), rgba(0,62,84,0) 31%),
+      linear-gradient(155deg, #076777 0%, #0791a6 46%, #064b66 100%);
   }
   #idle-home.visible {
     pointer-events: auto;
@@ -467,112 +619,123 @@
 
   #idle-title {
     position: absolute;
-    top: 112px;
+    top: 166px;
     left: 50%;
     transform: translateX(-50%);
     width: 650px;
     text-align: center;
   }
   #idle-title-main {
-    font-size: 43px;
+    font-size: 34px;
     line-height: 1.08;
     font-weight: 500;
     letter-spacing: 0;
   }
   #idle-title-sub {
     margin-top: 10px;
-    font-size: 17px;
+    font-size: 13px;
     font-weight: 300;
-    color: rgba(255,255,255,0.56);
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.68);
   }
 
   #idle-grid {
     position: absolute;
-    top: 260px;
-    left: 140px;
-    right: 140px;
+    top: 306px;
+    left: 178px;
+    right: 178px;
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 18px;
+    row-gap: 28px;
+    column-gap: 38px;
   }
 
   .idle-card {
     position: relative;
-    height: 198px;
-    overflow: hidden;
-    border: 1px solid rgba(255,255,255,0.11);
-    border-radius: 8px;
-    background:
-      linear-gradient(145deg, color-mix(in srgb, var(--accent) 34%, #090909), #080808 58%),
-      #101010;
-    box-shadow:
-      0 18px 52px rgba(0,0,0,0.38),
-      inset 0 1px 0 rgba(255,255,255,0.13);
+    height: 180px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: #fff;
+    font-family: inherit;
     -webkit-tap-highlight-color: transparent;
-    transition: transform 0.2s ease, border-color 0.2s ease, filter 0.2s ease;
+    transition: transform 0.2s ease, filter 0.2s ease;
   }
   .idle-card:active,
   .idle-card.playing {
-    transform: scale(0.965);
-    border-color: rgba(255,255,255,0.34);
-    filter: brightness(1.16);
+    transform: scale(0.95);
+    filter: brightness(1.12);
   }
   .idle-card::before {
-    content: '';
+    content: attr(data-icon);
     position: absolute;
-    right: -34px;
-    bottom: -44px;
-    width: 142px;
-    height: 142px;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 88px;
+    height: 88px;
+    display: grid;
+    place-items: center;
     border-radius: 50%;
     background:
-      radial-gradient(circle at 50% 50%, rgba(0,0,0,0.92) 0 18%, transparent 19%),
-      repeating-radial-gradient(circle, rgba(255,255,255,0.14) 0 1px, rgba(255,255,255,0) 1px 7px),
-      radial-gradient(circle, rgba(255,255,255,0.08), rgba(0,0,0,0.64));
-    opacity: 0.8;
+      radial-gradient(circle at 50% 50%, rgba(255,255,255,0.95) 0 48%, rgba(226,243,244,0.96) 100%);
+    color: #064b58;
+    font-size: 22px;
+    font-weight: 700;
+    box-shadow:
+      0 18px 32px rgba(0,0,0,0.18),
+      inset 0 1px 0 rgba(255,255,255,0.92);
   }
   .idle-card::after {
     content: '';
     position: absolute;
-    left: 20px;
-    right: 20px;
-    bottom: 18px;
-    height: 3px;
+    top: 74px;
+    left: 50%;
+    width: 48px;
+    height: 4px;
+    transform: translateX(-50%);
     border-radius: 999px;
-    background: linear-gradient(to right, var(--accent), rgba(255,255,255,0.12));
-    opacity: 0.68;
+    background: var(--accent);
+    box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 70%, transparent);
   }
   .idle-card-title {
-    position: relative;
+    position: absolute;
     z-index: 1;
-    padding: 24px 20px 0;
-    max-width: 180px;
-    font-size: 23px;
-    line-height: 1.12;
+    top: 108px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 172px;
+    font-size: 16px;
+    line-height: 1.18;
     font-weight: 500;
     color: #fff;
+    text-align: center;
     text-shadow: 0 2px 16px rgba(0,0,0,0.58);
   }
   .idle-card-sub {
-    position: relative;
+    position: absolute;
     z-index: 1;
-    padding: 9px 20px 0;
-    max-width: 170px;
-    font-size: 13px;
+    top: 148px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 160px;
+    font-size: 11px;
     line-height: 1.25;
     font-weight: 300;
-    color: rgba(255,255,255,0.68);
+    color: rgba(255,255,255,0.72);
+    text-align: center;
   }
 
   #idle-join {
     position: absolute;
     left: 50%;
-    bottom: 125px;
+    bottom: 108px;
     transform: translateX(-50%);
     width: 540px;
     text-align: center;
-    color: rgba(255,255,255,0.48);
-    font-size: 15px;
+    color: rgba(255,255,255,0.68);
+    font-size: 13px;
     font-weight: 300;
     font-variant-numeric: tabular-nums;
   }
@@ -654,6 +817,28 @@
 	    <div id="pause-btn"></div>
 	  </div>
 
+  <!-- Dashboard-inspired circular chrome -->
+  <div id="dash-chrome">
+    <div id="dash-top">
+      <div class="dash-arc left"></div>
+      <div class="dash-arc right"></div>
+      <div class="dash-label left">media</div>
+      <div class="dash-label right">volume</div>
+      <div id="dash-readout">
+        <div id="dash-main-value">0</div>
+        <div id="dash-unit">ready</div>
+      </div>
+      <div id="dash-state">standby</div>
+    </div>
+    <div id="dash-dock">
+      <div class="dock-item">H</div>
+      <div class="dock-item active">M</div>
+      <div class="dock-item">P</div>
+      <div class="dock-item">J</div>
+      <div class="dock-item">S</div>
+    </div>
+  </div>
+
   <!-- Idle playlist launcher -->
   <div id="idle-home">
     <div id="idle-title">
@@ -707,9 +892,13 @@
   const pauseBtn   = $("pause-btn");
   const dimmer     = $("dimmer");
   const idleHome   = $("idle-home");
+  const dashChrome = $("dash-chrome");
   const idleGrid   = $("idle-grid");
   const idleJoin   = $("idle-join");
   const idleTitleSub = $("idle-title-sub");
+  const dashMainValue = $("dash-main-value");
+  const dashUnit = $("dash-unit");
+  const dashState = $("dash-state");
 
   // Progress ring constants (canvas is 296x296 = 2x the CSS size for retina)
   const RING_CX = 148;
@@ -808,6 +997,7 @@
   }
 
   function setIdleVisible(visible) {
+    dashChrome.classList.toggle("playing", !visible);
     if (idleHomeVisible === visible) return;
     idleHomeVisible = visible;
     idleHome.classList.toggle("visible", visible);
@@ -816,12 +1006,13 @@
   function renderIdlePlaylists() {
     idleGrid.innerHTML = "";
     const cards = idlePlaylists.slice(0, 6);
-    for (const playlist of cards) {
+    cards.forEach((playlist, index) => {
       const card = document.createElement("button");
       card.type = "button";
       card.className = "idle-card";
       card.style.setProperty("--accent", playlist.accent || "#ffffff");
       card.dataset.uri = playlist.uri;
+      card.dataset.icon = String(index + 1).padStart(2, "0");
       card.innerHTML = `
         <div class="idle-card-title"></div>
         <div class="idle-card-sub"></div>
@@ -830,7 +1021,7 @@
       card.querySelector(".idle-card-sub").textContent = playlist.subtitle || "House pick";
       card.addEventListener("click", () => playIdlePlaylist(card, playlist.uri));
       idleGrid.appendChild(card);
-    }
+    });
 
     if (idleJoinUrl) {
       idleJoin.textContent = idleJoinUrl.replace(/^https?:\/\//, "");
@@ -1015,6 +1206,22 @@
     }, 190);
   }
 
+  function updateDashReadout(now) {
+    if (!state.trackId) {
+      dashMainValue.textContent = "0";
+      dashUnit.textContent = "ready";
+      dashState.textContent = idleHomeVisible ? "launcher" : "standby";
+      return;
+    }
+
+    let p = state.progressMs;
+    if (state.isPlaying) p += now - state.lastUpdate;
+    const pct = Math.round(Math.min(p / Math.max(state.durationMs, 1), 1) * 100);
+    dashMainValue.textContent = String(pct);
+    dashUnit.textContent = "track %";
+    dashState.textContent = state.isPlaying ? "playing" : "paused";
+  }
+
   // ── Animation loop ──
   function animate(now) {
     requestAnimationFrame(animate);
@@ -1072,6 +1279,7 @@
     const timePaused = pausedSince > 0 ? now - pausedSince : 0;
     const shouldShowIdle = idlePlaylists.length > 0 && (!state.trackId || (!state.isPlaying && timePaused >= IDLE_SHOW_AFTER));
     setIdleVisible(shouldShowIdle);
+    updateDashReadout(now);
 
     const shouldDim = !state.isPlaying && timePaused >= DIM_DELAY;
     if (shouldDim && !screenDimmed) {
