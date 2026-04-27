@@ -133,6 +133,31 @@
     display: block;
   }
 
+  #spin-marker {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 228px;
+    height: 228px;
+    border-radius: 50%;
+    z-index: 9;
+    pointer-events: none;
+    transform: translate(-50%, -50%) rotate(0deg);
+    will-change: transform;
+  }
+  #spin-marker::before {
+    content: '';
+    position: absolute;
+    top: 13px;
+    left: 50%;
+    width: 3px;
+    height: 32px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.5);
+    box-shadow: 0 0 12px rgba(255,255,255,0.16);
+    transform: translateX(-50%);
+  }
+
   /* Album art fills the vinyl */
   #artwork {
     position: absolute;
@@ -806,6 +831,7 @@
 
   <canvas id="grooves" width="1080" height="1080"></canvas>
   <div id="label-center"></div>
+  <div id="spin-marker"></div>
 
   <!-- Spindle (static, doesn't rotate) -->
   <div id="spindle"></div>
@@ -902,6 +928,7 @@
   const $ = id => document.getElementById(id);
   const viewport   = $("viewport");
   const vinyl      = $("vinyl");
+  const spinMarker = $("spin-marker");
   const artworkEl  = $("artwork");
   const pill       = $("pill");
   const pillTrack  = $("pill-track");
@@ -984,6 +1011,7 @@
   let flipDirection = 1;
   const FLIP_DURATION = 920;
   let lastVinylDraw = 0;
+  let vinylHeldStatic = false;
   let lastProgressDraw = 0;
   let lastProgressEmpty = false;
   let lastDashReadout = 0;
@@ -1208,10 +1236,16 @@
 
     vinyl.style.setProperty("--flip-sheen", sheen.toFixed(3));
     if (flipStartTime) {
+      vinylHeldStatic = false;
       vinyl.style.transform =
         `perspective(1600px) translateX(${flipShift.toFixed(2)}px) rotateY(${flipAngle.toFixed(2)}deg) rotate(${currentAngle.toFixed(2)}deg) scale(${flipScale.toFixed(4)})`;
+      spinMarker.style.transform = `translate(-50%, -50%) rotate(${currentAngle.toFixed(2)}deg)`;
     } else {
-      vinyl.style.transform = `rotate(${currentAngle.toFixed(2)}deg)`;
+      if (!vinylHeldStatic) {
+        vinyl.style.transform = "none";
+        vinylHeldStatic = true;
+      }
+      spinMarker.style.transform = `translate(-50%, -50%) rotate(${currentAngle.toFixed(2)}deg)`;
     }
   }
 
