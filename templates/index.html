@@ -1016,8 +1016,10 @@
   let lastProgressEmpty = false;
   let lastDashReadout = 0;
   const VINYL_DRAW_INTERVAL = 1000 / 30;
+  const ANIMATION_FRAME_INTERVAL = 1000 / 30;
   const PROGRESS_DRAW_INTERVAL = 125;
   const DASH_READOUT_INTERVAL = 500;
+  let lastAnimationTick = 0;
 
   // ── Draw grooves on canvas (once) ──
   function drawGrooves() {
@@ -1303,6 +1305,8 @@
   // ── Animation loop ──
   function animate(now) {
     requestAnimationFrame(animate);
+    if (now - lastAnimationTick < ANIMATION_FRAME_INTERVAL) return;
+    lastAnimationTick = now;
 
     const dt = now - lastFrameTime;
     lastFrameTime = now;
