@@ -38,8 +38,6 @@
     border-radius: 50%;
     overflow: hidden;
     touch-action: none;
-    perspective: 1600px;
-    perspective-origin: 50% 50%;
   }
 
   #viewport::before,
@@ -1202,7 +1200,7 @@
     vinyl.style.setProperty("--flip-sheen", sheen.toFixed(3));
     if (flipStartTime) {
       vinyl.style.transform =
-        `translateX(${flipShift.toFixed(2)}px) rotateY(${flipAngle.toFixed(2)}deg) rotate(${currentAngle.toFixed(2)}deg) scale(${flipScale.toFixed(4)})`;
+        `perspective(1600px) translateX(${flipShift.toFixed(2)}px) rotateY(${flipAngle.toFixed(2)}deg) rotate(${currentAngle.toFixed(2)}deg) scale(${flipScale.toFixed(4)})`;
     } else {
       vinyl.style.transform = `rotate(${currentAngle.toFixed(2)}deg)`;
     }
