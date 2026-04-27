@@ -50,12 +50,14 @@
     z-index: 18;
     pointer-events: none;
     opacity: 1;
+    visibility: visible;
     transition: opacity 0.35s ease;
   }
 
   #viewport.playing::before,
   #viewport.playing::after {
     opacity: 0;
+    visibility: hidden;
   }
 
   #viewport::before {
@@ -104,7 +106,7 @@
     inset: 0;
     border-radius: 50%;
     will-change: transform;
-    transform-style: preserve-3d;
+    transform-style: flat;
     transform-origin: 50% 50%;
     transition: none;
     -webkit-user-drag: none;
@@ -112,8 +114,12 @@
     user-select: none;
     --flip-sheen: 0;
   }
+  #vinyl.flipping {
+    transform-style: preserve-3d;
+  }
   #vinyl::after {
     content: '';
+    display: none;
     position: absolute;
     inset: 0;
     border-radius: 50%;
@@ -123,6 +129,9 @@
       linear-gradient(105deg, rgba(255,255,255,0) 22%, rgba(255,255,255,0.34) 48%, rgba(255,255,255,0.03) 62%, rgba(0,0,0,0.48) 100%),
       radial-gradient(circle at 50% 50%, rgba(0,0,0,0) 44%, rgba(0,0,0,0.38) 100%);
     mix-blend-mode: screen;
+  }
+  #vinyl.flipping::after {
+    display: block;
   }
 
   /* Album art fills the vinyl */
@@ -222,8 +231,6 @@
     z-index: 30;
     pointer-events: auto;
     background: rgba(5, 7, 8, 0.78);
-    -webkit-backdrop-filter: blur(18px) saturate(1.02);
-    backdrop-filter: blur(18px) saturate(1.02);
     border: 1px solid rgba(255,255,255,0.09);
     border-radius: 8px;
     box-shadow:
@@ -410,6 +417,7 @@
   }
   #dash-chrome.playing #dash-top {
     opacity: 0;
+    visibility: hidden;
     transform: translateY(-24px);
   }
 
@@ -485,8 +493,6 @@
     border-radius: 999px;
     background: rgba(0,0,0,0.28);
     border: 1px solid rgba(255,255,255,0.1);
-    -webkit-backdrop-filter: blur(16px);
-    backdrop-filter: blur(16px);
     font-size: 13px;
     font-weight: 500;
     color: rgba(255,255,255,0.82);
@@ -521,6 +527,7 @@
   }
   #dash-chrome.playing #dash-dock {
     opacity: 0;
+    visibility: hidden;
     transform: translateX(-50%) translateY(26px) scale(0.92);
   }
   .dock-item {
@@ -553,12 +560,12 @@
     pointer-events: none;
     overflow: hidden;
     opacity: 0;
+    visibility: hidden;
+    content-visibility: hidden;
     transition: opacity 0.6s;
     background:
       radial-gradient(ellipse at 50% 34%, rgba(255,255,255,0.06), rgba(255,255,255,0) 64%),
       rgba(0, 0, 0, 0.26);
-    -webkit-backdrop-filter: blur(18px) saturate(1.05);
-    backdrop-filter: blur(18px) saturate(1.05);
     border: 1px solid rgba(255,255,255,0.08);
     border-radius: 24px;
     /* Mask fades top/bottom — also softens the blur edges naturally */
@@ -567,7 +574,11 @@
     mask-image: linear-gradient(to bottom,
       transparent 0%, transparent 9%, white 25%, white 66%, transparent 92%, transparent 100%);
   }
-  #lyrics-wrap.visible { opacity: 1; }
+  #lyrics-wrap.visible {
+    opacity: 1;
+    visibility: visible;
+    content-visibility: visible;
+  }
 
   #lyrics-inner {
     display: flex;
@@ -611,6 +622,9 @@
     z-index: 34;
     pointer-events: none;
     opacity: 0;
+    visibility: hidden;
+    content-visibility: hidden;
+    contain: layout paint style;
     transform: scale(0.985);
     transition: opacity 0.55s ease, transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
     background:
@@ -622,6 +636,8 @@
   #idle-home.visible {
     pointer-events: auto;
     opacity: 1;
+    visibility: visible;
+    content-visibility: visible;
     transform: scale(1);
   }
 
@@ -965,6 +981,11 @@
   let flipStartTime = 0;
   let flipDirection = 1;
   const FLIP_DURATION = 920;
+  let lastProgressDraw = 0;
+  let lastProgressEmpty = false;
+  let lastDashReadout = 0;
+  const PROGRESS_DRAW_INTERVAL = 125;
+  const DASH_READOUT_INTERVAL = 500;
 
   // ── Draw grooves on canvas (once) ──
   function drawGrooves() {
@@ -1005,6 +1026,7 @@
   }
 
   function setIdleVisible(visible) {
+    if (idleHomeVisible === visible && viewport.classList.contains("playing") === !visible) return;
     viewport.classList.toggle("playing", !visible);
     dashChrome.classList.toggle("playing", !visible);
     if (idleHomeVisible === visible) return;
@@ -1173,17 +1195,23 @@
       if (t >= 1) {
         flipStartTime = 0;
         sheen = 0;
+        vinyl.classList.remove("flipping");
       }
     }
 
     vinyl.style.setProperty("--flip-sheen", sheen.toFixed(3));
-    vinyl.style.transform =
-      `translateX(${flipShift.toFixed(2)}px) rotateY(${flipAngle.toFixed(2)}deg) rotate(${currentAngle.toFixed(2)}deg) scale(${flipScale.toFixed(4)})`;
+    if (flipStartTime) {
+      vinyl.style.transform =
+        `translateX(${flipShift.toFixed(2)}px) rotateY(${flipAngle.toFixed(2)}deg) rotate(${currentAngle.toFixed(2)}deg) scale(${flipScale.toFixed(4)})`;
+    } else {
+      vinyl.style.transform = `rotate(${currentAngle.toFixed(2)}deg)`;
+    }
   }
 
   function startRecordFlip(direction) {
     flipDirection = direction === "previous" ? 1 : -1;
     flipStartTime = performance.now();
+    vinyl.classList.add("flipping");
     artworkEl.classList.add("art-changing");
     window.setTimeout(() => artworkEl.classList.remove("art-changing"), FLIP_DURATION);
   }
@@ -1288,7 +1316,10 @@
     const timePaused = pausedSince > 0 ? now - pausedSince : 0;
     const shouldShowIdle = idlePlaylists.length > 0 && (!state.trackId || (!state.isPlaying && timePaused >= IDLE_SHOW_AFTER));
     setIdleVisible(shouldShowIdle);
-    updateDashReadout(now);
+    if (now - lastDashReadout >= DASH_READOUT_INTERVAL) {
+      updateDashReadout(now);
+      lastDashReadout = now;
+    }
 
     const shouldDim = !state.isPlaying && timePaused >= DIM_DELAY;
     if (shouldDim && !screenDimmed) {
@@ -1302,12 +1333,18 @@
 
   function updateProgressRing(now) {
     if (!state.trackId) {
-      progressCtx.clearRect(0, 0, 296, 296);
-      timeElapsed.textContent = "0:00";
-      timeRemaining.textContent = "-0:00";
-      timeFill.style.transform = "scaleX(0)";
+      if (!lastProgressEmpty) {
+        progressCtx.clearRect(0, 0, 296, 296);
+        timeElapsed.textContent = "0:00";
+        timeRemaining.textContent = "-0:00";
+        timeFill.style.transform = "scaleX(0)";
+        lastProgressEmpty = true;
+      }
       return;
     }
+    if (now - lastProgressDraw < PROGRESS_DRAW_INTERVAL) return;
+    lastProgressDraw = now;
+    lastProgressEmpty = false;
 
     let p = state.progressMs;
     if (state.isPlaying) {
@@ -1369,7 +1406,7 @@
     const endAngle = startAngle + pct * Math.PI * 2;
 
     // Create a conical-style gradient by drawing many small segments
-    const segments = Math.max(2, Math.floor(pct * 200));
+    const segments = Math.max(2, Math.floor(pct * 72));
     for (let i = 0; i < segments; i++) {
       const t0 = i / segments;
       const t1 = (i + 1.5) / segments; // slight overlap to avoid gaps

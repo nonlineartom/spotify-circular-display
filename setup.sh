@@ -173,13 +173,13 @@ fi
 # Disable screen blanking
 sudo raspi-config nonint do_blanking 1 2>/dev/null || true
 
-# Auto-hide mouse cursor via unclutter (autostart)
+# The web UI sets cursor:none itself. Avoid running unclutter on the kiosk: on
+# some Wayland/Xwayland Pi setups it can burn CPU continuously and cause stutter.
 AUTOSTART_DIR="/home/${USER}/.config/lxsession/LXDE-pi"
 mkdir -p "$AUTOSTART_DIR"
 AUTOSTART_FILE="$AUTOSTART_DIR/autostart"
-if ! grep -q "unclutter" "$AUTOSTART_FILE" 2>/dev/null; then
-    echo "@unclutter -idle 0.1 -root" >> "$AUTOSTART_FILE"
-fi
+touch "$AUTOSTART_FILE"
+sed -i '/unclutter/d' "$AUTOSTART_FILE"
 
 # Disable screen saver in X
 if ! grep -q "xset s off" "$AUTOSTART_FILE" 2>/dev/null; then
