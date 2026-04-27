@@ -979,9 +979,11 @@
   let flipStartTime = 0;
   let flipDirection = 1;
   const FLIP_DURATION = 920;
+  let lastVinylDraw = 0;
   let lastProgressDraw = 0;
   let lastProgressEmpty = false;
   let lastDashReadout = 0;
+  const VINYL_DRAW_INTERVAL = 1000 / 30;
   const PROGRESS_DRAW_INTERVAL = 125;
   const DASH_READOUT_INTERVAL = 500;
 
@@ -1176,6 +1178,9 @@
   }
 
   function applyVinylTransform(now) {
+    if (!flipStartTime && now - lastVinylDraw < VINYL_DRAW_INTERVAL) return;
+    lastVinylDraw = now;
+
     let flipAngle = 0;
     let flipShift = 0;
     let flipScale = 1;
