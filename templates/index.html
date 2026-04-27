@@ -115,6 +115,7 @@
   }
   #vinyl.flipping {
     transform-style: preserve-3d;
+    backface-visibility: visible;
   }
   #vinyl::after {
     content: '';
@@ -125,7 +126,7 @@
     pointer-events: none;
     opacity: var(--flip-sheen);
     background:
-      linear-gradient(105deg, rgba(255,255,255,0) 22%, rgba(255,255,255,0.34) 48%, rgba(255,255,255,0.03) 62%, rgba(0,0,0,0.48) 100%),
+      linear-gradient(180deg, rgba(255,255,255,0.28) 0%, rgba(255,255,255,0.04) 46%, rgba(0,0,0,0.42) 100%),
       radial-gradient(circle at 50% 50%, rgba(0,0,0,0) 44%, rgba(0,0,0,0.38) 100%);
     mix-blend-mode: screen;
   }
@@ -1216,18 +1217,16 @@
     lastVinylDraw = now;
 
     let flipAngle = 0;
-    let flipShift = 0;
     let flipScale = 1;
     let sheen = 0;
 
     if (flipStartTime) {
       const t = Math.min((now - flipStartTime) / FLIP_DURATION, 1);
       const wave = Math.sin(t * Math.PI);
-      const resolve = easeOutQuint(t);
-      flipAngle = flipDirection * wave * 78;
-      flipShift = flipDirection * wave * 22;
-      flipScale = 1 - wave * 0.045 + resolve * 0.01;
-      sheen = wave * 0.82;
+      const resolve = easeInOut(t);
+      flipAngle = resolve * 180;
+      flipScale = 1 - wave * 0.045;
+      sheen = wave * 0.7;
 
       if (t >= 1) {
         flipStartTime = 0;
@@ -1240,7 +1239,7 @@
     if (flipStartTime) {
       vinylHeldStatic = false;
       vinyl.style.transform =
-        `perspective(1600px) translateX(${flipShift.toFixed(2)}px) rotateY(${flipAngle.toFixed(2)}deg) rotate(${currentAngle.toFixed(2)}deg) scale(${flipScale.toFixed(4)})`;
+        `perspective(1600px) rotateX(${flipAngle.toFixed(2)}deg) scale(${flipScale.toFixed(4)})`;
       spinMarker.style.transform = `translate(-50%, -50%) rotate(${currentAngle.toFixed(2)}deg)`;
     } else {
       if (!vinylHeldStatic) {
