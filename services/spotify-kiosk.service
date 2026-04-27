@@ -19,6 +19,10 @@ ExecStart=/usr/bin/chromium \
     --disable-session-crashed-bubble \
     --disable-restore-session-state \
     --disable-pinch \
+    --disable-renderer-accessibility \
+    --disable-gpu-rasterization \
+    --disable-zero-copy \
+    --disable-accelerated-2d-canvas \
     --kiosk \
     --incognito \
     --disable-translate \
