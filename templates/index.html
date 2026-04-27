@@ -399,156 +399,6 @@
     -webkit-tap-highlight-color: transparent;
   }
 
-  /* ── Circular dashboard chrome ── */
-  #dash-chrome {
-    position: absolute;
-    inset: 0;
-    z-index: 36;
-    pointer-events: none;
-    color: #fff;
-  }
-
-  #dash-top {
-    position: absolute;
-    top: 35px;
-    left: 126px;
-    right: 126px;
-    height: 112px;
-    opacity: 1;
-    transition: opacity 0.35s ease, transform 0.35s ease;
-  }
-  #dash-chrome.playing #dash-top {
-    opacity: 0;
-    visibility: hidden;
-    transform: translateY(-24px);
-  }
-
-  .dash-arc {
-    position: absolute;
-    top: 34px;
-    width: 126px;
-    height: 42px;
-    border-top: 4px solid rgba(255,255,255,0.74);
-    opacity: 0.74;
-  }
-  .dash-arc.left {
-    left: 0;
-    border-left: 1px solid rgba(255,255,255,0.16);
-    border-radius: 100% 0 0 0;
-    transform: rotate(-18deg);
-  }
-  .dash-arc.right {
-    right: 0;
-    border-right: 1px solid rgba(255,255,255,0.16);
-    border-radius: 0 100% 0 0;
-    transform: rotate(18deg);
-  }
-
-  .dash-label {
-    position: absolute;
-    top: 56px;
-    font-size: 10px;
-    font-weight: 500;
-    letter-spacing: 3px;
-    text-transform: uppercase;
-    color: rgba(255,255,255,0.62);
-    writing-mode: vertical-rl;
-  }
-  .dash-label.left {
-    left: 24px;
-    transform: rotate(180deg);
-  }
-  .dash-label.right {
-    right: 24px;
-  }
-
-  #dash-readout {
-    position: absolute;
-    left: 50%;
-    top: 0;
-    transform: translateX(-50%);
-    min-width: 220px;
-    text-align: center;
-  }
-  #dash-main-value {
-    font-size: 70px;
-    line-height: 0.9;
-    font-weight: 600;
-    letter-spacing: 0;
-  }
-  #dash-unit {
-    margin-top: 7px;
-    font-size: 13px;
-    font-weight: 500;
-    letter-spacing: 2px;
-    text-transform: uppercase;
-    color: rgba(255,255,255,0.7);
-  }
-  #dash-state {
-    position: absolute;
-    right: 188px;
-    top: 14px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 9px 13px;
-    border-radius: 999px;
-    background: rgba(0,0,0,0.28);
-    border: 1px solid rgba(255,255,255,0.1);
-    font-size: 13px;
-    font-weight: 500;
-    color: rgba(255,255,255,0.82);
-  }
-  #dash-state::before {
-    content: '';
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #35f2b1;
-    box-shadow: 0 0 14px rgba(53,242,177,0.58);
-  }
-
-  #dash-dock {
-    position: absolute;
-    left: 50%;
-    bottom: 30px;
-    transform: translateX(-50%);
-    width: 468px;
-    height: 58px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 26px;
-    border-radius: 999px;
-    background: rgba(246, 249, 249, 0.92);
-    box-shadow:
-      0 22px 54px rgba(0,0,0,0.38),
-      inset 0 1px 0 rgba(255,255,255,0.78);
-    opacity: 1;
-    transition: opacity 0.35s ease, transform 0.35s ease;
-  }
-  #dash-chrome.playing #dash-dock {
-    opacity: 0;
-    visibility: hidden;
-    transform: translateX(-50%) translateY(26px) scale(0.92);
-  }
-  .dock-item {
-    width: 42px;
-    height: 42px;
-    display: grid;
-    place-items: center;
-    border-radius: 50%;
-    color: #0b4248;
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0;
-  }
-  .dock-item.active {
-    background: #0d8ea0;
-    color: #fff;
-    box-shadow: 0 8px 18px rgba(13,142,160,0.3);
-  }
-
   /* ── Lyrics overlay (top half, frosted glass) ── */
   #lyrics-wrap {
     position: absolute;
@@ -615,155 +465,6 @@
   }
   .lyric-line.past {
     color: rgba(255,255,255,0.38);
-  }
-
-  /* ── Idle launcher ── */
-  #idle-home {
-    position: absolute;
-    inset: 0;
-    z-index: 34;
-    pointer-events: none;
-    opacity: 0;
-    visibility: hidden;
-    content-visibility: hidden;
-    contain: layout paint style;
-    transform: scale(0.985);
-    transition: opacity 0.55s ease, transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
-    background:
-      radial-gradient(circle at 50% 43%, rgba(255,255,255,0.13), rgba(255,255,255,0) 28%),
-      radial-gradient(circle at 18% 73%, rgba(20,194,207,0.42), rgba(20,194,207,0) 26%),
-      radial-gradient(circle at 88% 28%, rgba(0,62,84,0.62), rgba(0,62,84,0) 31%),
-      linear-gradient(155deg, #076777 0%, #0791a6 46%, #064b66 100%);
-  }
-  #idle-home.visible {
-    pointer-events: auto;
-    opacity: 1;
-    visibility: visible;
-    content-visibility: visible;
-    transform: scale(1);
-  }
-
-  #idle-title {
-    position: absolute;
-    top: 166px;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 650px;
-    text-align: center;
-  }
-  #idle-title-main {
-    font-size: 34px;
-    line-height: 1.08;
-    font-weight: 500;
-    letter-spacing: 0;
-  }
-  #idle-title-sub {
-    margin-top: 10px;
-    font-size: 13px;
-    font-weight: 300;
-    letter-spacing: 2px;
-    text-transform: uppercase;
-    color: rgba(255,255,255,0.68);
-  }
-
-  #idle-grid {
-    position: absolute;
-    top: 306px;
-    left: 178px;
-    right: 178px;
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    row-gap: 28px;
-    column-gap: 38px;
-  }
-
-  .idle-card {
-    position: relative;
-    height: 180px;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    color: #fff;
-    font-family: inherit;
-    -webkit-tap-highlight-color: transparent;
-    transition: transform 0.2s ease, filter 0.2s ease;
-  }
-  .idle-card:active,
-  .idle-card.playing {
-    transform: scale(0.95);
-    filter: brightness(1.12);
-  }
-  .idle-card::before {
-    content: attr(data-icon);
-    position: absolute;
-    top: 0;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 88px;
-    height: 88px;
-    display: grid;
-    place-items: center;
-    border-radius: 50%;
-    background:
-      radial-gradient(circle at 50% 50%, rgba(255,255,255,0.95) 0 48%, rgba(226,243,244,0.96) 100%);
-    color: #064b58;
-    font-size: 22px;
-    font-weight: 700;
-    box-shadow:
-      0 18px 32px rgba(0,0,0,0.18),
-      inset 0 1px 0 rgba(255,255,255,0.92);
-  }
-  .idle-card::after {
-    content: '';
-    position: absolute;
-    top: 74px;
-    left: 50%;
-    width: 48px;
-    height: 4px;
-    transform: translateX(-50%);
-    border-radius: 999px;
-    background: var(--accent);
-    box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 70%, transparent);
-  }
-  .idle-card-title {
-    position: absolute;
-    z-index: 1;
-    top: 108px;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 172px;
-    font-size: 16px;
-    line-height: 1.18;
-    font-weight: 500;
-    color: #fff;
-    text-align: center;
-    text-shadow: 0 2px 16px rgba(0,0,0,0.58);
-  }
-  .idle-card-sub {
-    position: absolute;
-    z-index: 1;
-    top: 148px;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 160px;
-    font-size: 11px;
-    line-height: 1.25;
-    font-weight: 300;
-    color: rgba(255,255,255,0.72);
-    text-align: center;
-  }
-
-  #idle-join {
-    position: absolute;
-    left: 50%;
-    bottom: 108px;
-    transform: translateX(-50%);
-    width: 540px;
-    text-align: center;
-    color: rgba(255,255,255,0.68);
-    font-size: 13px;
-    font-weight: 300;
-    font-variant-numeric: tabular-nums;
   }
 
   @keyframes edge-confirm {
@@ -844,38 +545,6 @@
 	    <div id="pause-btn"></div>
 	  </div>
 
-  <!-- Dashboard-inspired circular chrome -->
-  <div id="dash-chrome">
-    <div id="dash-top">
-      <div class="dash-arc left"></div>
-      <div class="dash-arc right"></div>
-      <div class="dash-label left">media</div>
-      <div class="dash-label right">volume</div>
-      <div id="dash-readout">
-        <div id="dash-main-value">0</div>
-        <div id="dash-unit">ready</div>
-      </div>
-      <div id="dash-state">standby</div>
-    </div>
-    <div id="dash-dock">
-      <div class="dock-item">H</div>
-      <div class="dock-item active">M</div>
-      <div class="dock-item">P</div>
-      <div class="dock-item">J</div>
-      <div class="dock-item">S</div>
-    </div>
-  </div>
-
-  <!-- Idle playlist launcher -->
-  <div id="idle-home">
-    <div id="idle-title">
-      <div id="idle-title-main">Pi Display</div>
-      <div id="idle-title-sub">House picks</div>
-    </div>
-    <div id="idle-grid"></div>
-    <div id="idle-join"></div>
-  </div>
-
 	  <!-- Outer rim depth shadow — creates 3D recessed look -->
 	  <div id="rim-shadow"></div>
 
@@ -918,14 +587,6 @@
   const skipNext   = $("skip-next");
   const pauseBtn   = $("pause-btn");
   const dimmer     = $("dimmer");
-  const idleHome   = $("idle-home");
-  const dashChrome = $("dash-chrome");
-  const idleGrid   = $("idle-grid");
-  const idleJoin   = $("idle-join");
-  const idleTitleSub = $("idle-title-sub");
-  const dashMainValue = $("dash-main-value");
-  const dashUnit = $("dash-unit");
-  const dashState = $("dash-state");
 
   // Progress ring constants (canvas is 296x296 = 2x the CSS size for retina)
   const RING_CX = 148;
@@ -955,10 +616,6 @@
   let pausedSince = 0;
   let screenDimmed = false;
   const DIM_DELAY = 5 * 60 * 1000;
-  const IDLE_SHOW_AFTER = 25 * 1000;
-  let idleHomeVisible = false;
-  let idlePlaylists = [];
-  let idleJoinUrl = "";
 
   // Lyrics state
   let lyricsLines = [];      // [{time: ms, text: ""}, ...]
@@ -986,9 +643,7 @@
   const FLIP_DURATION = 920;
   let lastProgressDraw = 0;
   let lastProgressEmpty = false;
-  let lastDashReadout = 0;
   const PROGRESS_DRAW_INTERVAL = 125;
-  const DASH_READOUT_INTERVAL = 500;
 
   // ── Draw grooves on canvas (once) ──
   function drawGrooves() {
@@ -1028,74 +683,8 @@
     return null;
   }
 
-  function setIdleVisible(visible) {
-    if (idleHomeVisible === visible && viewport.classList.contains("playing") === !visible) return;
-    viewport.classList.toggle("playing", !visible);
-    dashChrome.classList.toggle("playing", !visible);
-    if (idleHomeVisible === visible) return;
-    idleHomeVisible = visible;
-    idleHome.classList.toggle("visible", visible);
-  }
-
-  function renderIdlePlaylists() {
-    idleGrid.innerHTML = "";
-    const cards = idlePlaylists.slice(0, 6);
-    cards.forEach((playlist, index) => {
-      const card = document.createElement("button");
-      card.type = "button";
-      card.className = "idle-card";
-      card.style.setProperty("--accent", playlist.accent || "#ffffff");
-      card.dataset.uri = playlist.uri;
-      card.dataset.icon = String(index + 1).padStart(2, "0");
-      card.innerHTML = `
-        <div class="idle-card-title"></div>
-        <div class="idle-card-sub"></div>
-      `;
-      card.querySelector(".idle-card-title").textContent = playlist.title || "Playlist";
-      card.querySelector(".idle-card-sub").textContent = playlist.subtitle || "House pick";
-      card.addEventListener("click", () => playIdlePlaylist(card, playlist.uri));
-      idleGrid.appendChild(card);
-    });
-
-    if (idleJoinUrl) {
-      idleJoin.textContent = idleJoinUrl.replace(/^https?:\/\//, "");
-    }
-  }
-
-  async function fetchIdlePlaylists() {
-    const data = await api("GET", "/idle/playlists");
-    if (!data) return;
-    idlePlaylists = data.playlists || [];
-    idleJoinUrl = data.join_url || "";
-    idleTitleSub.textContent = data.title || "House picks";
-    renderIdlePlaylists();
-  }
-
-  async function playIdlePlaylist(card, uri) {
-    if (!uri) return;
-    card.classList.add("playing");
-    try {
-      const resp = await fetch("/api/idle/play", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uri }),
-      });
-      if (resp.ok) {
-        setIdleVisible(false);
-        pausedSince = 0;
-        window.setTimeout(poll, 700);
-      } else {
-        console.warn("Idle playlist failed:", await readControlResponse(resp));
-      }
-    } catch(e) {
-      console.warn("Idle playlist request failed:", e);
-    } finally {
-      window.setTimeout(() => card.classList.remove("playing"), 420);
-    }
-  }
-
-  for (const eventName of ["pointerdown", "pointermove", "pointerup", "pointercancel"]) {
-    idleHome.addEventListener(eventName, e => e.stopPropagation());
+  function setPlayerMode(hasTrack) {
+    viewport.classList.toggle("playing", hasTrack);
   }
 
   // ── Lyrics ──
@@ -1244,22 +833,6 @@
     }, 190);
   }
 
-  function updateDashReadout(now) {
-    if (!state.trackId) {
-      dashMainValue.textContent = "0";
-      dashUnit.textContent = "ready";
-      dashState.textContent = idleHomeVisible ? "launcher" : "standby";
-      return;
-    }
-
-    let p = state.progressMs;
-    if (state.isPlaying) p += now - state.lastUpdate;
-    const pct = Math.round(Math.min(p / Math.max(state.durationMs, 1), 1) * 100);
-    dashMainValue.textContent = String(pct);
-    dashUnit.textContent = "track %";
-    dashState.textContent = state.isPlaying ? "playing" : "paused";
-  }
-
   // ── Animation loop ──
   function animate(now) {
     requestAnimationFrame(animate);
@@ -1315,12 +888,7 @@
 
     // --- Screen dim after extended idle/paused state ---
     const timePaused = pausedSince > 0 ? now - pausedSince : 0;
-    const shouldShowIdle = idlePlaylists.length > 0 && (!state.trackId || (!state.isPlaying && timePaused >= IDLE_SHOW_AFTER));
-    setIdleVisible(shouldShowIdle);
-    if (now - lastDashReadout >= DASH_READOUT_INTERVAL) {
-      updateDashReadout(now);
-      lastDashReadout = now;
-    }
+    setPlayerMode(!!state.trackId);
 
     const shouldDim = !state.isPlaying && timePaused >= DIM_DELAY;
     if (shouldDim && !screenDimmed) {
@@ -1757,7 +1325,6 @@
   // ── Init ──
   drawGrooves();
   requestAnimationFrame(animate);
-  fetchIdlePlaylists();
   poll();
   setInterval(poll, 2000);
 
