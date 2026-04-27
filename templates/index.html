@@ -134,31 +134,6 @@
     display: block;
   }
 
-  #spin-marker {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    width: 228px;
-    height: 228px;
-    border-radius: 50%;
-    z-index: 9;
-    pointer-events: none;
-    transform: translate(-50%, -50%) rotate(0deg);
-    will-change: transform;
-  }
-  #spin-marker::before {
-    content: '';
-    position: absolute;
-    top: 13px;
-    left: 50%;
-    width: 3px;
-    height: 32px;
-    border-radius: 999px;
-    background: rgba(255,255,255,0.5);
-    box-shadow: 0 0 12px rgba(255,255,255,0.16);
-    transform: translateX(-50%);
-  }
-
   /* Album art fills the vinyl */
   #artwork {
     position: absolute;
@@ -832,7 +807,6 @@
 
   <canvas id="grooves" width="1080" height="1080"></canvas>
   <div id="label-center"></div>
-  <div id="spin-marker"></div>
 
   <!-- Spindle (static, doesn't rotate) -->
   <div id="spindle"></div>
@@ -929,7 +903,6 @@
   const $ = id => document.getElementById(id);
   const viewport   = $("viewport");
   const vinyl      = $("vinyl");
-  const spinMarker = $("spin-marker");
   const artworkEl  = $("artwork");
   const pill       = $("pill");
   const pillTrack  = $("pill-track");
@@ -1011,16 +984,11 @@
   let flipStartTime = 0;
   let flipDirection = 1;
   const FLIP_DURATION = 920;
-  let lastVinylDraw = 0;
-  let vinylHeldStatic = false;
   let lastProgressDraw = 0;
   let lastProgressEmpty = false;
   let lastDashReadout = 0;
-  const VINYL_DRAW_INTERVAL = 1000 / 30;
-  const ANIMATION_FRAME_INTERVAL = 1000 / 30;
   const PROGRESS_DRAW_INTERVAL = 125;
   const DASH_READOUT_INTERVAL = 500;
-  let lastAnimationTick = 0;
 
   // ── Draw grooves on canvas (once) ──
   function drawGrooves() {
@@ -1213,9 +1181,6 @@
   }
 
   function applyVinylTransform(now) {
-    if (!flipStartTime && now - lastVinylDraw < VINYL_DRAW_INTERVAL) return;
-    lastVinylDraw = now;
-
     let flipAngle = 0;
     let flipScale = 1;
     let sheen = 0;
@@ -1237,16 +1202,10 @@
 
     vinyl.style.setProperty("--flip-sheen", sheen.toFixed(3));
     if (flipStartTime) {
-      vinylHeldStatic = false;
       vinyl.style.transform =
-        `perspective(1600px) rotateX(${flipAngle.toFixed(2)}deg) scale(${flipScale.toFixed(4)})`;
-      spinMarker.style.transform = `translate(-50%, -50%) rotate(${currentAngle.toFixed(2)}deg)`;
+        `perspective(1600px) rotateX(${flipAngle.toFixed(2)}deg) rotate(${currentAngle.toFixed(2)}deg) scale(${flipScale.toFixed(4)})`;
     } else {
-      if (!vinylHeldStatic) {
-        vinyl.style.transform = "none";
-        vinylHeldStatic = true;
-      }
-      spinMarker.style.transform = `translate(-50%, -50%) rotate(${currentAngle.toFixed(2)}deg)`;
+      vinyl.style.transform = `rotate(${currentAngle.toFixed(2)}deg)`;
     }
   }
 
@@ -1304,8 +1263,6 @@
   // ── Animation loop ──
   function animate(now) {
     requestAnimationFrame(animate);
-    if (now - lastAnimationTick < ANIMATION_FRAME_INTERVAL) return;
-    lastAnimationTick = now;
 
     const dt = now - lastFrameTime;
     lastFrameTime = now;
