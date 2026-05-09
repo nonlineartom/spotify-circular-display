@@ -19,7 +19,7 @@ A vinyl-inspired Spotify player for circular screens, built for the Raspberry Pi
 - **Synced scrolling lyrics** — Time-synced lyrics from LRCLIB scroll in the top half of the display, with the active line highlighted
 - **Track info** — Song title, artist name, and elapsed/remaining time
 - **Premium transitions** — Track skips flip the record, metadata crossfades, and the bottom time bar updates smoothly
-- **Idle launcher** — When idle, the display offers configurable house playlists that start through the local receiver
+- **Screen dimmer** — Fades to near-black after extended idle to protect the display
 - **Spotify Connect** — Acts as a Spotify Connect speaker via go-librespot, with Raspotify kept as a fallback
 - **GPIO volume buttons** — Physical buttons for volume up/down via amixer (optional)
 - **Auto-start kiosk** — Boots straight into fullscreen Chromium displaying the player
@@ -165,10 +165,6 @@ sudo reboot
 ```
 
 After reboot, open Spotify on your phone, select **"Pi Display"** as the output device, and play music. The display updates instantly.
-
-## Idle Launcher
-
-Copy `idle_playlists.example.json` to `idle_playlists.json` and edit the Spotify playlist URIs, titles, subtitles, and accent colors. When the display is idle, those cards appear on the circular interface. Tapping a card starts the playlist through go-librespot's local `/player/play` endpoint. If someone signs in from `/join`, the launcher prefers that account's playlists and fills any spare cards with the house defaults.
 
 ## Systemd Services
 
