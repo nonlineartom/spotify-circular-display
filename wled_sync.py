@@ -47,6 +47,19 @@ DRGB_PROTOCOL_ID = 2
 NOW_PLAYING_POLL_SECONDS = 2.0
 CONFIG_RELOAD_SECONDS = 2.0
 CROSSFADE_SECONDS = 1.0
+# Matches SPIN_RAMP in templates/index.html — the vinyl on the display
+# eases its rotation speed up/down over this many seconds. The WLED
+# gradient mirrors that ramp so the lights spin in lockstep with the
+# record (1:1 spin-up on play, spin-down on pause).
+SPIN_RAMP_SECONDS = 4.0
+
+
+def _ease_in_out(t):
+    """Cubic ease-in-out — same formula as easeInOut() in the kiosk JS."""
+    if t < 0.5:
+        return 4 * t * t * t
+    x = -2 * t + 2
+    return 1 - (x * x * x) / 2
 
 
 # ── Config ────────────────────────────────────────────────────
@@ -467,9 +480,19 @@ def main():
     crossfade_start = 0.0
 
     last_send = 0.0
-    started_at = time.time()
     paused_since = None     # wall time when is_playing first observed False
     released_during_pause = False  # currently in "long pause = release" state
+
+    # Vinyl-mirroring spin state — phase is a running float in [0, 1) that
+    # advances at spin_speed * elapsed_seconds / drift_period each tick.
+    # spin_speed eases between 0 and 1 over SPIN_RAMP_SECONDS, matching the
+    # spinning record on the display exactly.
+    phase = 0.0
+    phase_updated_at = time.time()
+    spin_speed = 0.0
+    spin_target = 0
+    spin_start_time = 0.0
+    spin_start_speed = 0.0
 
     while True:
         now = time.time()
@@ -529,6 +552,29 @@ def main():
         elif paused_since is None:
             paused_since = now
 
+        # Spin state mirrors the kiosk vinyl: setSpinTarget(1) on play,
+        # setSpinTarget(0) on pause; speed eases over SPIN_RAMP_SECONDS.
+        new_target = 1 if is_playing else 0
+        if new_target != spin_target:
+            spin_target = new_target
+            spin_start_time = now
+            spin_start_speed = spin_speed
+        if spin_speed != spin_target:
+            elapsed = now - spin_start_time
+            t = min(elapsed / SPIN_RAMP_SECONDS, 1.0)
+            eased = _ease_in_out(t)
+            spin_speed = spin_start_speed + (spin_target - spin_start_speed) * eased
+            if t >= 1.0:
+                spin_speed = float(spin_target)
+
+        # Integrate gradient phase by elapsed time × current spin speed.
+        # Done every loop iteration (not just on send) so the integration
+        # captures the easing accurately rather than sampling at send time.
+        drift_period = max(0.5, config["gradient_drift_seconds"])
+        dt = max(0.0, now - phase_updated_at)
+        phase = (phase + spin_speed * dt / drift_period) % 1.0
+        phase_updated_at = now
+
         # Long pause = treat as idle: stop sending so WLED's realtime mode
         # times out and the device reverts to whatever preset is configured
         # locally. `pause_release_seconds = 0` disables this behaviour and
@@ -557,10 +603,6 @@ def main():
         duration_ms = max(1, snap["duration_ms"])
         progress_ms = effective_progress_ms(snap)
         progress_frac = max(0.0, min(1.0, progress_ms / duration_ms))
-
-        # Gradient drift phase — gives the ambient look even on long pauses.
-        drift_period = max(0.5, config["gradient_drift_seconds"])
-        phase = ((now - started_at) % drift_period) / drift_period
 
         # Render and send to every configured device. Each strip gets the same
         # palette + phase + progress fraction, scaled to its own pixel count,
