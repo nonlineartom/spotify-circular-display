@@ -140,11 +140,11 @@ fi
 
 # ── 6. Install systemd services ─────────────────────────────
 step "Installing systemd services…"
-for svc in go-librespot spotify-display spotify-buttons spotify-kiosk spotify-network-watchdog; do
+for svc in go-librespot spotify-display spotify-buttons spotify-kiosk spotify-network-watchdog spotify-wled; do
     sudo cp "$PROJECT_DIR/services/${svc}.service" /etc/systemd/system/
 done
 sudo systemctl daemon-reload
-sudo systemctl enable go-librespot spotify-display spotify-buttons spotify-kiosk spotify-network-watchdog
+sudo systemctl enable go-librespot spotify-display spotify-buttons spotify-kiosk spotify-network-watchdog spotify-wled
 
 # ── 7. Display & desktop config ─────────────────────────────
 step "Configuring display (1080x1080, no blanking)…"

@@ -2,5 +2,18 @@
   "client_id": "YOUR_SPOTIFY_CLIENT_ID",
   "client_secret": "YOUR_SPOTIFY_CLIENT_SECRET",
   "public_base_url": "",
-  "redirect_uri": ""
+  "redirect_uri": "",
+  "wled": {
+    "enabled": false,
+    "host": "",
+    "name": "",
+    "pixel_count": 46,
+    "palette_colors": 3,
+    "saturation_boost": 1.3,
+    "gradient_drift_seconds": 20,
+    "dim_band_width": 3,
+    "play_fps": 5,
+    "pause_fps": 1,
+    "realtime_timeout_seconds": 2
+  }
 }

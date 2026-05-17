@@ -174,6 +174,7 @@ After reboot, open Spotify on your phone, select **"Pi Display"** as the output 
 | `spotify-kiosk` | Chromium in fullscreen kiosk mode |
 | `spotify-buttons` | GPIO button handler (optional) |
 | `spotify-network-watchdog` | Restarts Spotify services after Wi-Fi returns |
+| `spotify-wled` | WLED ambient lighting + progress dim-band (optional) |
 | `go-librespot` | Spotify Connect audio receiver + local state/control API |
 | `raspotify` | Disabled fallback Spotify Connect receiver + onevent |
 
@@ -211,6 +212,59 @@ Wire momentary buttons between these BCM GPIO pins and GND:
 > Play/pause, next, and previous controls can be routed through the local go-librespot API. Volume buttons still use `amixer`.
 
 Internal pull-up resistors are enabled — no external resistors needed.
+
+## WLED ambient lighting (optional)
+
+A nearby WLED-controlled WS2812b light bar can mirror the album-art palette and show track progress as a sliding dim band. The Pi streams pixels directly over UDP DRGB while a track is playing; when nothing is playing the Pi stops streaming and WLED reverts to whatever preset is configured on the device.
+
+### Set up the device from the kiosk
+
+1. Power on a WLED device on the same LAN as the Pi.
+2. With nothing playing on Spotify, the kiosk sits in its idle state.
+3. A "WLED device found — tap to set up" chip appears at the top of the display when a device is discovered via mDNS.
+4. Tap it, pick the device — its IP and name are written to `config.json` and `spotify-wled` starts driving it on the next tick.
+
+The chip only appears when (a) the player is idle and (b) at least one discovered WLED device isn't the currently configured one. If you swap in a new bar later, just let the player go idle and the chip will offer to switch.
+
+### What you'll see
+
+- **Album-art palette** — three vivid accent colors picked from the artwork. The picker scores candidates by chroma × √frequency × value, enforces a 30° minimum hue gap between picks, and floors saturation + value so even muddy / monochrome artwork comes out punchy on LEDs.
+- **Slow ambient drift** — the palette is interpolated across the 46 pixels and phase-shifted slowly (one full cycle every 20 s by default) so the gradient feels alive without being distracting.
+- **Smooth progress band** — a 3-pixel-wide cluster (configurable) slides left → right over the course of the track. Rendered as the **hue-opposite** of the underlying gradient color at each pixel (cyan band over a red gradient, magenta over green, etc.) at full brightness — stays visible through diffusion that would swallow a dim band. Subpixel coverage = continuous motion, no integer steps. Freezes in place when paused.
+- **Idle = hands off** — WLED's realtime mode times out about 2 s after the Pi stops streaming, so your own WLED presets take over the moment Spotify disconnects.
+
+### Manual config (optional)
+
+You can pre-populate the `wled` block in `config.json` instead of going through the kiosk UI:
+
+```json
+"wled": {
+  "enabled": true,
+  "host": "192.168.1.67",
+  "name": "Living room bar",
+  "pixel_count": 46,
+  "palette_colors": 3,
+  "saturation_boost": 1.3,
+  "gradient_drift_seconds": 20,
+  "dim_band_width": 3,
+  "play_fps": 5,
+  "pause_fps": 1,
+  "realtime_timeout_seconds": 2
+}
+```
+
+The progress band is now always rendered as the complement of the gradient color at each pixel — the legacy `dim_band_value` field is accepted but ignored.
+
+`wled_sync.py` re-reads `config.json` every couple of seconds — no service restart needed when these values change.
+
+### Useful commands
+
+```bash
+sudo systemctl status spotify-wled
+sudo journalctl -u spotify-wled -f
+curl http://localhost:5000/api/wled/discovered
+curl http://localhost:5000/api/wled/status
+```
 
 ## Tech Stack
 

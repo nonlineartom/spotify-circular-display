@@ -12,6 +12,7 @@ The legacy Spotify Web API OAuth path is retained only as a fallback.
 import json
 import os
 import socket
+import threading
 import time
 import urllib.parse
 import requests
@@ -54,6 +55,11 @@ _user_token = None
 _user_token_expiry = 0
 _track_cache = {}  # track_id -> {name, artists, album, images, duration_ms}
 _playlist_cache = {"loaded_at": 0, "items": []}
+
+# WLED discovery cache: ip -> {"name": str, "ip": str, "port": int, "last_seen": float}
+_wled_devices = {}
+_wled_devices_lock = threading.Lock()
+WLED_DEVICE_TTL_SECONDS = 60
 
 
 def load_config():
@@ -750,6 +756,135 @@ def info():
     return jsonify({"ip": ip, "port": 5000, "url": f"http://{ip}:5000"})
 
 
+# ── WLED discovery + setup ───────────────────────────────────
+
+
+def _wled_known_ips():
+    with _wled_devices_lock:
+        return list(_wled_devices.keys())
+
+
+def _wled_record_device(name, ip, port):
+    if not ip:
+        return
+    with _wled_devices_lock:
+        _wled_devices[ip] = {
+            "name": name or ip,
+            "ip": ip,
+            "port": port or 80,
+            "last_seen": time.time(),
+        }
+
+
+def _wled_active_devices():
+    cutoff = time.time() - WLED_DEVICE_TTL_SECONDS
+    with _wled_devices_lock:
+        # Evict stale entries on read.
+        stale = [ip for ip, info in _wled_devices.items() if info["last_seen"] < cutoff]
+        for ip in stale:
+            _wled_devices.pop(ip, None)
+        return [
+            {"name": info["name"], "ip": info["ip"], "port": info["port"]}
+            for info in _wled_devices.values()
+        ]
+
+
+def _start_wled_mdns_browser():
+    """Start a background zeroconf browser for `_wled._tcp.local.` services.
+
+    WLED firmware advertises this service type by default. Failures (zeroconf
+    missing, network restrictions) are logged once and the rest of the server
+    keeps working — discovery is best-effort.
+    """
+    try:
+        from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
+    except ImportError:
+        print("WLED discovery disabled: zeroconf package not installed.")
+        return
+
+    class _Listener(ServiceListener):
+        def _resolve(self, zc, type_, name):
+            info = zc.get_service_info(type_, name, timeout=2000)
+            if not info:
+                return
+            addresses = info.parsed_addresses() if hasattr(info, "parsed_addresses") else []
+            if not addresses:
+                return
+            ip = addresses[0]
+            # Strip the service-type suffix (with or without a trailing dot)
+            # so the display name is just the instance label (e.g. "wled-e0eef0").
+            display = name.rstrip(".")
+            suffix = "." + type_.rstrip(".")
+            if display.endswith(suffix):
+                display = display[: -len(suffix)]
+            display = display or ip
+            _wled_record_device(display, ip, info.port)
+
+        def add_service(self, zc, type_, name):
+            self._resolve(zc, type_, name)
+
+        def update_service(self, zc, type_, name):
+            self._resolve(zc, type_, name)
+
+        def remove_service(self, zc, type_, name):
+            # Let the TTL eviction handle removal — devices reappear quickly
+            # after Wi-Fi blips, so we don't want to drop them on a single miss.
+            pass
+
+    def _run():
+        try:
+            zc = Zeroconf()
+        except OSError as e:
+            print(f"WLED discovery: Zeroconf init failed: {e}")
+            return
+        ServiceBrowser(zc, "_wled._tcp.local.", _Listener())
+        # Keep the thread alive forever — Zeroconf runs callbacks on its own threads.
+        while True:
+            time.sleep(3600)
+
+    t = threading.Thread(target=_run, name="wled-mdns", daemon=True)
+    t.start()
+
+
+@app.route("/api/wled/discovered")
+def wled_discovered():
+    """Return WLED devices currently visible on the LAN."""
+    return jsonify({"devices": _wled_active_devices()})
+
+
+@app.route("/api/wled/status")
+def wled_status():
+    """Return the kiosk-facing WLED configuration state."""
+    config = load_config()
+    wled = config.get("wled") or {}
+    host = (wled.get("host") or "").strip()
+    return jsonify({
+        "enabled": bool(wled.get("enabled", False)),
+        "host": host,
+        "name": wled.get("name") or "",
+        "configured": bool(host),
+    })
+
+
+@app.route("/api/wled/select", methods=["POST"])
+def wled_select():
+    """Persist the user's WLED choice into config.json."""
+    data = request.get_json(silent=True) or {}
+    host = (data.get("host") or "").strip()
+    name = (data.get("name") or "").strip()
+    if not host:
+        return jsonify({"error": "host required"}), 400
+
+    config = load_config()
+    wled = config.get("wled") or {}
+    wled["host"] = host
+    wled["name"] = name
+    wled["enabled"] = True
+    config["wled"] = wled
+    save_config(config)
+    return "", 204
+
+
 @app.route("/api/lyrics")
 def lyrics():
     """Fetch synced lyrics from LRCLIB for a given track."""
@@ -777,5 +912,6 @@ def lyrics():
 
 
 if __name__ == "__main__":
+    _start_wled_mdns_browser()
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
