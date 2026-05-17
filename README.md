@@ -233,7 +233,7 @@ You can add as many WLED strips as you like — every configured device receives
 ### What you'll see
 
 - **Album-art palette** — three vivid accent colors picked from the artwork. The picker scores candidates by chroma × √frequency × value, enforces a 30° minimum hue gap between picks, and floors saturation + value so even muddy / monochrome artwork comes out punchy on LEDs.
-- **Slow ambient drift** — the palette is interpolated across each strip's pixels and phase-shifted slowly (one full cycle every 20 s by default) so the gradient feels alive without being distracting. With multiple strips the drift phase is shared so they all look like one piece of lighting.
+- **Vinyl-rate drift** — the palette is interpolated across each strip's pixels and phase-shifted at **33⅓ RPM** (one full cycle every 1.8 s, matching the vinyl on the display) so the lights spin in time with the record. With multiple strips the phase is shared so they all look like one piece of lighting. Override `gradient_drift_seconds` if you want a slower ambient feel.
 - **Smooth progress band** — a 3-pixel-wide cluster (configurable) slides left → right over the course of the track on every strip simultaneously. Rendered as the **hue-opposite** of the underlying gradient color at each pixel (cyan band over a red gradient, magenta over green, etc.) at full brightness — stays visible through diffusion that would swallow a dim band. Subpixel coverage = continuous motion, no integer steps. Freezes in place when paused.
 - **Idle = hands off** — when Spotify disconnects, or when playback has been paused for 60 s (configurable via `pause_release_seconds`, set to 0 to disable), the Pi stops streaming to every configured strip. WLED's realtime mode times out about 2 s later and each device reverts to whatever preset is configured on it. Press play and the Pi re-engages all strips on the next tick.
 
@@ -250,7 +250,7 @@ You can pre-populate the `wled` block in `config.json` instead of going through 
   ],
   "palette_colors": 3,
   "saturation_boost": 1.3,
-  "gradient_drift_seconds": 20,
+  "gradient_drift_seconds": 1.8,
   "dim_band_width": 3,
   "play_fps": 5,
   "pause_fps": 1,

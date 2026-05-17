@@ -101,7 +101,8 @@ def load_config():
         "devices": _normalize_devices(wled),
         "palette_colors": max(2, int(wled.get("palette_colors") or 3)),
         "saturation_boost": float(wled.get("saturation_boost") or 1.3),
-        "gradient_drift_seconds": float(wled.get("gradient_drift_seconds") or 20.0),
+        # 1.8 s/rev = 33⅓ RPM — matches the vinyl record on the display.
+        "gradient_drift_seconds": float(wled.get("gradient_drift_seconds") or 1.8),
         "dim_band_width": max(0, int(wled.get("dim_band_width") or 3)),
         "play_fps": max(1, int(wled.get("play_fps") or 5)),
         "pause_fps": max(1, int(wled.get("pause_fps") or 1)),
