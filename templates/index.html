@@ -944,17 +944,21 @@
   }
 
   function applyVinylTransform(now) {
+    // Flip is a single rigid rotation about the horizontal centre axis
+    // (rotateX), pivoting around the centre of the record. The vinyl spin
+    // is frozen for the duration so the flip reads as one clean motion —
+    // a record being turned over rather than tumbling through space.
+    // `flipDirection` chooses the tip direction so "next" and "previous"
+    // skips visibly differ (forward tips top-away, back tips top-toward).
     let flipAngle = 0;
-    let flipScale = 1;
     let sheen = 0;
 
     if (flipStartTime) {
       const t = Math.min((now - flipStartTime) / FLIP_DURATION, 1);
-      const wave = Math.sin(t * Math.PI);
       const resolve = easeInOut(t);
-      flipAngle = resolve * 180;
-      flipScale = 1 - wave * 0.045;
-      sheen = wave * 0.7;
+      flipAngle = resolve * 180 * flipDirection;
+      // Subtle sheen pulse — sells the 3D rotation against the album art.
+      sheen = Math.sin(t * Math.PI) * 0.55;
 
       if (t >= 1) {
         flipStartTime = 0;
@@ -965,8 +969,11 @@
 
     vinyl.style.setProperty("--flip-sheen", sheen.toFixed(3));
     if (flipStartTime) {
+      // Spin (rotate = rotateZ) before the flip so the spin axis is the
+      // record's own centre and the flip pivots about the screen's
+      // horizontal axis — never around a tilted local axis.
       vinyl.style.transform =
-        `perspective(1600px) rotateX(${flipAngle.toFixed(2)}deg) rotate(${currentAngle.toFixed(2)}deg) scale(${flipScale.toFixed(4)})`;
+        `perspective(1600px) rotateX(${flipAngle.toFixed(2)}deg) rotate(${currentAngle.toFixed(2)}deg)`;
     } else {
       vinyl.style.transform = `rotate(${currentAngle.toFixed(2)}deg)`;
     }
@@ -1046,7 +1053,11 @@
       }
     }
     // --- Rotate vinyl ---
-    else if (spinSpeed > 0.001) {
+    // Spin pauses during a flip so the only motion you see is the clean
+    // 180° flip about the horizontal centre line, just like grabbing a
+    // record off the platter to turn it over. The spin resumes on the
+    // same angle the moment the flip ends.
+    else if (spinSpeed > 0.001 && !flipStartTime) {
       returningToZero = false;
       currentAngle += DEG_PER_MS * dt * spinSpeed;
       currentAngle %= 360;
