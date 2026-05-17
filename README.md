@@ -231,7 +231,7 @@ The chip only appears when (a) the player is idle and (b) at least one discovere
 - **Album-art palette** — three vivid accent colors picked from the artwork. The picker scores candidates by chroma × √frequency × value, enforces a 30° minimum hue gap between picks, and floors saturation + value so even muddy / monochrome artwork comes out punchy on LEDs.
 - **Slow ambient drift** — the palette is interpolated across the 46 pixels and phase-shifted slowly (one full cycle every 20 s by default) so the gradient feels alive without being distracting.
 - **Smooth progress band** — a 3-pixel-wide cluster (configurable) slides left → right over the course of the track. Rendered as the **hue-opposite** of the underlying gradient color at each pixel (cyan band over a red gradient, magenta over green, etc.) at full brightness — stays visible through diffusion that would swallow a dim band. Subpixel coverage = continuous motion, no integer steps. Freezes in place when paused.
-- **Idle = hands off** — WLED's realtime mode times out about 2 s after the Pi stops streaming, so your own WLED presets take over the moment Spotify disconnects.
+- **Idle = hands off** — when Spotify disconnects, or when playback has been paused for 60 s (configurable via `pause_release_seconds`, set to 0 to disable), the Pi stops streaming. WLED's realtime mode times out about 2 s later and the device reverts to whatever preset is configured on the strip. Press play and the Pi re-engages on the next tick.
 
 ### Manual config (optional)
 
@@ -249,6 +249,7 @@ You can pre-populate the `wled` block in `config.json` instead of going through 
   "dim_band_width": 3,
   "play_fps": 5,
   "pause_fps": 1,
+  "pause_release_seconds": 60,
   "realtime_timeout_seconds": 2
 }
 ```

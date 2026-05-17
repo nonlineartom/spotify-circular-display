@@ -70,6 +70,12 @@ def load_config():
         "dim_band_value": max(0, min(255, int(wled.get("dim_band_value") or 20))),
         "play_fps": max(1, int(wled.get("play_fps") or 5)),
         "pause_fps": max(1, int(wled.get("pause_fps") or 1)),
+        # Explicit None check so the user can set this to 0 to disable
+        # release-on-pause without `or` collapsing it to the default.
+        "pause_release_seconds": max(
+            0,
+            int(60 if wled.get("pause_release_seconds") is None else wled["pause_release_seconds"]),
+        ),
         "realtime_timeout_seconds": max(
             1, min(255, int(wled.get("realtime_timeout_seconds") or 2))
         ),
@@ -421,6 +427,8 @@ def main():
 
     last_send = 0.0
     started_at = time.time()
+    paused_since = None     # wall time when is_playing first observed False
+    released_during_pause = False  # currently in "long pause = release" state
 
     while True:
         now = time.time()
@@ -469,8 +477,34 @@ def main():
         if t >= 1.0:
             current_palette = target_palette
 
-        # Pick cadence and decide whether it's time to send.
+        # Pause tracking: record when pause began, clear when playback resumes.
         is_playing = bool(snap["is_playing"])
+        if is_playing:
+            if paused_since is not None:
+                if released_during_pause:
+                    print("wled_sync: playback resumed — re-engaging WLED", flush=True)
+                paused_since = None
+                released_during_pause = False
+        elif paused_since is None:
+            paused_since = now
+
+        # Long pause = treat as idle: stop sending so WLED's realtime mode
+        # times out and the device reverts to whatever preset is configured
+        # locally. `pause_release_seconds = 0` disables this behaviour and
+        # restores the legacy "drive indefinitely while paused" mode.
+        pause_release = config["pause_release_seconds"]
+        if not is_playing and paused_since is not None and pause_release > 0:
+            if now - paused_since >= pause_release:
+                if not released_during_pause:
+                    print(
+                        f"wled_sync: paused for {now - paused_since:.0f}s — releasing WLED",
+                        flush=True,
+                    )
+                    released_during_pause = True
+                time.sleep(0.5)
+                continue
+
+        # Pick cadence and decide whether it's time to send.
         fps = config["play_fps"] if is_playing else config["pause_fps"]
         interval = 1.0 / fps
         if now - last_send < interval:

@@ -14,6 +14,7 @@
     "dim_band_width": 3,
     "play_fps": 5,
     "pause_fps": 1,
+    "pause_release_seconds": 60,
     "realtime_timeout_seconds": 2
   }
 }
