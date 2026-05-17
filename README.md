@@ -221,7 +221,7 @@ A nearby WLED-controlled WS2812b light bar can mirror the album-art palette and 
 
 1. Power on a WLED device on the same LAN as the Pi.
 2. With nothing playing on Spotify, the kiosk sits in its idle state.
-3. A "WLED device found — tap to set up" chip appears at the top of the display when a device is discovered via mDNS.
+3. A "WLED device found — tap to set up" chip appears at the top of the display when a device is discovered via the LAN scan (every 30 s).
 4. Tap it, pick the device — its IP and name are written to `config.json` and `spotify-wled` starts driving it on the next tick.
 
 The chip only appears when (a) the player is idle and (b) at least one discovered WLED device isn't the currently configured one. If you swap in a new bar later, just let the player go idle and the chip will offer to switch.

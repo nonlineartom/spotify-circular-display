@@ -9,6 +9,8 @@ Controls: the Pi's touch controls call the local Spotify Connect receiver API.
 The legacy Spotify Web API OAuth path is retained only as a fallback.
 """
 
+import concurrent.futures
+import ipaddress
 import json
 import os
 import socket
@@ -789,60 +791,79 @@ def _wled_active_devices():
         ]
 
 
-def _start_wled_mdns_browser():
-    """Start a background zeroconf browser for `_wled._tcp.local.` services.
+WLED_SCAN_INTERVAL_SECONDS = 30
+WLED_PROBE_TIMEOUT = 0.4
+WLED_PROBE_CONCURRENCY = 32
 
-    WLED firmware advertises this service type by default. Failures (zeroconf
-    missing, network restrictions) are logged once and the rest of the server
-    keeps working — discovery is best-effort.
-    """
+
+def _is_wled_info(info):
+    if not isinstance(info, dict):
+        return False
+    if info.get("brand") == "WLED":
+        return True
+    # Older firmware does not set "brand"; fall back to a structural check
+    # that's unique to WLED: ESP arch + WLED's realtime UDP port + LED config.
+    return (
+        info.get("arch") in ("esp32", "esp8266")
+        and isinstance(info.get("udpport"), int)
+        and isinstance(info.get("leds"), dict)
+    )
+
+
+def _probe_wled(ip):
     try:
-        from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
-    except ImportError:
-        print("WLED discovery disabled: zeroconf package not installed.")
-        return
+        resp = requests.get(f"http://{ip}/json/info", timeout=WLED_PROBE_TIMEOUT)
+    except requests.RequestException:
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        info = resp.json()
+    except ValueError:
+        return None
+    if not _is_wled_info(info):
+        return None
+    return (info.get("name") or ip, ip, 80)
 
-    class _Listener(ServiceListener):
-        def _resolve(self, zc, type_, name):
-            info = zc.get_service_info(type_, name, timeout=2000)
-            if not info:
-                return
-            addresses = info.parsed_addresses() if hasattr(info, "parsed_addresses") else []
-            if not addresses:
-                return
-            ip = addresses[0]
-            # Strip the service-type suffix (with or without a trailing dot)
-            # so the display name is just the instance label (e.g. "wled-e0eef0").
-            display = name.rstrip(".")
-            suffix = "." + type_.rstrip(".")
-            if display.endswith(suffix):
-                display = display[: -len(suffix)]
-            display = display or ip
-            _wled_record_device(display, ip, info.port)
 
-        def add_service(self, zc, type_, name):
-            self._resolve(zc, type_, name)
+def _start_wled_lan_scanner():
+    """Periodically probe the local /24 for WLED devices.
 
-        def update_service(self, zc, type_, name):
-            self._resolve(zc, type_, name)
-
-        def remove_service(self, zc, type_, name):
-            # Let the TTL eviction handle removal — devices reappear quickly
-            # after Wi-Fi blips, so we don't want to drop them on a single miss.
-            pass
+    Replaces an earlier mDNS-based browser that bound to UDP 5353 and
+    conflicted with avahi-daemon. go-librespot uses avahi for Spotify
+    Connect advertisement; the dual-bind triggered a spam of
+    "failed handling zeroconf add user request" and intermittent
+    receiver dropouts. An HTTP scan touches no shared sockets and
+    catches every WLED that's reachable on the LAN.
+    """
 
     def _run():
+        # Discover the local /24 from this host's LAN IP. Assumes a typical
+        # home subnet — fine for the kind of LAN this kiosk lives on.
+        local = get_local_ip()
         try:
-            zc = Zeroconf()
-        except OSError as e:
-            print(f"WLED discovery: Zeroconf init failed: {e}")
+            network = ipaddress.ip_network(f"{local}/24", strict=False)
+            hosts = [str(h) for h in network.hosts() if str(h) != local]
+        except ValueError:
+            print(f"WLED scan: could not derive /24 from local IP {local}")
             return
-        ServiceBrowser(zc, "_wled._tcp.local.", _Listener())
-        # Keep the thread alive forever — Zeroconf runs callbacks on its own threads.
-        while True:
-            time.sleep(3600)
 
-    t = threading.Thread(target=_run, name="wled-mdns", daemon=True)
+        print(f"WLED scan: watching {network} every {WLED_SCAN_INTERVAL_SECONDS}s")
+
+        while True:
+            try:
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=WLED_PROBE_CONCURRENCY
+                ) as ex:
+                    for result in ex.map(_probe_wled, hosts):
+                        if result:
+                            name, ip, port = result
+                            _wled_record_device(name, ip, port)
+            except Exception as e:
+                print(f"WLED scan error: {e}")
+            time.sleep(WLED_SCAN_INTERVAL_SECONDS)
+
+    t = threading.Thread(target=_run, name="wled-lan-scan", daemon=True)
     t.start()
 
 
@@ -912,6 +933,6 @@ def lyrics():
 
 
 if __name__ == "__main__":
-    _start_wled_mdns_browser()
+    _start_wled_lan_scanner()
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
