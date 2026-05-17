@@ -588,28 +588,41 @@
   #wled-modal li:hover, #wled-modal li:active {
     background: rgba(255, 255, 255, 0.08);
   }
+  #wled-modal li .meta { display: flex; flex-direction: column; gap: 2px; }
   #wled-modal li .name { font-size: 15px; }
   #wled-modal li .ip { font-size: 12px; color: rgba(255, 255, 255, 0.45); }
-  #wled-modal li .badge {
-    font-size: 11px;
+  #wled-modal li .action {
+    font-size: 12px;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: #b8ff70;
-    border: 1px solid rgba(184, 255, 112, 0.4);
-    padding: 3px 8px;
+    padding: 6px 12px;
     border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    color: rgba(255, 255, 255, 0.85);
   }
-  #wled-modal .close {
-    display: block;
-    width: 100%;
+  #wled-modal li.added .action {
+    color: #b8ff70;
+    border-color: rgba(184, 255, 112, 0.4);
+    background: rgba(184, 255, 112, 0.06);
+  }
+  #wled-modal .controls {
+    display: flex;
+    gap: 8px;
+    margin-top: 6px;
+  }
+  #wled-modal .controls button {
+    flex: 1;
     padding: 12px;
     border-radius: 12px;
     background: rgba(255, 255, 255, 0.06);
-    color: rgba(255, 255, 255, 0.7);
+    color: rgba(255, 255, 255, 0.78);
     border: none;
     font-size: 14px;
     cursor: pointer;
     font-family: inherit;
+  }
+  #wled-modal .controls button.danger {
+    color: #ffb1b1;
   }
   #wled-modal .empty {
     padding: 24px;
@@ -700,10 +713,13 @@
   <!-- WLED device picker modal -->
   <div id="wled-modal" role="dialog" aria-modal="true">
     <div class="panel">
-      <h2>Choose a WLED device</h2>
-      <p class="sub">Found on your network. Pick one to drive with the album-art palette.</p>
+      <h2>WLED devices</h2>
+      <p class="sub">Tap to add or remove a device. All selected strips run the same album-art palette in sync.</p>
       <ul id="wled-list"></ul>
-      <button type="button" class="close" id="wled-close">Not now</button>
+      <div class="controls">
+        <button type="button" id="wled-disable" class="danger">Disable WLED</button>
+        <button type="button" id="wled-close">Done</button>
+      </div>
     </div>
   </div>
 
@@ -1482,13 +1498,17 @@
 
   // ── WLED setup affordance ──
   const wledChip = $("wled-chip");
+  const wledChipLabel = wledChip.querySelector(".label");
   const wledModal = $("wled-modal");
   const wledList = $("wled-list");
   const wledClose = $("wled-close");
+  const wledDisable = $("wled-disable");
   const wledToast = $("wled-toast");
 
-  let wledStatus = null;        // {enabled, host, name, configured}
-  let wledDevices = [];         // [{name, ip, port}, ...]
+  // wledStatus shape: {enabled, configured, devices: [{host, name, pixel_count}]}
+  // wledDiscovered shape: [{ip, name, port, pixel_count}, ...]
+  let wledStatus = null;
+  let wledDiscovered = [];
   let wledLastStatusFetch = 0;
   let wledLastDevicesFetch = 0;
   let wledToastTimer = null;
@@ -1506,20 +1526,37 @@
   }
 
   function isIdleForSetup() {
-    // Show setup UI only when nothing is loaded in the player.
-    // The now-playing display takes precedence whenever a track is active.
+    // Only show setup UI in idle state. now-playing takes precedence whenever a track is active.
     return !state.trackId;
   }
 
-  function hasNewWledDevice() {
-    if (!wledDevices.length) return false;
-    if (!wledStatus || !wledStatus.configured) return true;
-    // "New device" = at least one discovered device isn't the currently configured one.
-    return wledDevices.some(d => d.ip !== wledStatus.host);
+  function configuredHosts() {
+    if (!wledStatus || !Array.isArray(wledStatus.devices)) return new Set();
+    return new Set(wledStatus.devices.map(d => d.host));
+  }
+
+  function hasUnaddedDiscoveredDevice() {
+    if (!wledDiscovered.length) return false;
+    const configured = configuredHosts();
+    return wledDiscovered.some(d => !configured.has(d.ip));
+  }
+
+  function chipMessage() {
+    const configured = configuredHosts();
+    const unadded = wledDiscovered.filter(d => !configured.has(d.ip));
+    if (configured.size === 0) {
+      return unadded.length === 1
+        ? "WLED device found — tap to set up"
+        : `${unadded.length} WLED devices found — tap to set up`;
+    }
+    return unadded.length === 1
+      ? "New WLED device found — tap to manage"
+      : `${unadded.length} new WLED devices — tap to manage`;
   }
 
   function updateWledChipVisibility() {
-    const show = isIdleForSetup() && hasNewWledDevice() && !wledModal.classList.contains("open");
+    const show = isIdleForSetup() && hasUnaddedDiscoveredDevice() && !wledModal.classList.contains("open");
+    if (show) wledChipLabel.textContent = chipMessage();
     wledChip.classList.toggle("visible", show);
   }
 
@@ -1531,31 +1568,30 @@
     } catch (e) { /* ignore */ }
   }
 
-  async function fetchWledDevices() {
+  async function fetchWledDiscovered() {
     try {
       const r = await fetch("/api/wled/discovered");
       if (!r.ok) return;
       const data = await r.json();
-      wledDevices = Array.isArray(data.devices) ? data.devices : [];
+      wledDiscovered = Array.isArray(data.devices) ? data.devices : [];
     } catch (e) { /* ignore */ }
   }
 
   async function refreshWled() {
     const now = performance.now();
-    const tasks = [];
     if (!isIdleForSetup()) {
-      // Not idle — hide UI and skip discovery polling.
-      wledDevices = [];
+      wledDiscovered = [];
       updateWledChipVisibility();
       return;
     }
+    const tasks = [];
     if (now - wledLastStatusFetch > WLED_STATUS_INTERVAL || wledStatus === null) {
       wledLastStatusFetch = now;
       tasks.push(fetchWledStatus());
     }
     if (now - wledLastDevicesFetch > WLED_DEVICES_INTERVAL) {
       wledLastDevicesFetch = now;
-      tasks.push(fetchWledDevices());
+      tasks.push(fetchWledDiscovered());
     }
     if (tasks.length) await Promise.all(tasks);
     updateWledChipVisibility();
@@ -1563,53 +1599,101 @@
 
   function renderWledList() {
     wledList.innerHTML = "";
-    if (!wledDevices.length) {
+
+    // Build the union of discovered + configured devices so the user can
+    // remove a configured device that's currently offline / not visible.
+    const seen = new Set();
+    const rows = [];
+    for (const d of wledDiscovered) {
+      seen.add(d.ip);
+      rows.push({ host: d.ip, name: d.name || d.ip, pixel_count: d.pixel_count, visible: true });
+    }
+    if (wledStatus && Array.isArray(wledStatus.devices)) {
+      for (const d of wledStatus.devices) {
+        if (seen.has(d.host)) continue;
+        rows.push({ host: d.host, name: d.name || d.host, pixel_count: d.pixel_count, visible: false });
+      }
+    }
+
+    if (!rows.length) {
       const empty = document.createElement("div");
       empty.className = "empty";
-      empty.textContent = "No devices visible right now.";
+      empty.textContent = "No WLED devices visible on the network.";
       wledList.appendChild(empty);
       return;
     }
-    for (const d of wledDevices) {
+
+    const configured = configuredHosts();
+    for (const row of rows) {
+      const isAdded = configured.has(row.host);
       const li = document.createElement("li");
+      if (isAdded) li.classList.add("added");
+
       const meta = document.createElement("div");
+      meta.className = "meta";
       const name = document.createElement("div");
       name.className = "name";
-      name.textContent = d.name || d.ip;
+      name.textContent = row.name + (row.visible ? "" : " · offline");
       const ip = document.createElement("div");
       ip.className = "ip";
-      ip.textContent = d.ip;
+      ip.textContent = row.host + (row.pixel_count ? ` · ${row.pixel_count} px` : "");
       meta.appendChild(name);
       meta.appendChild(ip);
+
+      const action = document.createElement("span");
+      action.className = "action";
+      action.textContent = isAdded ? "Remove" : "Add";
+
       li.appendChild(meta);
-      if (wledStatus && wledStatus.host === d.ip) {
-        const badge = document.createElement("span");
-        badge.className = "badge";
-        badge.textContent = "current";
-        li.appendChild(badge);
-      }
-      li.addEventListener("click", () => selectWledDevice(d));
+      li.appendChild(action);
+      li.addEventListener("click", () => toggleWledDevice(row, !isAdded));
       wledList.appendChild(li);
     }
   }
 
-  async function selectWledDevice(device) {
+  async function pushWledDevices(devices, enabled) {
+    const body = { devices };
+    if (typeof enabled === "boolean") body.enabled = enabled;
     try {
-      const r = await fetch("/api/wled/select", {
+      const r = await fetch("/api/wled/devices", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ host: device.ip, name: device.name || "" }),
+        body: JSON.stringify(body),
       });
       if (!r.ok) {
-        showWledToast("Failed to save WLED device");
-        return;
+        showWledToast("Failed to save WLED devices");
+        return false;
       }
-      wledStatus = { enabled: true, host: device.ip, name: device.name || "", configured: true };
-      closeWledModal();
-      showWledToast("WLED set to " + (device.name || device.ip));
+      await fetchWledStatus();
+      renderWledList();
       updateWledChipVisibility();
+      return true;
     } catch (e) {
-      showWledToast("Failed to save WLED device");
+      showWledToast("Failed to save WLED devices");
+      return false;
+    }
+  }
+
+  async function toggleWledDevice(row, add) {
+    const current = (wledStatus && wledStatus.devices) ? wledStatus.devices.slice() : [];
+    let next;
+    if (add) {
+      next = current.filter(d => d.host !== row.host);
+      next.push({ host: row.host, name: row.name, pixel_count: row.pixel_count || 46 });
+    } else {
+      next = current.filter(d => d.host !== row.host);
+    }
+    const ok = await pushWledDevices(next, next.length > 0);
+    if (ok) {
+      showWledToast(add ? `Added ${row.name}` : `Removed ${row.name}`);
+    }
+  }
+
+  async function disableWled() {
+    const ok = await pushWledDevices([], false);
+    if (ok) {
+      showWledToast("WLED disabled");
+      closeWledModal();
     }
   }
 
@@ -1626,6 +1710,7 @@
 
   wledChip.addEventListener("click", openWledModal);
   wledClose.addEventListener("click", closeWledModal);
+  wledDisable.addEventListener("click", disableWled);
   wledModal.addEventListener("click", e => {
     // Click outside the panel = dismiss
     if (e.target === wledModal) closeWledModal();

@@ -766,7 +766,7 @@ def _wled_known_ips():
         return list(_wled_devices.keys())
 
 
-def _wled_record_device(name, ip, port):
+def _wled_record_device(name, ip, port, pixel_count=None):
     if not ip:
         return
     with _wled_devices_lock:
@@ -774,6 +774,7 @@ def _wled_record_device(name, ip, port):
             "name": name or ip,
             "ip": ip,
             "port": port or 80,
+            "pixel_count": pixel_count,
             "last_seen": time.time(),
         }
 
@@ -786,7 +787,12 @@ def _wled_active_devices():
         for ip in stale:
             _wled_devices.pop(ip, None)
         return [
-            {"name": info["name"], "ip": info["ip"], "port": info["port"]}
+            {
+                "name": info["name"],
+                "ip": info["ip"],
+                "port": info["port"],
+                "pixel_count": info.get("pixel_count"),
+            }
             for info in _wled_devices.values()
         ]
 
@@ -823,7 +829,9 @@ def _probe_wled(ip):
         return None
     if not _is_wled_info(info):
         return None
-    return (info.get("name") or ip, ip, 80)
+    leds = info.get("leds") or {}
+    pixel_count = int(leds.get("count") or 0) or None
+    return (info.get("name") or ip, ip, 80, pixel_count)
 
 
 def _start_wled_lan_scanner():
@@ -857,8 +865,8 @@ def _start_wled_lan_scanner():
                 ) as ex:
                     for result in ex.map(_probe_wled, hosts):
                         if result:
-                            name, ip, port = result
-                            _wled_record_device(name, ip, port)
+                            name, ip, port, pixel_count = result
+                            _wled_record_device(name, ip, port, pixel_count)
             except Exception as e:
                 print(f"WLED scan error: {e}")
             time.sleep(WLED_SCAN_INTERVAL_SECONDS)
@@ -873,34 +881,84 @@ def wled_discovered():
     return jsonify({"devices": _wled_active_devices()})
 
 
+def _wled_config_devices(wled):
+    """Same shape as wled_sync._normalize_devices — kept here to avoid a
+    cross-module import. Returns a list of {host, name, pixel_count}."""
+    raw = wled.get("devices")
+    out = []
+    if isinstance(raw, list) and raw:
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            host = (entry.get("host") or "").strip()
+            if not host:
+                continue
+            out.append({
+                "host": host,
+                "name": (entry.get("name") or host).strip(),
+                "pixel_count": max(1, int(entry.get("pixel_count") or 46)),
+            })
+        return out
+    legacy_host = (wled.get("host") or "").strip()
+    if legacy_host:
+        out.append({
+            "host": legacy_host,
+            "name": (wled.get("name") or legacy_host).strip(),
+            "pixel_count": max(1, int(wled.get("pixel_count") or 46)),
+        })
+    return out
+
+
 @app.route("/api/wled/status")
 def wled_status():
     """Return the kiosk-facing WLED configuration state."""
     config = load_config()
     wled = config.get("wled") or {}
-    host = (wled.get("host") or "").strip()
+    devices = _wled_config_devices(wled)
     return jsonify({
         "enabled": bool(wled.get("enabled", False)),
-        "host": host,
-        "name": wled.get("name") or "",
-        "configured": bool(host),
+        "devices": devices,
+        "configured": bool(devices),
     })
 
 
-@app.route("/api/wled/select", methods=["POST"])
-def wled_select():
-    """Persist the user's WLED choice into config.json."""
+@app.route("/api/wled/devices", methods=["POST"])
+def wled_devices_update():
+    """Atomically replace the configured WLED device list.
+
+    Body: {"devices": [{"host": "...", "name": "...", "pixel_count": 46}], "enabled": bool}
+    Sending {"devices": []} clears the list (and effectively releases WLED on
+    the next wled_sync tick); `enabled` is optional and defaults to True when
+    devices is non-empty.
+    """
     data = request.get_json(silent=True) or {}
-    host = (data.get("host") or "").strip()
-    name = (data.get("name") or "").strip()
-    if not host:
-        return jsonify({"error": "host required"}), 400
+    incoming = data.get("devices")
+    if not isinstance(incoming, list):
+        return jsonify({"error": "devices must be a list"}), 400
+
+    devices = []
+    for entry in incoming:
+        if not isinstance(entry, dict):
+            continue
+        host = (entry.get("host") or "").strip()
+        if not host:
+            continue
+        devices.append({
+            "host": host,
+            "name": (entry.get("name") or host).strip(),
+            "pixel_count": max(1, int(entry.get("pixel_count") or 46)),
+        })
 
     config = load_config()
     wled = config.get("wled") or {}
-    wled["host"] = host
-    wled["name"] = name
-    wled["enabled"] = True
+    wled["devices"] = devices
+    # Clean up legacy single-device keys once we've written the new shape.
+    for legacy_key in ("host", "name", "pixel_count"):
+        wled.pop(legacy_key, None)
+    if "enabled" in data:
+        wled["enabled"] = bool(data["enabled"])
+    elif devices and not wled.get("enabled"):
+        wled["enabled"] = True
     config["wled"] = wled
     save_config(config)
     return "", 204

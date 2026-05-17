@@ -52,6 +52,43 @@ CROSSFADE_SECONDS = 1.0
 # ── Config ────────────────────────────────────────────────────
 
 
+def _normalize_devices(wled):
+    """Return the configured device list as [{host, name, pixel_count}, ...].
+
+    Accepts both shapes for backwards-compat with single-device configs:
+
+      * New: ``wled.devices = [{"host": ..., "name": ..., "pixel_count": ...}]``
+      * Legacy: ``wled.host = ...`` / ``wled.name = ...`` / ``wled.pixel_count = ...``
+
+    Empty / missing → empty list.
+    """
+    raw = wled.get("devices")
+    out = []
+    if isinstance(raw, list) and raw:
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            host = (entry.get("host") or "").strip()
+            if not host:
+                continue
+            out.append({
+                "host": host,
+                "name": (entry.get("name") or host).strip(),
+                "pixel_count": max(1, int(entry.get("pixel_count") or 46)),
+            })
+        return out
+
+    # Legacy single-device fallback.
+    legacy_host = (wled.get("host") or "").strip()
+    if legacy_host:
+        out.append({
+            "host": legacy_host,
+            "name": (wled.get("name") or legacy_host).strip(),
+            "pixel_count": max(1, int(wled.get("pixel_count") or 46)),
+        })
+    return out
+
+
 def load_config():
     try:
         with open(CONFIG_FILE, "r") as f:
@@ -61,13 +98,11 @@ def load_config():
     wled = data.get("wled") or {}
     return {
         "enabled": bool(wled.get("enabled", False)),
-        "host": (wled.get("host") or "").strip(),
-        "pixel_count": int(wled.get("pixel_count") or 46),
+        "devices": _normalize_devices(wled),
         "palette_colors": max(2, int(wled.get("palette_colors") or 3)),
         "saturation_boost": float(wled.get("saturation_boost") or 1.3),
         "gradient_drift_seconds": float(wled.get("gradient_drift_seconds") or 20.0),
         "dim_band_width": max(0, int(wled.get("dim_band_width") or 3)),
-        "dim_band_value": max(0, min(255, int(wled.get("dim_band_value") or 20))),
         "play_fps": max(1, int(wled.get("play_fps") or 5)),
         "pause_fps": max(1, int(wled.get("pause_fps") or 1)),
         # Explicit None check so the user can set this to 0 to disable
@@ -330,9 +365,9 @@ def build_frame(palette, pixel_count, phase, progress_frac, band_width, _unused_
 class WledSender:
     def __init__(self):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._last_warn = 0.0
-        self._last_warn_host = None
+        self._warn_log = {}  # host -> last_warn_time
         self._sent_count = 0
+        self._first_sent_hosts = set()
         self._last_log_count = 0
         self._last_log_time = 0.0
 
@@ -343,24 +378,26 @@ class WledSender:
         try:
             self.sock.sendto(packet, (host, WLED_UDP_PORT))
             self._sent_count += 1
-            # Log the very first packet, then a heartbeat every ~30s.
             now = time.time()
-            if self._sent_count == 1:
+            if host not in self._first_sent_hosts:
                 print(f"wled_sync: first DRGB packet sent ({len(packet)} bytes) to {host}:{WLED_UDP_PORT}", flush=True)
-                self._last_log_time = now
-                self._last_log_count = self._sent_count
+                self._first_sent_hosts.add(host)
+                if self._last_log_time == 0.0:
+                    self._last_log_time = now
+                    self._last_log_count = self._sent_count
             elif now - self._last_log_time > 30:
                 delta = self._sent_count - self._last_log_count
-                print(f"wled_sync: sent {delta} packets in last {now - self._last_log_time:.1f}s (total {self._sent_count})", flush=True)
+                print(f"wled_sync: sent {delta} packets in last {now - self._last_log_time:.1f}s "
+                      f"(total {self._sent_count}, hosts={len(self._first_sent_hosts)})", flush=True)
                 self._last_log_time = now
                 self._last_log_count = self._sent_count
             return True
         except OSError as e:
             now = time.time()
-            if now - self._last_warn > 30 or host != self._last_warn_host:
+            last_warn = self._warn_log.get(host, 0.0)
+            if now - last_warn > 30:
                 print(f"wled_sync: send to {host}:{WLED_UDP_PORT} failed: {e}", flush=True)
-                self._last_warn = now
-                self._last_warn_host = host
+                self._warn_log[host] = now
             return False
 
 
@@ -417,8 +454,11 @@ def main():
 
     if not config["enabled"]:
         print("wled_sync: disabled in config (wled.enabled=false). Idling.")
-    elif not config["host"]:
-        print("wled_sync: enabled but wled.host is empty. Waiting for setup via kiosk UI.")
+    elif not config["devices"]:
+        print("wled_sync: enabled but no devices configured. Waiting for setup via kiosk UI.")
+    else:
+        print(f"wled_sync: enabled with {len(config['devices'])} device(s): "
+              + ", ".join(f"{d['name']}@{d['host']} ({d['pixel_count']}px)" for d in config["devices"]))
 
     current_palette = None  # active palette in use
     target_palette = None   # palette we are crossfading toward
@@ -437,7 +477,7 @@ def main():
             config = load_config()
             config_loaded_at = now
 
-        if not config["enabled"] or not config["host"]:
+        if not config["enabled"] or not config["devices"]:
             time.sleep(1.0)
             continue
 
@@ -521,15 +561,19 @@ def main():
         drift_period = max(0.5, config["gradient_drift_seconds"])
         phase = ((now - started_at) % drift_period) / drift_period
 
-        frame = build_frame(
-            rendered_palette,
-            config["pixel_count"],
-            phase,
-            progress_frac,
-            config["dim_band_width"],
-            config["dim_band_value"],
-        )
-        sender.send(config["host"], frame, config["realtime_timeout_seconds"])
+        # Render and send to every configured device. Each strip gets the same
+        # palette + phase + progress fraction, scaled to its own pixel count,
+        # so a 30-LED strip and a 100-LED strip stay visually in sync as one
+        # piece of "house lighting."
+        for device in config["devices"]:
+            frame = build_frame(
+                rendered_palette,
+                device["pixel_count"],
+                phase,
+                progress_frac,
+                config["dim_band_width"],
+            )
+            sender.send(device["host"], frame, config["realtime_timeout_seconds"])
         last_send = now
 
 

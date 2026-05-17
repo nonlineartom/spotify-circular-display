@@ -217,21 +217,25 @@ Internal pull-up resistors are enabled — no external resistors needed.
 
 A nearby WLED-controlled WS2812b light bar can mirror the album-art palette and show track progress as a sliding dim band. The Pi streams pixels directly over UDP DRGB while a track is playing; when nothing is playing the Pi stops streaming and WLED reverts to whatever preset is configured on the device.
 
-### Set up the device from the kiosk
+### Set up devices from the kiosk
 
-1. Power on a WLED device on the same LAN as the Pi.
+1. Power on one or more WLED devices on the same LAN as the Pi.
 2. With nothing playing on Spotify, the kiosk sits in its idle state.
-3. A "WLED device found — tap to set up" chip appears at the top of the display when a device is discovered via the LAN scan (every 30 s).
-4. Tap it, pick the device — its IP and name are written to `config.json` and `spotify-wled` starts driving it on the next tick.
+3. A "WLED device(s) found — tap to set up" chip appears at the top of the display once devices are discovered via the LAN scan (every 30 s).
+4. Tap it — the modal lists every discovered device alongside any you've already added. Tap each one to add or remove it, and they're written into `config.json` immediately. Tap "Disable WLED" to release all strips entirely.
 
-The chip only appears when (a) the player is idle and (b) at least one discovered WLED device isn't the currently configured one. If you swap in a new bar later, just let the player go idle and the chip will offer to switch.
+The chip only appears when (a) the player is idle and (b) at least one discovered device isn't already in the configured list. New devices that come online later show up the next time the player goes idle.
+
+### Multi-device
+
+You can add as many WLED strips as you like — every configured device receives the **same animation** synchronised: one palette extracted from the current artwork, stretched across each strip's own pixel count, with the progress band at the same fractional position on every strip. Add a bar in the living room and a strip behind the TV and they'll feel like a single piece of house lighting.
 
 ### What you'll see
 
 - **Album-art palette** — three vivid accent colors picked from the artwork. The picker scores candidates by chroma × √frequency × value, enforces a 30° minimum hue gap between picks, and floors saturation + value so even muddy / monochrome artwork comes out punchy on LEDs.
-- **Slow ambient drift** — the palette is interpolated across the 46 pixels and phase-shifted slowly (one full cycle every 20 s by default) so the gradient feels alive without being distracting.
-- **Smooth progress band** — a 3-pixel-wide cluster (configurable) slides left → right over the course of the track. Rendered as the **hue-opposite** of the underlying gradient color at each pixel (cyan band over a red gradient, magenta over green, etc.) at full brightness — stays visible through diffusion that would swallow a dim band. Subpixel coverage = continuous motion, no integer steps. Freezes in place when paused.
-- **Idle = hands off** — when Spotify disconnects, or when playback has been paused for 60 s (configurable via `pause_release_seconds`, set to 0 to disable), the Pi stops streaming. WLED's realtime mode times out about 2 s later and the device reverts to whatever preset is configured on the strip. Press play and the Pi re-engages on the next tick.
+- **Slow ambient drift** — the palette is interpolated across each strip's pixels and phase-shifted slowly (one full cycle every 20 s by default) so the gradient feels alive without being distracting. With multiple strips the drift phase is shared so they all look like one piece of lighting.
+- **Smooth progress band** — a 3-pixel-wide cluster (configurable) slides left → right over the course of the track on every strip simultaneously. Rendered as the **hue-opposite** of the underlying gradient color at each pixel (cyan band over a red gradient, magenta over green, etc.) at full brightness — stays visible through diffusion that would swallow a dim band. Subpixel coverage = continuous motion, no integer steps. Freezes in place when paused.
+- **Idle = hands off** — when Spotify disconnects, or when playback has been paused for 60 s (configurable via `pause_release_seconds`, set to 0 to disable), the Pi stops streaming to every configured strip. WLED's realtime mode times out about 2 s later and each device reverts to whatever preset is configured on it. Press play and the Pi re-engages all strips on the next tick.
 
 ### Manual config (optional)
 
@@ -240,9 +244,10 @@ You can pre-populate the `wled` block in `config.json` instead of going through 
 ```json
 "wled": {
   "enabled": true,
-  "host": "192.168.1.67",
-  "name": "Living room bar",
-  "pixel_count": 46,
+  "devices": [
+    {"host": "192.168.1.67", "name": "Living room bar", "pixel_count": 46},
+    {"host": "192.168.1.42", "name": "TV strip",        "pixel_count": 100}
+  ],
   "palette_colors": 3,
   "saturation_boost": 1.3,
   "gradient_drift_seconds": 20,
@@ -254,7 +259,7 @@ You can pre-populate the `wled` block in `config.json` instead of going through 
 }
 ```
 
-The progress band is now always rendered as the complement of the gradient color at each pixel — the legacy `dim_band_value` field is accepted but ignored.
+The progress band is always rendered as the complement of the gradient color at each pixel — the legacy `dim_band_value` field is accepted but ignored. Legacy single-device configs (`wled.host` / `wled.name` / `wled.pixel_count` at the top level) keep working and are migrated to the `devices` array on the next UI action.
 
 `wled_sync.py` re-reads `config.json` every couple of seconds — no service restart needed when these values change.
 
