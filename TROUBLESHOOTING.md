@@ -68,6 +68,22 @@ curl http://localhost:3678/status
 cat /tmp/spotify-state.json
 ```
 
+## WLED bar animation looks choppy or stepped
+
+The gradient drift is rendered server-side and streamed to WLED at `wled.play_fps`
+(default 30). If you see discrete jumps instead of continuous motion, the strip
+is moving more than ~1 LED per frame. Raise `play_fps` until it smooths out —
+rule of thumb is `play_fps ≥ pixel_count / gradient_drift_seconds`. For a
+100-LED strip with the default 1.8 s rotation period you want ≥ 56 FPS.
+
+Check the actual packet cadence on the Pi:
+
+```bash
+sudo tcpdump -i any -n 'udp port 21324' -c 60
+```
+
+Inter-packet gaps should be roughly `1000 / play_fps` milliseconds.
+
 ## Good QoL upgrades
 
 - Add a small physical restart button that runs

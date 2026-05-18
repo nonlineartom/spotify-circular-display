@@ -26,7 +26,9 @@ import struct
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
+import numpy as np
 import requests
 
 try:
@@ -117,7 +119,7 @@ def load_config():
         # 1.8 s/rev = 33⅓ RPM — matches the vinyl record on the display.
         "gradient_drift_seconds": float(wled.get("gradient_drift_seconds") or 1.8),
         "dim_band_width": max(0, int(wled.get("dim_band_width") or 3)),
-        "play_fps": max(1, int(wled.get("play_fps") or 5)),
+        "play_fps": max(1, int(wled.get("play_fps") or 30)),
         "pause_fps": max(1, int(wled.get("pause_fps") or 1)),
         # Explicit None check so the user can set this to 0 to disable
         # release-on-pause without `or` collapsing it to the default.
@@ -164,8 +166,6 @@ def fetch_now_playing():
 
 
 # ── Color extraction ─────────────────────────────────────────
-
-_palette_cache = {}
 
 
 def _boost_saturation(rgb, boost):
@@ -258,22 +258,57 @@ def extract_palette(image_bytes, n, saturation_boost):
     return out[:n]
 
 
-def get_palette_for(track_id, art_url, n, saturation_boost):
-    cache_key = (track_id, n, round(saturation_boost, 2))
-    if cache_key in _palette_cache:
-        return _palette_cache[cache_key]
-    if not art_url:
+class PaletteWorker:
+    """Async palette fetcher — keeps the main render loop unblocked on track change.
+
+    Returns cached palettes synchronously; for cache misses, kicks off a
+    background HTTP fetch + extraction and returns ``None`` until the result
+    lands. The main loop polls each tick and starts a crossfade as soon as
+    the new palette becomes available, so the strip never freezes while
+    waiting on Spotify's CDN.
+    """
+
+    RETRY_BACKOFF_SECONDS = 5.0  # min gap between fetches for the same key
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._cache = {}              # cache_key -> palette
+        self._inflight = set()        # cache_keys currently being fetched
+        self._last_attempt = {}       # cache_key -> wall time of last fetch
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="palette")
+
+    def get_or_fetch(self, track_id, art_url, n, saturation_boost):
+        key = (track_id, n, round(saturation_boost, 2))
+        now = time.time()
+        with self._lock:
+            cached = self._cache.get(key)
+            if cached is not None:
+                return cached
+            if key in self._inflight or not art_url:
+                return None
+            if now - self._last_attempt.get(key, 0.0) < self.RETRY_BACKOFF_SECONDS:
+                return None
+            self._inflight.add(key)
+            self._last_attempt[key] = now
+        self._executor.submit(self._fetch, key, art_url)
         return None
-    try:
-        resp = requests.get(art_url, timeout=5)
-        if resp.status_code != 200:
-            return None
-        palette = extract_palette(resp.content, n, saturation_boost)
-    except (requests.RequestException, OSError, ValueError) as e:
-        print(f"wled_sync: palette extraction failed for {track_id}: {e}")
-        return None
-    _palette_cache[cache_key] = palette
-    return palette
+
+    def _fetch(self, key, art_url):
+        track_id, n, saturation_boost = key
+        try:
+            resp = requests.get(art_url, timeout=5)
+            if resp.status_code != 200:
+                print(f"wled_sync: art fetch HTTP {resp.status_code} for {track_id}", flush=True)
+                return
+            palette = extract_palette(resp.content, n, saturation_boost)
+            with self._lock:
+                self._cache[key] = palette
+            print(f"wled_sync: palette for {track_id} = {palette}", flush=True)
+        except (requests.RequestException, OSError, ValueError) as e:
+            print(f"wled_sync: palette fetch failed for {track_id}: {e}", flush=True)
+        finally:
+            with self._lock:
+                self._inflight.discard(key)
 
 
 # ── Frame rendering ──────────────────────────────────────────
@@ -303,24 +338,25 @@ def _crossfade_palettes(old, new, t):
     return out
 
 
-def _gradient_color(palette, position):
-    """Sample a cyclical gradient through palette at position in [0, 1)."""
-    n = len(palette)
-    scaled = (position % 1.0) * n
-    idx = int(scaled)
-    frac = scaled - idx
-    a = palette[idx % n]
-    b = palette[(idx + 1) % n]
-    return _lerp_color(a, b, frac)
-
-
 def _complement_rgb(rgb):
     """Return the hue-opposite of an RGB tuple, forced to full brightness."""
     r, g, b = (c / 255.0 for c in rgb)
-    h, s, v = colorsys.rgb_to_hsv(r, g, b)
+    h, _s, _v = colorsys.rgb_to_hsv(r, g, b)
     h2 = (h + 0.5) % 1.0
     nr, ng, nb = colorsys.hsv_to_rgb(h2, 1.0, 1.0)
     return (int(round(nr * 255)), int(round(ng * 255)), int(round(nb * 255)))
+
+
+def _palette_complement(palette):
+    """Per-palette-color complement as a (n, 3) float32 array.
+
+    Cheap: palette is tiny (default 3 colors). Pre-computing once per frame
+    lets us avoid per-pixel HSV math inside ``build_frame``.
+    """
+    out = np.empty((len(palette), 3), dtype=np.float32)
+    for i, rgb in enumerate(palette):
+        out[i] = _complement_rgb(rgb)
+    return out
 
 
 def build_frame(palette, pixel_count, phase, progress_frac, band_width, _unused_dim_value=None):
@@ -332,45 +368,50 @@ def build_frame(palette, pixel_count, phase, progress_frac, band_width, _unused_
     Progress band: a `band_width`-wide region whose float center moves
     continuously across [0, pixel_count-1] as `progress_frac` goes 0 → 1.
     Each pixel is rendered as a linear blend between the underlying gradient
-    color and that gradient color's *hue-opposite* (full brightness + saturation),
+    color and the *palette complement* gradient (full brightness + saturation),
     weighted by the pixel's overlap with the band's continuous interval.
     Subpixel coverage = smooth perceived motion even between integer positions.
-    """
-    buf = bytearray(pixel_count * 3)
-    # Compute gradient first.
-    grad = [(0, 0, 0)] * pixel_count
-    for i in range(pixel_count):
-        t = (i / max(pixel_count - 1, 1)) + phase
-        grad[i] = _gradient_color(palette, t)
 
-    # Band interval, in pixel coordinates where pixel i occupies [i, i+1].
+    Note: the complement gradient is built by interpolating per-palette
+    complements (rather than complementing the interpolated gradient color
+    per pixel). For the small palettes used here the visual result is
+    indistinguishable from the per-pixel version, and the numpy vectorisation
+    keeps the render cheap enough for 30+ FPS on a Pi.
+    """
+    if pixel_count <= 0:
+        return b""
+    n = len(palette)
+    palette_arr = np.asarray(palette, dtype=np.float32)
+    complement_arr = _palette_complement(palette)
+
+    if pixel_count > 1:
+        t = np.arange(pixel_count, dtype=np.float32) / (pixel_count - 1)
+    else:
+        t = np.zeros(1, dtype=np.float32)
+    pos = ((t + phase) % 1.0) * n
+    idx = np.floor(pos).astype(np.int64)
+    frac = (pos - idx)[:, None]
+
+    a = palette_arr[idx % n]
+    b = palette_arr[(idx + 1) % n]
+    grad = a + (b - a) * frac
+
+    a_c = complement_arr[idx % n]
+    b_c = complement_arr[(idx + 1) % n]
+    grad_comp = a_c + (b_c - a_c) * frac
+
+    coverage = np.zeros(pixel_count, dtype=np.float32)
     if band_width > 0 and pixel_count > band_width:
         travel = pixel_count - band_width
         band_start = max(0.0, min(travel, progress_frac * travel))
         band_end = band_start + band_width
-    else:
-        band_start = band_end = -1.0  # no band
+        left = np.arange(pixel_count, dtype=np.float32)
+        overlap = np.minimum(left + 1.0, band_end) - np.maximum(left, band_start)
+        coverage = np.clip(overlap, 0.0, 1.0)
 
-    for i in range(pixel_count):
-        base = grad[i]
-        if band_end > 0:
-            pixel_left = float(i)
-            pixel_right = float(i + 1)
-            overlap = min(pixel_right, band_end) - max(pixel_left, band_start)
-            coverage = 0.0 if overlap <= 0 else (overlap if overlap < 1 else 1.0)
-        else:
-            coverage = 0.0
-        if coverage > 0:
-            comp = _complement_rgb(base)
-            r = int(round(base[0] * (1 - coverage) + comp[0] * coverage))
-            g = int(round(base[1] * (1 - coverage) + comp[1] * coverage))
-            b = int(round(base[2] * (1 - coverage) + comp[2] * coverage))
-        else:
-            r, g, b = base
-        buf[i * 3 + 0] = r
-        buf[i * 3 + 1] = g
-        buf[i * 3 + 2] = b
-    return bytes(buf)
+    cov = coverage[:, None]
+    out = grad * (1.0 - cov) + grad_comp * cov
+    return np.clip(np.rint(out), 0, 255).astype(np.uint8).tobytes()
 
 
 # ── UDP sender ───────────────────────────────────────────────
@@ -462,6 +503,7 @@ def main():
     sender = WledSender()
     tracker = PlaybackTracker()
     tracker.start()
+    palette_worker = PaletteWorker()
 
     config = load_config()
     config_loaded_at = time.time()
@@ -512,24 +554,22 @@ def main():
             time.sleep(0.5)
             continue
 
-        # Palette: re-extract on track change, then crossfade.
+        # Palette: re-extract on track change, then crossfade. Fetch is async —
+        # while we wait, the loop keeps rendering with whatever palette we
+        # already have so the strip never freezes on a slow Spotify CDN.
         if snap["track_id"] != target_track_id:
-            print(f"wled_sync: new track {snap['track_id']} — extracting palette", flush=True)
-            new_palette = get_palette_for(
+            new_palette = palette_worker.get_or_fetch(
                 snap["track_id"],
                 snap.get("art_url"),
                 config["palette_colors"],
                 config["saturation_boost"],
             )
             if new_palette:
-                print(f"wled_sync: palette {new_palette}", flush=True)
                 target_palette = new_palette
                 target_track_id = snap["track_id"]
                 crossfade_start = now
                 if current_palette is None:
                     current_palette = target_palette
-            else:
-                print(f"wled_sync: palette extraction returned None for {snap['track_id']} (art_url={snap.get('art_url')})", flush=True)
 
         if target_palette is None or current_palette is None:
             time.sleep(0.2)

@@ -252,7 +252,7 @@ You can pre-populate the `wled` block in `config.json` instead of going through 
   "saturation_boost": 1.3,
   "gradient_drift_seconds": 1.8,
   "dim_band_width": 3,
-  "play_fps": 5,
+  "play_fps": 30,
   "pause_fps": 1,
   "pause_release_seconds": 60,
   "realtime_timeout_seconds": 2
@@ -260,6 +260,8 @@ You can pre-populate the `wled` block in `config.json` instead of going through 
 ```
 
 The progress band is always rendered as the complement of the gradient color at each pixel — the legacy `dim_band_value` field is accepted but ignored. Legacy single-device configs (`wled.host` / `wled.name` / `wled.pixel_count` at the top level) keep working and are migrated to the `devices` array on the next UI action.
+
+**`play_fps` rule of thumb:** for smooth-looking gradient drift, set `play_fps ≥ pixel_count / gradient_drift_seconds`. With the defaults (`gradient_drift_seconds: 1.8`) that's ≈ 17 FPS for a 30-LED strip, ≈ 33 FPS for a 60-LED strip, ≈ 56 FPS for 100 LEDs. The default of 30 covers most reasonable strip sizes; bump higher if you have a long strip or notice the gradient looks stepped. WLED on ESP32 handles 60+ FPS comfortably; ESP8266 caps closer to 30.
 
 `wled_sync.py` re-reads `config.json` every couple of seconds — no service restart needed when these values change.
 
