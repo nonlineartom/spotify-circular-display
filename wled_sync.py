@@ -433,22 +433,30 @@ class WledSender:
         try:
             self.sock.sendto(packet, (host, WLED_UDP_PORT))
             self._sent_count += 1
-            now = time.time()
+            now = time.monotonic()
             if host not in self._first_sent_hosts:
                 print(f"wled_sync: first DRGB packet sent ({len(packet)} bytes) to {host}:{WLED_UDP_PORT}", flush=True)
                 self._first_sent_hosts.add(host)
                 if self._last_log_time == 0.0:
                     self._last_log_time = now
                     self._last_log_count = self._sent_count
-            elif now - self._last_log_time > 30:
+            elif now - self._last_log_time >= 10:
+                window = now - self._last_log_time
                 delta = self._sent_count - self._last_log_count
-                print(f"wled_sync: sent {delta} packets in last {now - self._last_log_time:.1f}s "
-                      f"(total {self._sent_count}, hosts={len(self._first_sent_hosts)})", flush=True)
+                hosts = max(1, len(self._first_sent_hosts))
+                # delta counts packets across all hosts — divide by host count
+                # to get the per-host frame rate (which is what the user sees).
+                fps = delta / window / hosts
+                print(
+                    f"wled_sync: {fps:.1f} FPS per host "
+                    f"({delta} packets to {hosts} host(s) in {window:.1f}s, total {self._sent_count})",
+                    flush=True,
+                )
                 self._last_log_time = now
                 self._last_log_count = self._sent_count
             return True
         except OSError as e:
-            now = time.time()
+            now = time.monotonic()
             last_warn = self._warn_log.get(host, 0.0)
             if now - last_warn > 30:
                 print(f"wled_sync: send to {host}:{WLED_UDP_PORT} failed: {e}", flush=True)
@@ -506,7 +514,7 @@ def main():
     palette_worker = PaletteWorker()
 
     config = load_config()
-    config_loaded_at = time.time()
+    config_loaded_at = time.monotonic()
 
     if not config["enabled"]:
         print("wled_sync: disabled in config (wled.enabled=false). Idling.")
@@ -515,6 +523,18 @@ def main():
     else:
         print(f"wled_sync: enabled with {len(config['devices'])} device(s): "
               + ", ".join(f"{d['name']}@{d['host']} ({d['pixel_count']}px)" for d in config["devices"]))
+        # Surface the effective render cadence so it's obvious from the logs
+        # whether the configured FPS matches the user's expectation.
+        max_pixels = max((d["pixel_count"] for d in config["devices"]), default=0)
+        recommended = max(1, int(round(max_pixels / max(0.5, config["gradient_drift_seconds"]))))
+        print(
+            f"wled_sync: target {config['play_fps']} FPS while playing "
+            f"({1000.0 / config['play_fps']:.1f} ms/frame), "
+            f"{config['pause_fps']} FPS while paused. "
+            f"Smooth-drift threshold for longest strip ({max_pixels} px) is "
+            f"~{recommended} FPS.",
+            flush=True,
+        )
 
     current_palette = None  # active palette in use
     target_palette = None   # palette we are crossfading toward
@@ -530,14 +550,19 @@ def main():
     # spin_speed eases between 0 and 1 over SPIN_RAMP_SECONDS, matching the
     # spinning record on the display exactly.
     phase = 0.0
-    phase_updated_at = time.time()
+    phase_updated_at = time.monotonic()
     spin_speed = 0.0
     spin_target = 0
     spin_start_time = 0.0
     spin_start_speed = 0.0
 
     while True:
-        now = time.time()
+        # Monotonic clock for everything render-timing-related: it can't jump
+        # backward on NTP corrections, which would otherwise stall the loop
+        # for whatever the jump distance was. Wall clock (time.time()) is
+        # still used in fetch_now_playing/effective_progress_ms — those need
+        # to stay aligned with Spotify's reported progress.
+        now = time.monotonic()
 
         if now - config_loaded_at >= CONFIG_RELOAD_SECONDS:
             config = load_config()
@@ -635,8 +660,11 @@ def main():
         fps = config["play_fps"] if is_playing else config["pause_fps"]
         interval = 1.0 / fps
         if now - last_send < interval:
-            # Sleep a short slice so we stay responsive to config/track changes.
-            time.sleep(min(0.05, max(0.0, interval - (now - last_send))))
+            # Sleep exactly until the next frame is due. No artificial cap —
+            # config reload (2 s) and track polling (independent thread, 2 s)
+            # don't need sub-50 ms wake-ups, and at low FPS the cap forced
+            # extra loop iterations that did nothing but burn CPU.
+            time.sleep(max(0.0, interval - (now - last_send)))
             continue
 
         # Progress fraction for the dim band — only advances while playing.
