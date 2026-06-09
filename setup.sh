@@ -134,6 +134,7 @@ fi
 step "Setting up onevent handler…"
 chmod +x "$PROJECT_DIR/onevent.sh"
 chmod +x "$PROJECT_DIR/network_watchdog.sh"
+chmod +x "$PROJECT_DIR/harden-network.sh"
 if [ ! -f "$PROJECT_DIR/idle_playlists.json" ] && [ -f "$PROJECT_DIR/idle_playlists.example.json" ]; then
     cp "$PROJECT_DIR/idle_playlists.example.json" "$PROJECT_DIR/idle_playlists.json"
 fi
@@ -145,6 +146,17 @@ for svc in go-librespot spotify-display spotify-buttons spotify-kiosk spotify-ne
 done
 sudo systemctl daemon-reload
 sudo systemctl enable go-librespot spotify-display spotify-buttons spotify-kiosk spotify-network-watchdog spotify-wled
+
+# ── 6b. Harden Wi-Fi so the nightly router reboot never pops the
+#         Linux Wi-Fi password dialog over the kiosk ──────────────
+step "Hardening Wi-Fi for unattended operation…"
+if command -v nmcli >/dev/null 2>&1; then
+    # set -e is active; guard so a missing/locked Wi-Fi key never aborts setup.
+    KIOSK_USER="${USER}" bash "$PROJECT_DIR/harden-network.sh" \
+        || warn "Wi-Fi hardening skipped — re-run later once Wi-Fi is joined: ./harden-network.sh (pass WIFI_PSK=... if the key is agent-owned)."
+else
+    warn "NetworkManager (nmcli) not found — skipping Wi-Fi hardening."
+fi
 
 # ── 7. Display & desktop config ─────────────────────────────
 step "Configuring display (1080x1080, no blanking)…"

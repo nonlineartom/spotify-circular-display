@@ -1,35 +1,72 @@
 # Troubleshooting and QoL notes
 
-## Wi-Fi popup appears over the kiosk
+## Wi-Fi password popup appears over the kiosk (e.g. after a nightly router reboot)
 
-This popup is not Chromium. It is the desktop network agent asking for attention
-after Wi-Fi drops, so Chromium kiosk flags cannot dismiss it.
+**Symptom:** in the morning the display shows a Linux Wi-Fi password prompt with
+the field already full of dots, and only a power cycle clears it.
 
-Best fix: run the display as an appliance instead of a normal Ubuntu desktop:
+That popup is **not** Chromium — `--kiosk` flags cannot touch it. It is the desktop
+NetworkManager **secret agent** (on Bookworm/labwc that is `wf-panel-pi`'s network
+plugin; on older images, `nm-applet`) drawing a GTK "password for the wireless
+network" dialog. The "characters already filled in" are the saved PSK echoed back
+as masked dots — not something you typed.
 
-- Use Raspberry Pi OS Lite / Ubuntu Server with a minimal display stack.
-- Configure Wi-Fi as a system connection, not a per-user desktop/keyring secret.
-- Avoid starting `nm-applet`, GNOME Settings, or other desktop notification agents
-  in the kiosk session.
+**Why it happens:** the Wi-Fi profile created by Raspberry Pi Imager / the desktop
+wizard stores the PSK as an *agent-owned* secret (`psk-flags = 1`). When the router
+reboots overnight and the AP is gone for a few minutes, NetworkManager burns through
+its association-retry budget, can't tell a missing AP from a wrong key, transitions
+to `NEED_AUTH`, and asks the session agent for a "new" secret (`GetSecrets` with the
+`REQUEST_NEW` flag). The agent pops the dialog over the kiosk and waits forever for a
+human. Restarting the kiosk only relaunches Chromium — a different process — so the
+dialog stays put, which is why only a power cycle has been clearing it.
 
-Useful NetworkManager hardening commands:
+**This is now fixed automatically.** `setup.sh` runs `harden-network.sh`, which, for
+the active Wi-Fi profile:
+
+- makes the PSK **system-owned** (`802-11-wireless-security.psk-flags 0`) — the
+  load-bearing fix: NetworkManager answers its own secret requests and never
+  consults an agent, so the dialog can no longer be raised;
+- sets `connection.autoconnect yes`, `connection.autoconnect-retries 0` (retry
+  forever) and `802-11-wireless.powersave 2` (off), so a multi-minute outage never
+  exhausts the retry budget and the radio re-associates quickly when the AP returns;
+- masks/kills any standalone desktop secret agent in the kiosk session.
+
+The `spotify-network-watchdog` now also dismisses a stuck dialog and re-activates
+Wi-Fi when the network returns, so already-deployed units recover without a power
+cycle.
+
+Re-run it any time — it is idempotent and auto-detects the active Wi-Fi (no SSID to
+edit):
 
 ```bash
-nmcli connection show
-sudo nmcli connection modify "YOUR_WIFI_NAME" connection.autoconnect yes
-sudo nmcli connection modify "YOUR_WIFI_NAME" connection.autoconnect-retries 0
-sudo nmcli connection modify "YOUR_WIFI_NAME" 802-11-wireless.powersave 2
-sudo nmcli connection modify "YOUR_WIFI_NAME" 802-11-wireless-security.psk-flags 0
+./harden-network.sh
+# If the saved key can't be read back from the keyring (e.g. over SSH), supply it
+# once — the connection is left untouched until you do, so Wi-Fi never breaks:
+WIFI_PSK='your-wifi-password' ./harden-network.sh
+```
+
+Verify it took (must print `0`):
+
+```bash
+CONN=$(nmcli -t -f NAME,TYPE,DEVICE connection show --active | awk -F: '$2 ~ /wireless/ {print $1; exit}')
+nmcli -g 802-11-wireless-security.psk-flags connection show "$CONN"
+```
+
+Manual equivalent (the old commands, for reference):
+
+```bash
+sudo nmcli connection modify "$CONN" 802-11-wireless-security.psk-flags 0
+sudo nmcli connection modify "$CONN" connection.autoconnect yes
+sudo nmcli connection modify "$CONN" connection.autoconnect-retries 0
+sudo nmcli connection modify "$CONN" 802-11-wireless.powersave 2
 sudo systemctl restart NetworkManager
 ```
 
-If you stay on Ubuntu Desktop, also disable network notifications for the kiosk
-user where the desktop supports it:
-
-```bash
-gsettings set org.gnome.nm-applet disable-connected-notifications true
-gsettings set org.gnome.nm-applet disable-disconnected-notifications true
-```
+> **Caution:** re-editing Wi-Fi through the desktop wizard can reset `psk-flags`
+> back to `1` (agent-owned) and reintroduce the prompt. If it ever comes back, just
+> re-run `./harden-network.sh`. The bulletproof long-term posture is a true
+> appliance image — Pi OS Lite + a bare compositor (e.g. `cage`), with no desktop
+> panel or secret agent at all.
 
 ## Spotify Connect disappears until reboot
 

@@ -37,12 +37,32 @@ restart_spotify_stack() {
     systemctl try-restart spotify-kiosk || true
 }
 
+# A stray NetworkManager secret-agent dialog — the Wi-Fi password box pre-filled
+# with masked dots — survives a kiosk restart because it belongs to a different
+# process (the desktop panel / nm-applet), not Chromium. So `try-restart
+# spotify-kiosk` above never clears it, and the device sits on the prompt until a
+# power cycle. On network recovery, close any such dialog and force a clean
+# re-activation so NM stops waiting on an outstanding secret request. With
+# harden-network.sh applied (psk-flags 0) this never fires; it rescues units that
+# were deployed before the hardening, without a power cycle.
+dismiss_wifi_prompt() {
+    pkill -f 'nm-connection-editor' 2>/dev/null || true
+    pkill -x 'nm-applet' 2>/dev/null || true
+    pkill -f 'polkit-gnome-authentication-agent' 2>/dev/null || true
+    command -v nmcli >/dev/null 2>&1 || return 0
+    local conn
+    conn="$(nmcli -t -f NAME,TYPE,DEVICE connection show --active 2>/dev/null \
+            | awk -F: '$2 ~ /wireless/ {print $1; exit}')"
+    [ -n "$conn" ] && nmcli connection up "$conn" >/dev/null 2>&1 || true
+}
+
 network_state="unknown"
 
 while true; do
     if has_network; then
         if [ "$network_state" != "up" ]; then
-            log "network is up; restarting Spotify display services"
+            log "network is up; clearing any stuck Wi-Fi prompt and restarting Spotify display services"
+            dismiss_wifi_prompt
             restart_spotify_stack
             network_state="up"
         fi

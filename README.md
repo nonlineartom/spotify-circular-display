@@ -157,6 +157,9 @@ The setup script will:
 - Prompt for Spotify API credentials (if not already in config.json)
 - Install systemd services for auto-start
 - Configure HDMI output for 1080x1080
+- Harden Wi-Fi for unattended operation (system-owned PSK, infinite autoconnect
+  retries, powersave off) so a nightly router reboot never pops a Wi-Fi password
+  prompt over the kiosk — see [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
 
 ### 5. Reboot and enjoy
 
@@ -173,7 +176,7 @@ After reboot, open Spotify on your phone, select **"Pi Display"** as the output 
 | `spotify-display` | Flask server — metadata lookup and web UI |
 | `spotify-kiosk` | Chromium in fullscreen kiosk mode |
 | `spotify-buttons` | GPIO button handler (optional) |
-| `spotify-network-watchdog` | Restarts Spotify services after Wi-Fi returns |
+| `spotify-network-watchdog` | Restarts Spotify services and clears any stuck Wi-Fi prompt after Wi-Fi returns |
 | `spotify-wled` | WLED ambient lighting + progress dim-band (optional) |
 | `go-librespot` | Spotify Connect audio receiver + local state/control API |
 | `raspotify` | Disabled fallback Spotify Connect receiver + onevent |
