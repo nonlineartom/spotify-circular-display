@@ -24,3 +24,14 @@ Thumbs.db
 # Original video source
 *.MOV
 *.mov
+
+# Claude local tooling
+.claude/
+
+# Local runtime / generated state (per-device, not source)
+idle_playlists.json
+backups/
+go-librespot/lockfile
+go-librespot/state.json
+go-librespot/credentials.json
+index.html
