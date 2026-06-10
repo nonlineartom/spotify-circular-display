@@ -537,6 +537,15 @@
     transform: scale(1.12);
     transition: opacity 0.7s ease, visibility 0.7s, transform 0.7s ease;
   }
+  /* Depth veil — pushes whatever record is on the platter back in z so the
+     crate reads as the front layer */
+  #shelf::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(circle at 50% 58%,
+      rgba(0,0,0,0.62) 0%, rgba(0,0,0,0.44) 52%, rgba(0,0,0,0.28) 100%);
+  }
   #shelf.visible {
     opacity: 1;
     visibility: visible;
@@ -1845,7 +1854,7 @@
 
   crateEl.addEventListener("pointerdown", e => {
     if (!crateCards.length) return;
-    crateEl.setPointerCapture(e.pointerId);
+    try { crateEl.setPointerCapture(e.pointerId); } catch (err) { /* synthetic pointer */ }
     crateDrag = {
       id: e.pointerId,
       startX: e.clientX,
