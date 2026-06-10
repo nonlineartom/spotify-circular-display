@@ -626,9 +626,13 @@
   }
   #vol-label {
     position: absolute;
-    right: 148px;
+    right: 152px;
     top: 50%;
     transform: translateY(-50%);
+    padding: 7px 16px;
+    border-radius: 999px;
+    background: rgba(15, 15, 17, 0.82);
+    border: 1px solid rgba(255,255,255,0.10);
     font-size: 26px;
     font-weight: 500;
     font-variant-numeric: tabular-nums;
@@ -899,8 +903,15 @@
   <!-- Volume HUD — arc fader hugging the right rim -->
   <div id="volume-hud">
     <svg viewBox="0 0 1080 1080" xmlns="http://www.w3.org/2000/svg">
-      <path id="vol-track" fill="none" stroke="rgba(255,255,255,0.14)" stroke-width="12" stroke-linecap="round"/>
-      <path id="vol-fill" fill="none" stroke="rgba(255,255,255,0.88)" stroke-width="12" stroke-linecap="round"/>
+      <defs>
+        <filter id="vol-blur" x="-30%" y="-30%" width="160%" height="160%">
+          <feGaussianBlur stdDeviation="11"/>
+        </filter>
+      </defs>
+      <!-- dark backing band so the arc reads over bright album art -->
+      <path id="vol-backing" fill="none" stroke="rgba(0,0,0,0.55)" stroke-width="60" stroke-linecap="round" filter="url(#vol-blur)"/>
+      <path id="vol-track" fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="12" stroke-linecap="round"/>
+      <path id="vol-fill" fill="none" stroke="rgba(255,255,255,0.92)" stroke-width="12" stroke-linecap="round"/>
       <circle id="vol-knob" r="14" fill="#fff"/>
     </svg>
     <div id="vol-label">50</div>
@@ -2605,6 +2616,7 @@
   // ── Init ──
   drawGrooves();
   volTrack.setAttribute("d", volArcPath(VOL_A0, VOL_A1));
+  $("vol-backing").setAttribute("d", volArcPath(VOL_A0, VOL_A1));
   renderVolume(state.volume);
   requestAnimationFrame(animate);
   poll();
