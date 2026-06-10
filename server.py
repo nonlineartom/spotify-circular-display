@@ -34,7 +34,7 @@ SPOTIFY_AUTH_URL = "https://accounts.spotify.com/authorize"
 SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
 SPOTIFY_API_BASE = "https://api.spotify.com/v1"
 SCOPES = "user-modify-playback-state user-read-playback-state"
-PLAYLIST_SCOPES = "playlist-read-private user-read-playback-state user-modify-playback-state"
+PLAYLIST_SCOPES = "playlist-read-private user-library-read user-read-playback-state user-modify-playback-state"
 
 # Raspotify/librespot events can occasionally be missed during Wi-Fi drops or
 # Spotify handoffs. These guards keep an old "playing" event from looking alive
@@ -451,6 +451,9 @@ def crate_payload():
     yours = fetch_user_playlists(limit=50)
     if yours:
         sections.append({"id": "yours", "title": "Your playlists", "items": yours})
+    saved = fetch_saved_albums(limit=50)
+    if saved:
+        sections.append({"id": "saved", "title": "Your albums", "items": saved})
     spins = recent_spin_items()
     if spins:
         sections.append({"id": "recent", "title": "Recently spun", "items": spins})
@@ -543,6 +546,52 @@ def fetch_user_playlists(limit=6):
             "source": "user",
         })
     return playlists
+
+
+def fetch_saved_albums(limit=50):
+    """The user's saved Spotify albums — needs the user-library-read scope.
+
+    Returns [] quietly until the OAuth token has been re-granted with that
+    scope (403 before then), so the crate simply omits the section.
+    """
+    token = get_user_token()
+    if not token:
+        return []
+
+    try:
+        resp = requests.get(
+            f"{SPOTIFY_API_BASE}/me/albums",
+            params={"limit": min(50, limit), "offset": 0},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=8,
+        )
+    except requests.RequestException as e:
+        print(f"Saved albums lookup failed: {e}")
+        return []
+
+    if resp.status_code != 200:
+        if resp.status_code != 403:  # 403 just means the scope isn't granted yet
+            print(f"Saved albums lookup error: {resp.status_code}")
+        return []
+
+    albums = []
+    for idx, entry in enumerate(resp.json().get("items", [])):
+        album = entry.get("album") or {}
+        uri = album.get("uri", "")
+        if not uri.startswith("spotify:"):
+            continue
+        images = album.get("images") or []
+        artist = ", ".join(a.get("name", "") for a in (album.get("artists") or []))
+        albums.append({
+            "id": f"saved-{idx}",
+            "title": album.get("name", "Album"),
+            "subtitle": artist,
+            "uri": uri,
+            "image": images[0].get("url", "") if images else "",
+            "accent": "#4cb8a4",
+            "type": "album",
+        })
+    return albums
 
 
 def idle_launcher_payload():
