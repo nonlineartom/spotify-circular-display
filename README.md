@@ -8,6 +8,16 @@ A vinyl-inspired Spotify player for circular screens, built for the Raspberry Pi
   <img src="demo.gif" alt="Spotify Circular Display demo" width="400">
 </p>
 
+| Record Shelf (idle) | The Pressing | 45 Mode |
+|:--:|:--:|:--:|
+| <img src="screenshots/record-shelf.png" alt="Idle Record Shelf — house picks fanned as tappable album sleeves" width="270"> | <img src="screenshots/the-pressing.png" alt="Procedural record label generated from the album art" width="270"> | <img src="screenshots/45-mode.png" alt="A single spinning at 45 RPM with the 7-inch big-hole label" width="270"> |
+| Tap a sleeve to put a record on | Every album gets its own pressed label | Singles spin at 45 RPM as a 7" |
+
+<p align="center">
+  <img src="screenshots/pressing-label-detail.png" alt="Label close-up — curved type, side marker, year, RPM marque, dead-wax etching" width="300"><br>
+  <em>The label up close: artwork-tinted paper, curved type, side A/B marker, release year, and a dead-wax etching in the run-out.</em>
+</p>
+
 ## Features
 
 - **Zero-config playback** — No OAuth login needed. Anyone on the network selects "Pi Display" in Spotify and it just works
@@ -136,7 +146,7 @@ to exactly match a URI in the Spotify Developer Dashboard. Set one of these:
 - `public_base_url`: base URL for the display, used to build `/callback` and `/join`
 
 Spotify currently requires HTTPS for non-loopback redirects. A plain LAN URL
-like `http://192.168.68.80:5000/callback` may be rejected for newly created
+like `http://192.168.1.50:5000/callback` may be rejected for newly created
 Spotify apps. Use an HTTPS tunnel/domain for phone sign-in, or leave OAuth off
 and keep using the zero-config local Spotify Connect controls.
 
