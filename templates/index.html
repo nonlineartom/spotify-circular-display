@@ -107,10 +107,12 @@
     will-change: transform;
     transition: transform 680ms cubic-bezier(0.32, 0.72, 0, 1);
   }
-  /* Browse mode: platter recedes in z to a mini-disc parked up top,
-     the shelf rises into view beneath it. */
+  /* Browse mode: platter shrinks to a square album cover parked at the top,
+     the crate fills the screen beneath it. (The circle→square morph and
+     spin-down are driven per-frame in JS; this just parks the layer.) */
   #viewport.browsing #platter {
-    transform: translateY(-310px) scale(0.30);
+    transform: translateY(-392px) scale(0.224);
+    z-index: 36; /* lift the parked cover above the crate's depth veil */
   }
   /* Live pinch feedback must track the fingers, not ease behind them */
   #platter.no-transition {
@@ -543,7 +545,7 @@
     content: '';
     position: absolute;
     inset: 0;
-    background: radial-gradient(circle at 50% 48%,
+    background: radial-gradient(circle at 50% 56%,
       rgba(0,0,0,0.62) 0%, rgba(0,0,0,0.44) 52%, rgba(0,0,0,0.28) 100%);
   }
   #shelf.visible {
@@ -554,7 +556,7 @@
   /* Section chips — switch between crates */
   #crate-chips {
     position: absolute;
-    top: 250px;
+    top: 300px;
     left: 0; right: 0;
     display: flex;
     justify-content: center;
@@ -584,11 +586,11 @@
   /* The crate itself — a draggable belt of standing records */
   #crate {
     /* Drag surface is a band, not the whole screen — it must not swallow
-       taps on the chips above or the parked mini-disc in browse mode. */
+       taps on the chips above or the parked cover in browse mode. */
     position: absolute;
-    top: 300px;
+    top: 360px;
     left: 0; right: 0;
-    height: 540px;
+    height: 560px;
     perspective: 1500px;
     perspective-origin: 50% 42%;
     touch-action: none;
@@ -598,8 +600,8 @@
   .crate-card {
     position: absolute;
     top: 0; left: 0;
-    width: 272px;
-    height: 272px;
+    width: 312px;
+    height: 312px;
     border-radius: 5px;
     background-size: cover;
     background-position: center;
@@ -622,15 +624,15 @@
   /* Caption for the focused record */
   #crate-caption {
     position: absolute;
-    top: 716px;
+    top: 884px;
     left: 50%;
     transform: translateX(-50%);
-    width: 560px;
+    width: 620px;
     text-align: center;
     pointer-events: none;
   }
   #crate-caption .cap-title {
-    font-size: 22px;
+    font-size: 23px;
     font-weight: 500;
     color: rgba(255,255,255,0.88);
     white-space: nowrap;
@@ -1036,6 +1038,8 @@
   const skipNext   = $("skip-next");
   const pauseBtn   = $("pause-btn");
   const dimmer     = $("dimmer");
+  const groovesEl  = $("grooves");
+  const spindleEl  = $("spindle");
   const platter    = $("platter");
   const volumeHud  = $("volume-hud");
   const volTrack   = $("vol-track");
@@ -1095,6 +1099,14 @@
   let returnStartAngle = 0;
   let returnStartTime = 0;
   const RETURN_DURATION = 1200; // ms to ease back to 0
+
+  // Minimize (pinch-to-crate) morph: 0 = full spinning vinyl, 1 = square cover
+  // parked at the top. Drives the circle→square shape and decoration fade,
+  // and decelerates the record to upright as it shrinks.
+  let minimizeProg = 0;
+  let lastMinimizeProg = -1;
+  let browseStartAngle = 0;
+  let browseTargetAngle = 0;
 
   // Track transition state
   let metadataTimer = null;
@@ -1444,6 +1456,20 @@
     }
   }
 
+  // Circle→square morph driven by minimizeProg: the album art rounds off to
+  // a square cover and the vinyl furniture (grooves, label, spindle, ring)
+  // fades, so the spinning record becomes the original square artwork.
+  function applyMinimizeMorph() {
+    const m = minimizeProg;
+    artworkEl.style.borderRadius = (50 - 47.5 * m).toFixed(2) + "%";
+    // Decorations clear a touch ahead of full square so the cover reads clean.
+    const fade = Math.max(0, 1 - m * 1.15).toFixed(3);
+    groovesEl.style.opacity = fade;
+    labelSvg.style.opacity = fade;
+    spindleEl.style.opacity = fade;
+    progressCanvas.style.opacity = fade;
+  }
+
   function startRecordFlip(direction) {
     flipDirection = direction === "previous" ? 1 : -1;
     flipStartTime = performance.now();
@@ -1492,55 +1518,73 @@
     const dt = now - lastFrameTime;
     lastFrameTime = now;
 
-    // --- Spin easing ---
-    if (spinSpeed !== spinTarget) {
-      const elapsed = now - spinStartTime;
-      const t = Math.min(elapsed / SPIN_RAMP, 1);
-      const eased = easeInOut(t);
-      spinSpeed = spinStartSpeed + (spinTarget - spinStartSpeed) * eased;
-      if (t >= 1) {
-        spinSpeed = spinTarget;
-        // When fully stopped, start return-to-zero
-        if (spinTarget === 0 && !returningToZero && Math.abs(currentAngle % 360) > 0.5) {
-          returningToZero = true;
-          returnStartAngle = currentAngle % 360;
-          returnStartTime = now;
-        }
-      }
+    // --- Minimize morph easing (pinch to/from the crate) ---
+    const minTarget = state.browsing ? 1 : 0;
+    if (minimizeProg !== minTarget) {
+      minimizeProg += (minTarget - minimizeProg) * (1 - Math.exp(-dt / 150));
+      if (Math.abs(minTarget - minimizeProg) < 0.0015) minimizeProg = minTarget;
     }
 
-    // --- Return to 0 degrees when stopped ---
-    if (returningToZero && spinSpeed === 0) {
-      const elapsed = now - returnStartTime;
-      const t = Math.min(elapsed / RETURN_DURATION, 1);
-      const eased = easeInOut(t);
-      // Take shortest path to 0
-      let target = 0;
-      if (returnStartAngle > 180) target = 360;
-      currentAngle = returnStartAngle + (target - returnStartAngle) * eased;
-      if (t >= 1) {
-        currentAngle = 0;
+    if (state.browsing) {
+      // Minimizing: decelerate the record to upright (so it lands as a
+      // square cover the right way up), coupled to the shrink progress.
+      const e = easeOutQuint(Math.min(1, minimizeProg));
+      currentAngle = browseStartAngle + (browseTargetAngle - browseStartAngle) * e;
+    } else {
+      // --- Spin easing ---
+      if (spinSpeed !== spinTarget) {
+        const elapsed = now - spinStartTime;
+        const t = Math.min(elapsed / SPIN_RAMP, 1);
+        const eased = easeInOut(t);
+        spinSpeed = spinStartSpeed + (spinTarget - spinStartSpeed) * eased;
+        if (t >= 1) {
+          spinSpeed = spinTarget;
+          // When fully stopped, start return-to-zero
+          if (spinTarget === 0 && !returningToZero && Math.abs(currentAngle % 360) > 0.5) {
+            returningToZero = true;
+            returnStartAngle = currentAngle % 360;
+            returnStartTime = now;
+          }
+        }
+      }
+
+      // --- Return to 0 degrees when stopped ---
+      if (returningToZero && spinSpeed === 0) {
+        const elapsed = now - returnStartTime;
+        const t = Math.min(elapsed / RETURN_DURATION, 1);
+        const eased = easeInOut(t);
+        // Take shortest path to 0
+        let target = 0;
+        if (returnStartAngle > 180) target = 360;
+        currentAngle = returnStartAngle + (target - returnStartAngle) * eased;
+        if (t >= 1) {
+          currentAngle = 0;
+          returningToZero = false;
+        }
+      }
+      // --- Rotate vinyl ---
+      // Spin pauses during a flip so the only motion you see is the clean
+      // 180° flip about the horizontal centre line, just like grabbing a
+      // record off the platter to turn it over. The spin resumes on the
+      // same angle the moment the flip ends.
+      else if (spinSpeed > 0.001 && !flipStartTime) {
         returningToZero = false;
+        // Ease toward the target RPM so a 33⅓ ↔ 45 change reads as the
+        // platter motor catching up, not a snap.
+        if (rpmCurrent !== rpmTarget) {
+          rpmCurrent += (rpmTarget - rpmCurrent) * Math.min(1, dt / RPM_EASE_MS);
+          if (Math.abs(rpmCurrent - rpmTarget) < 0.02) rpmCurrent = rpmTarget;
+        }
+        currentAngle += ((rpmCurrent * 360) / 60000) * dt * spinSpeed;
+        currentAngle %= 360;
       }
-    }
-    // --- Rotate vinyl ---
-    // Spin pauses during a flip so the only motion you see is the clean
-    // 180° flip about the horizontal centre line, just like grabbing a
-    // record off the platter to turn it over. The spin resumes on the
-    // same angle the moment the flip ends.
-    else if (spinSpeed > 0.001 && !flipStartTime) {
-      returningToZero = false;
-      // Ease toward the target RPM so a 33⅓ ↔ 45 change reads as the
-      // platter motor catching up, not a snap.
-      if (rpmCurrent !== rpmTarget) {
-        rpmCurrent += (rpmTarget - rpmCurrent) * Math.min(1, dt / RPM_EASE_MS);
-        if (Math.abs(rpmCurrent - rpmTarget) < 0.02) rpmCurrent = rpmTarget;
-      }
-      currentAngle += ((rpmCurrent * 360) / 60000) * dt * spinSpeed;
-      currentAngle %= 360;
     }
 
     applyVinylTransform(now);
+    if (minimizeProg !== lastMinimizeProg) {
+      applyMinimizeMorph();
+      lastMinimizeProg = minimizeProg;
+    }
 
     // --- Progress ring ---
     updateProgressRing(now);
@@ -1753,11 +1797,11 @@
   const capTitle = document.querySelector("#crate-caption .cap-title");
   const capSub = document.querySelector("#crate-caption .cap-sub");
 
-  const CRATE_SPACING = 198;   // px between records in the row
-  const CRATE_CARD = 272;      // face size
-  const CRATE_TOP = 300;       // #crate band's screen offset (must match CSS top)
-  const CRATE_ROW_Y = 548 - CRATE_TOP; // row center, container-local (screen middle)
-  const CRATE_LIFT = 54;       // how far the focused record rises out of the crate
+  const CRATE_SPACING = 224;   // px between records in the row
+  const CRATE_CARD = 312;      // face size
+  const CRATE_TOP = 360;       // #crate band's screen offset (must match CSS top)
+  const CRATE_ROW_Y = 636 - CRATE_TOP; // row center, container-local (lower half)
+  const CRATE_LIFT = 46;       // how far the focused record rises out of the crate
   let crateData = null;        // {sections: [...]}
   let crateSection = null;     // active section id
   let crateItems = [];
@@ -1830,9 +1874,9 @@
       const lift = 1 - Math.abs(t);
       const x = 540 + d * 1.02 - CRATE_CARD / 2;
       const y = CRATE_ROW_Y - lift * CRATE_LIFT - CRATE_CARD / 2;
-      const z = lift * 200;
+      const z = lift * 220;
       const rotY = -t * 56;
-      const scale = 0.80 + lift * 0.36;
+      const scale = 0.80 + lift * 0.40;
       el.style.transform =
         `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, ${z.toFixed(1)}px) rotateY(${rotY.toFixed(1)}deg) scale(${scale.toFixed(3)})`;
       el.style.opacity = ad > 560 ? String(Math.max(0, 1 - (ad - 560) / 140)) : "1";
@@ -1900,7 +1944,7 @@
       // In browse mode the parked mini-disc overlaps the top of this band —
       // a tap there means "back to the player", so let it bubble to the
       // viewport handler instead of gliding the crate.
-      if (state.browsing && Math.hypot(e.clientX - 540, e.clientY - 230) <= 175) return;
+      if (state.browsing && Math.abs(e.clientX - 540) <= 150 && e.clientY <= 320) return;
       // Tap — invert the layout to find which record was touched.
       const d = (e.clientX - 540) / 1.02;
       const idx = Math.round((crateScroll + d) / CRATE_SPACING);
@@ -2003,6 +2047,15 @@
     if (state.browsing || !state.trackId) return;
     state.browsing = true;
     viewport.classList.add("browsing");
+    // Decelerate the record to a stop at the nearest upright position, so it
+    // settles square-side-up as it morphs into the cover. The animate loop
+    // eases currentAngle from here to browseTargetAngle over the minimize.
+    browseStartAngle = ((currentAngle % 360) + 360) % 360;
+    browseTargetAngle = browseStartAngle > 180 ? 360 : 0;
+    spinTarget = 0;
+    spinSpeed = 0;
+    spinStartSpeed = 0;
+    returningToZero = false;
     // Show whatever crate data we already have IMMEDIATELY — updateShelf
     // refreshes in the background when its TTL lapses. Forcing a refetch
     // here made every pinch-in wait on the server.
@@ -2016,6 +2069,8 @@
     viewport.classList.remove("browsing");
     if (browseTimer) { clearTimeout(browseTimer); browseTimer = null; }
     if (state.trackId) shelf.classList.remove("visible");
+    // Record is upright (angle 0) — spin it back up if playback continues.
+    setSpinTarget(state.isPlaying ? 1 : 0);
   }
 
   function armBrowseTimeout() {
@@ -2023,11 +2078,10 @@
     browseTimer = setTimeout(exitBrowse, 45000);
   }
 
-  // Tap the parked mini-disc to return to the player.
+  // Tap the parked cover (top of screen) to return to the player.
   viewport.addEventListener("click", e => {
     if (!state.browsing) return;
-    const dx = e.clientX - 540, dy = e.clientY - 230;
-    if (Math.hypot(dx, dy) <= 175) exitBrowse();
+    if (Math.abs(e.clientX - 540) <= 150 && e.clientY <= 300) exitBrowse();
   });
 
   // ── Volume HUD (two-finger drag / pinch-out) ──
@@ -2244,8 +2298,8 @@
       pausedSince = 0;
     }
 
-    // Spin
-    setSpinTarget(state.isPlaying ? 1 : 0);
+    // Spin — but not while browsing, where the record is held minimized.
+    if (!state.browsing) setSpinTarget(state.isPlaying ? 1 : 0);
 
     // Show controls when track is loaded
     skipPrev.classList.toggle("visible", !!state.trackId);
