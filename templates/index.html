@@ -543,7 +543,7 @@
     content: '';
     position: absolute;
     inset: 0;
-    background: radial-gradient(circle at 50% 58%,
+    background: radial-gradient(circle at 50% 48%,
       rgba(0,0,0,0.62) 0%, rgba(0,0,0,0.44) 52%, rgba(0,0,0,0.28) 100%);
   }
   #shelf.visible {
@@ -554,7 +554,7 @@
   /* Section chips — switch between crates */
   #crate-chips {
     position: absolute;
-    top: 392px;
+    top: 250px;
     left: 0; right: 0;
     display: flex;
     justify-content: center;
@@ -583,11 +583,9 @@
   /* The crate itself — a draggable belt of standing records */
   #crate {
     position: absolute;
-    top: 440px;
-    left: 0; right: 0;
-    height: 330px;
-    perspective: 1300px;
-    perspective-origin: 50% 42%;
+    inset: 0;
+    perspective: 1500px;
+    perspective-origin: 50% 48%;
     touch-action: none;
     -webkit-tap-highlight-color: transparent;
   }
@@ -595,8 +593,8 @@
   .crate-card {
     position: absolute;
     top: 0; left: 0;
-    width: 200px;
-    height: 200px;
+    width: 248px;
+    height: 248px;
     border-radius: 5px;
     background-size: cover;
     background-position: center;
@@ -619,15 +617,15 @@
   /* Caption for the focused record */
   #crate-caption {
     position: absolute;
-    top: 796px;
+    top: 716px;
     left: 50%;
     transform: translateX(-50%);
-    width: 460px;
+    width: 560px;
     text-align: center;
     pointer-events: none;
   }
   #crate-caption .cap-title {
-    font-size: 19px;
+    font-size: 22px;
     font-weight: 500;
     color: rgba(255,255,255,0.88);
     white-space: nowrap;
@@ -636,8 +634,8 @@
     text-shadow: 0 2px 8px rgba(0,0,0,0.7);
   }
   #crate-caption .cap-sub {
-    margin-top: 4px;
-    font-size: 13px;
+    margin-top: 5px;
+    font-size: 14.5px;
     font-weight: 300;
     color: rgba(255,255,255,0.48);
     white-space: nowrap;
@@ -1750,8 +1748,10 @@
   const capTitle = document.querySelector("#crate-caption .cap-title");
   const capSub = document.querySelector("#crate-caption .cap-sub");
 
-  const CRATE_SPACING = 148;   // px between records in the row
-  const CRATE_CARD = 200;      // face size
+  const CRATE_SPACING = 184;   // px between records in the row
+  const CRATE_CARD = 248;      // face size
+  const CRATE_ROW_Y = 540;     // vertical center of the row (screen middle)
+  const CRATE_LIFT = 48;       // how far the focused record rises out of the crate
   let crateData = null;        // {sections: [...]}
   let crateSection = null;     // active section id
   let crateItems = [];
@@ -1815,21 +1815,21 @@
       const el = crateCards[i];
       const d = i * CRATE_SPACING - crateScroll;
       const ad = Math.abs(d);
-      if (ad > 560) {
+      if (ad > 720) {
         el.style.opacity = "0";
         el.style.transform = "translate3d(-9999px,0,0)";
         continue;
       }
-      const t = Math.max(-1, Math.min(1, d / 240));
+      const t = Math.max(-1, Math.min(1, d / 300));
       const lift = 1 - Math.abs(t);
       const x = 540 + d * 1.02 - CRATE_CARD / 2;
-      const y = 148 - lift * 38 - CRATE_CARD / 2 + 100;
-      const z = lift * 150;
-      const rotY = -t * 58;
-      const scale = 0.85 + lift * 0.27;
+      const y = CRATE_ROW_Y - lift * CRATE_LIFT - CRATE_CARD / 2;
+      const z = lift * 185;
+      const rotY = -t * 56;
+      const scale = 0.82 + lift * 0.32;
       el.style.transform =
         `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, ${z.toFixed(1)}px) rotateY(${rotY.toFixed(1)}deg) scale(${scale.toFixed(3)})`;
-      el.style.opacity = ad > 460 ? String(Math.max(0, 1 - (ad - 460) / 100)) : "1";
+      el.style.opacity = ad > 560 ? String(Math.max(0, 1 - (ad - 560) / 140)) : "1";
       el.style.zIndex = String(200 - Math.round(ad / 10));
       el.classList.toggle("focused", i === focusIdx);
     }
