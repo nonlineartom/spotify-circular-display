@@ -2176,6 +2176,7 @@
       accumDeg: 0,
       lastDDist: 0,
       maxMove: 0,
+      moved: new Set(),
       seekBase: currentProgressMs(),
       seekPreview: null,
       volBase: state.volume,
@@ -2188,7 +2189,9 @@
     for (let i = 0; i < 2; i++) {
       const s = mtGesture.startPts[i];
       const c = activePointers.get(mtGesture.ids[i]);
-      mtGesture.maxMove = Math.max(mtGesture.maxMove, Math.hypot(c.x - s.x, c.y - s.y));
+      const move = Math.hypot(c.x - s.x, c.y - s.y);
+      mtGesture.maxMove = Math.max(mtGesture.maxMove, move);
+      if (move > 4) mtGesture.moved.add(mtGesture.ids[i]);
     }
     const dDist = g.dist - mtGesture.d0;
     mtGesture.lastDDist = dDist;
@@ -2199,10 +2202,21 @@
     mtGesture.accumDeg += stepA;
     const dCy = g.cy - mtGesture.cy0;
 
-    if (!mtGesture.mode) {
-      if (Math.abs(dDist) > 48) mtGesture.mode = "pinch";
-      else if (Math.abs(mtGesture.accumDeg) > 7) mtGesture.mode = "twist";
-      else if (Math.abs(dCy) > 36 && Math.abs(dDist) < 40) mtGesture.mode = "vdrag";
+    // Classify by the DOMINANT signal, and only once BOTH fingers have
+    // moved. Touch hardware reports fingers alternately, so a parallel
+    // two-finger drag creates transient angle spikes between updates —
+    // first-past-threshold would misread it as a twist. Net values after
+    // both fingers report are jitter-free.
+    if (!mtGesture.mode && mtGesture.moved.size === 2) {
+      const twistPx = (Math.abs(mtGesture.accumDeg) * Math.PI / 180) * (mtGesture.d0 / 2);
+      const pinchPx = Math.abs(dDist);
+      const dragPx = Math.abs(dCy);
+      const top = Math.max(twistPx, pinchPx, dragPx);
+      if (top > 44) {
+        if (top === pinchPx) mtGesture.mode = "pinch";
+        else if (top === twistPx && Math.abs(mtGesture.accumDeg) > 9) mtGesture.mode = "twist";
+        else if (top === dragPx) mtGesture.mode = "vdrag";
+      }
     }
 
     if (mtGesture.mode === "twist") {
