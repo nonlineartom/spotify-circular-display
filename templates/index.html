@@ -559,6 +559,7 @@
     display: flex;
     justify-content: center;
     gap: 12px;
+    z-index: 30; /* above the crate drag surface — chips must stay tappable */
   }
   .crate-chip {
     pointer-events: none;
@@ -582,10 +583,14 @@
 
   /* The crate itself — a draggable belt of standing records */
   #crate {
+    /* Drag surface is a band, not the whole screen — it must not swallow
+       taps on the chips above or the parked mini-disc in browse mode. */
     position: absolute;
-    inset: 0;
+    top: 300px;
+    left: 0; right: 0;
+    height: 540px;
     perspective: 1500px;
-    perspective-origin: 50% 48%;
+    perspective-origin: 50% 42%;
     touch-action: none;
     -webkit-tap-highlight-color: transparent;
   }
@@ -1750,7 +1755,8 @@
 
   const CRATE_SPACING = 198;   // px between records in the row
   const CRATE_CARD = 272;      // face size
-  const CRATE_ROW_Y = 548;     // vertical center of the row (screen middle)
+  const CRATE_TOP = 300;       // #crate band's screen offset (must match CSS top)
+  const CRATE_ROW_Y = 548 - CRATE_TOP; // row center, container-local (screen middle)
   const CRATE_LIFT = 54;       // how far the focused record rises out of the crate
   let crateData = null;        // {sections: [...]}
   let crateSection = null;     // active section id
@@ -1891,6 +1897,10 @@
     const max = crateMaxScroll();
 
     if (!drag.moved) {
+      // In browse mode the parked mini-disc overlaps the top of this band —
+      // a tap there means "back to the player", so let it bubble to the
+      // viewport handler instead of gliding the crate.
+      if (state.browsing && Math.hypot(e.clientX - 540, e.clientY - 230) <= 175) return;
       // Tap — invert the layout to find which record was touched.
       const d = (e.clientX - 540) / 1.02;
       const idx = Math.round((crateScroll + d) / CRATE_SPACING);
@@ -1955,10 +1965,18 @@
     const now = performance.now();
     if (!crateData || now - shelfFetchedAt > 120000) {
       shelfFetchedAt = now;
-      try {
-        const r = await fetch("/api/crate");
-        if (r.ok) crateData = await r.json();
-      } catch (e) { /* offline — try again next cycle */ }
+      const refresh = (async () => {
+        try {
+          const r = await fetch("/api/crate");
+          if (r.ok) {
+            const d = await r.json();
+            if (d && d.sections && d.sections.length) crateData = d;
+          }
+        } catch (e) { /* offline — try again next cycle */ }
+      })();
+      // Only block when we have nothing to show; a stale crate renders
+      // immediately and the refresh lands on a later poll.
+      if (!crateData) await refresh;
     }
     const sections = (crateData && crateData.sections) || [];
     if (!sections.length) {
@@ -1985,7 +2003,9 @@
     if (state.browsing || !state.trackId) return;
     state.browsing = true;
     viewport.classList.add("browsing");
-    shelfFetchedAt = -Infinity; // refresh picks on entry
+    // Show whatever crate data we already have IMMEDIATELY — updateShelf
+    // refreshes in the background when its TTL lapses. Forcing a refetch
+    // here made every pinch-in wait on the server.
     updateShelf();
     armBrowseTimeout();
   }
@@ -2805,6 +2825,13 @@
   volTrack.setAttribute("d", volArcPath(VOL_A0, VOL_A1));
   $("vol-backing").setAttribute("d", volArcPath(VOL_A0, VOL_A1));
   renderVolume(state.volume);
+  // Warm the crate so the first pinch-in shows records instantly.
+  fetch("/api/crate").then(r => (r.ok ? r.json() : null)).then(d => {
+    if (d && d.sections && d.sections.length && !crateData) {
+      crateData = d;
+      shelfFetchedAt = performance.now();
+    }
+  }).catch(() => {});
   requestAnimationFrame(animate);
   poll();
   setInterval(poll, 2000);

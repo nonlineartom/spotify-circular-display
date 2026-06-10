@@ -66,6 +66,8 @@ _recent_spins = {"loaded": False, "items": []}  # newest first
 _recent_spins_lock = threading.Lock()
 _last_spin_album = None
 _crate_cache = {"built_at": 0, "payload": None}
+_crate_build_lock = threading.Lock()
+_crate_building = False
 _enrich_inflight = set()  # track_ids with a background enrichment thread running
 _enrich_last_attempt = {}  # track_id -> wall time of last enrichment attempt
 _enrich_lock = threading.Lock()
@@ -427,9 +429,19 @@ def deeper_cut_items():
         if len(artist_ids) >= 6:
             break
 
+    # Warm uncached artists in parallel — sequentially this was up to six
+    # back-to-back API calls and the main source of slow crate builds.
+    uncached = [a for a in artist_ids[:6] if a not in _artist_albums_cache]
+    if uncached:
+        threads = [threading.Thread(target=fetch_artist_albums, args=(aid,)) for aid in uncached]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=6)
+
     items = []
     for aid in artist_ids[:6]:
-        for album in fetch_artist_albums(aid):
+        for album in _artist_albums_cache.get(aid) or []:
             if album["uri"] in seen_albums:
                 continue
             seen_albums.add(album["uri"])
@@ -437,36 +449,91 @@ def deeper_cut_items():
     return items[:24]
 
 
-def crate_payload():
-    """All browsable music, in sections, for the kiosk crate UI."""
-    now = time.time()
-    if _crate_cache["payload"] and now - _crate_cache["built_at"] < 120:
-        return _crate_cache["payload"]
+def _build_crate_payload():
+    """Assemble all crate sections, fetching the remote ones in parallel.
 
-    # Ordered by how good the first impression is: personal playlists lead
-    # (always have covers), then the local listening history, then the
-    # dig-deeper albums. House picks last — editorial-playlist covers can't
-    # be resolved by newer API apps, so they may render as blank sleeves.
+    Ordered by how good the first impression is: personal playlists lead
+    (always have covers), then saved albums, the local listening history,
+    the dig-deeper albums. House picks last — editorial-playlist covers
+    can't be resolved by newer API apps, so they may render as blank
+    sleeves.
+    """
+    results = {}
+
+    def grab(key, fn):
+        try:
+            results[key] = fn()
+        except Exception as e:
+            print(f"Crate section '{key}' failed: {e}")
+            results[key] = []
+
+    threads = [threading.Thread(target=grab, args=(key, fn)) for key, fn in (
+        ("yours", lambda: fetch_user_playlists(limit=50)),
+        ("saved", lambda: fetch_saved_albums(limit=50)),
+        ("deeper", deeper_cut_items),
+        ("house", load_idle_playlists),
+    )]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=12)
+
     sections = []
-    yours = fetch_user_playlists(limit=50)
-    if yours:
-        sections.append({"id": "yours", "title": "Your playlists", "items": yours})
-    saved = fetch_saved_albums(limit=50)
-    if saved:
-        sections.append({"id": "saved", "title": "Your albums", "items": saved})
-    spins = recent_spin_items()
+    if results.get("yours"):
+        sections.append({"id": "yours", "title": "Your playlists", "items": results["yours"]})
+    if results.get("saved"):
+        sections.append({"id": "saved", "title": "Your albums", "items": results["saved"]})
+    spins = recent_spin_items()  # local file — instant
     if spins:
         sections.append({"id": "recent", "title": "Recently spun", "items": spins})
-    deeper = deeper_cut_items()
-    if deeper:
-        sections.append({"id": "deeper", "title": "Deeper cuts", "items": deeper})
-    house = load_idle_playlists()
-    if house:
-        sections.append({"id": "house", "title": "House picks", "items": house})
+    if results.get("deeper"):
+        sections.append({"id": "deeper", "title": "Deeper cuts", "items": results["deeper"]})
+    if results.get("house"):
+        sections.append({"id": "house", "title": "House picks", "items": results["house"]})
+    return {"sections": sections}
 
-    payload = {"sections": sections}
-    _crate_cache["payload"] = payload
-    _crate_cache["built_at"] = now
+
+def _rebuild_crate_async():
+    """Refresh the crate cache on a background thread, at most one at a time."""
+    global _crate_building
+    with _crate_build_lock:
+        if _crate_building:
+            return
+        _crate_building = True
+
+    def job():
+        global _crate_building
+        try:
+            payload = _build_crate_payload()
+            if payload["sections"]:
+                _crate_cache["payload"] = payload
+                _crate_cache["built_at"] = time.time()
+        finally:
+            with _crate_build_lock:
+                _crate_building = False
+
+    threading.Thread(target=job, daemon=True).start()
+
+
+def crate_payload():
+    """All browsable music, in sections, for the kiosk crate UI.
+
+    Stale-while-revalidate: a cached payload is always served immediately —
+    if it has gone stale, a background rebuild refreshes it for the next
+    request. Only a completely cold cache builds synchronously.
+    """
+    now = time.time()
+    cached = _crate_cache["payload"]
+    if cached and now - _crate_cache["built_at"] < 120:
+        return cached
+    if cached:
+        _rebuild_crate_async()
+        return cached
+
+    payload = _build_crate_payload()
+    if payload["sections"]:
+        _crate_cache["payload"] = payload
+        _crate_cache["built_at"] = now
     return payload
 
 
@@ -1420,5 +1487,6 @@ def lyrics():
 
 if __name__ == "__main__":
     _start_wled_lan_scanner()
+    _rebuild_crate_async()  # warm the crate so the kiosk's first fetch is instant
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
