@@ -162,26 +162,20 @@
     z-index: 6;
   }
 
-  /* Black center label */
-  #label-center {
+  /* Procedural record label — lives inside #vinyl so it rotates and flips
+     with the record. Content is rendered as SVG per track. */
+  #label {
     position: absolute;
-    top: 50%; left: 50%;
-    transform: translate(-50%, -50%);
-    width: calc(var(--label-radius) * 2);
-    height: calc(var(--label-radius) * 2);
-    border-radius: 50%;
-    background: radial-gradient(circle at 50% 48%, #060606 0%, #010101 68%, #000 100%);
-    z-index: 8;
-    box-shadow:
-      inset 0 0 0 1px rgba(255,255,255,0.05),
-      inset 0 0 18px rgba(255,255,255,0.035),
-      0 10px 34px rgba(0,0,0,0.36);
-    transition: width 0.8s ease, height 0.8s ease;
+    inset: 0;
+    width: 100%; height: 100%;
+    pointer-events: none;
+  }
+  #label text {
+    font-family: 'Montserrat', sans-serif;
   }
 
   /* 45 Mode — singles get the classic 7" big-hole look */
   #viewport.single {
-    --label-radius: 114px;
     --spindle-radius: 30px;
   }
 
@@ -668,10 +662,11 @@
   <!-- Vinyl record — this whole div rotates -->
   <div id="vinyl">
     <img id="artwork" src="" alt="" draggable="false" ondragstart="return false" onmousedown="return false">
+    <!-- Procedural record label — rendered per track, spins and flips with the record -->
+    <svg id="label" viewBox="0 0 1080 1080" xmlns="http://www.w3.org/2000/svg"></svg>
   </div>
 
   <canvas id="grooves" width="1080" height="1080"></canvas>
-  <div id="label-center"></div>
 
   <!-- Spindle (static, doesn't rotate) -->
   <div id="spindle"></div>
@@ -797,6 +792,8 @@
     artUrl: "",
     volume: 50,
     isSingle: false,
+    releaseDate: "",
+    recordLabel: "",
     lastUpdate: performance.now(),
   };
 
@@ -832,14 +829,16 @@
   let lastProgressEmpty = false;
   const PROGRESS_DRAW_INTERVAL = 125;
 
-  // ── Draw grooves on canvas (once) ──
-  function drawGrooves() {
+  // ── Draw grooves on canvas (redrawn when the label size changes) ──
+  function drawGrooves(startRadius) {
+    const start = startRadius || GROOVE_START;
     const canvas = $("grooves");
     const ctx = canvas.getContext("2d");
-    const spacing = (GROOVE_END - GROOVE_START) / GROOVE_COUNT;
+    ctx.clearRect(0, 0, SIZE, SIZE);
+    const spacing = (GROOVE_END - start) / GROOVE_COUNT;
 
     for (let i = 0; i < GROOVE_COUNT; i++) {
-      const r = GROOVE_START + i * spacing;
+      const r = start + i * spacing;
       const alpha = (15 + (i % 3) * 5) / 255;
       ctx.beginPath();
       ctx.arc(CENTER, CENTER, r, 0, Math.PI * 2);
@@ -872,6 +871,183 @@
 
   function setPlayerMode(hasTrack) {
     viewport.classList.toggle("playing", hasTrack);
+  }
+
+  // ── Procedural record label ("The Pressing") ──
+  // Every album gets a generated label: palette-tinted paper, curved type,
+  // an RPM marque, the release year, a side marker that alternates A/B with
+  // each record flip, and a faint dead-wax etching in the run-out band.
+  const labelSvg = $("label");
+  let labelPalette = null;   // {base, edge, ink, accent} from album art, or null
+  let sideB = false;
+  let lastLabelKey = "";
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    }[c]));
+  }
+
+  function rgbToHsv(r, g, b) {
+    r /= 255; g /= 255; b /= 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+    let h = 0;
+    if (d) {
+      if (max === r) h = ((g - b) / d) % 6;
+      else if (max === g) h = (b - r) / d + 2;
+      else h = (r - g) / d + 4;
+      h = (h * 60 + 360) % 360;
+    }
+    return [h, max ? d / max : 0, max];
+  }
+
+  function hsvToCss(h, s, v) {
+    const f = n => {
+      const k = (n + h / 60) % 6;
+      return Math.round(255 * (v - v * s * Math.max(0, Math.min(k, 4 - k, 1))));
+    };
+    return `rgb(${f(5)},${f(3)},${f(1)})`;
+  }
+
+  // Sample colors from a CORS-enabled copy of the artwork. The displayed
+  // <img> is left untouched so artwork can never break if the CDN refuses
+  // cross-origin reads — we just fall back to a cream paper label.
+  function sampleLabelPalette(url) {
+    return new Promise(resolve => {
+      if (!url) return resolve(null);
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        try {
+          const c = document.createElement("canvas");
+          c.width = c.height = 24;
+          const x = c.getContext("2d", { willReadFrequently: true });
+          x.drawImage(img, 0, 0, 24, 24);
+          const d = x.getImageData(0, 0, 24, 24).data;
+          let best = null, bestScore = -1;
+          let rSum = 0, gSum = 0, bSum = 0, n = 0;
+          for (let i = 0; i < d.length; i += 4) {
+            const r = d[i], g = d[i + 1], b = d[i + 2];
+            rSum += r; gSum += g; bSum += b; n++;
+            const [h, s, v] = rgbToHsv(r, g, b);
+            const score = s * v * (0.35 + 0.65 * Math.min(1, v * 1.4));
+            if (score > bestScore) { bestScore = score; best = [h, s, v]; }
+          }
+          const [ah, as, av] = rgbToHsv(rSum / n, gSum / n, bSum / n);
+          // Prefer the punchiest accent; fall back to the average hue.
+          const hue = (best && best[1] > 0.18) ? best[0] : ah;
+          const sat = (best && best[1] > 0.18) ? best[1] : as;
+          const baseV = 0.58 + Math.min(0.2, av * 0.25);
+          const baseS = Math.min(0.62, sat * 0.75 + 0.08);
+          resolve({
+            base: hsvToCss(hue, baseS, baseV),
+            edge: hsvToCss(hue, Math.min(0.7, baseS * 1.15), baseV * 0.66),
+            ink: baseV * (1 - baseS * 0.45) > 0.42 ? "#181208" : "#f3ecdc",
+            accent: hsvToCss(hue, Math.min(1, sat * 1.2), Math.min(0.9, Math.max(0.4, (best ? best[2] : av)))),
+          });
+        } catch (e) { resolve(null); }
+      };
+      img.onerror = () => resolve(null);
+      img.src = url;
+    });
+  }
+
+  const LABEL_FALLBACK = { base: "#d9cfba", edge: "#a89a7e", ink: "#241c10", accent: "#8a2d22" };
+
+  function arcFontSize(text, radius, maxPx) {
+    const arcLen = Math.PI * radius * 0.96;
+    return Math.max(8.5, Math.min(maxPx, arcLen / (Math.max(text.length, 6) * 0.62)));
+  }
+
+  function clip(text, max) {
+    return text.length > max ? text.slice(0, max - 1).trimEnd() + "…" : text;
+  }
+
+  function renderLabel() {
+    if (!state.trackId) return; // keep the last pressing on the platter when idle
+
+    const single = state.isSingle;
+    const pal = labelPalette || LABEL_FALLBACK;
+    const album = clip(state.albumName || state.trackName || "", 34);
+    const artist = clip(state.artistName || "", 36);
+    const year = (state.releaseDate || "").slice(0, 4);
+    const recLabel = clip((state.recordLabel || "").toUpperCase(), 24);
+    const side = sideB ? "B" : "A";
+
+    const key = [state.trackId, album, artist, year, recLabel, single, side, pal.base].join("|");
+    if (key === lastLabelKey) return;
+    lastLabelKey = key;
+
+    const C = 540;
+    const R = single ? 114 : 96;        // label paper radius
+    const holeR = single ? 30 : 16;     // center hole
+    const textR = single ? 74 : 62;     // title/artist arc radius
+    const marqueY = single ? 48 : 40;   // marque offset below center
+    const sideX = single ? 64 : 50;     // side letter / year offset
+    const etchR = R + 9;                // dead-wax etching radius
+
+    const titleSize = arcFontSize(album, textR, 13.5);
+    const artistSize = arcFontSize(artist, textR, 11);
+    const marque = (single ? "45 RPM" : "33⅓ RPM") + " · STEREO";
+    const cat = "PID-" + (state.trackId || "").replace(/[^a-zA-Z0-9]/g, "").slice(-6).toUpperCase();
+    const etch = [cat, "SIDE " + side, year, recLabel].filter(Boolean).join(" ✵ ");
+
+    const adapter = single
+      ? `<circle cx="${C}" cy="${C}" r="34" fill="none" stroke="url(#lbl-metal)" stroke-width="9"/>
+         <circle cx="${C}" cy="${C}" r="38.5" fill="none" stroke="rgba(0,0,0,0.35)" stroke-width="1"/>`
+      : "";
+
+    labelSvg.innerHTML = `
+      <defs>
+        <radialGradient id="lbl-paper" cx="50%" cy="47%" r="55%">
+          <stop offset="0%" stop-color="${pal.base}"/>
+          <stop offset="78%" stop-color="${pal.base}"/>
+          <stop offset="100%" stop-color="${pal.edge}"/>
+        </radialGradient>
+        <linearGradient id="lbl-metal" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#777"/>
+          <stop offset="45%" stop-color="#3c3c3c"/>
+          <stop offset="100%" stop-color="#666"/>
+        </linearGradient>
+        <path id="lbl-arc-top" d="M ${C - textR} ${C} A ${textR} ${textR} 0 0 1 ${C + textR} ${C}"/>
+        <path id="lbl-arc-bottom" d="M ${C - textR} ${C} A ${textR} ${textR} 0 0 0 ${C + textR} ${C}"/>
+        <path id="lbl-arc-etch" d="M ${C - etchR} ${C} A ${etchR} ${etchR} 0 0 0 ${C + etchR} ${C}"/>
+      </defs>
+
+      <!-- dead-wax etching (outside the paper, in the run-out) -->
+      <text font-size="10" letter-spacing="5.5" fill="rgba(255,255,255,0.20)">
+        <textPath href="#lbl-arc-etch" startOffset="50%" text-anchor="middle">${esc(etch)}</textPath>
+      </text>
+
+      <!-- label paper -->
+      <circle cx="${C}" cy="${C}" r="${R}" fill="url(#lbl-paper)"/>
+      <circle cx="${C}" cy="${C}" r="${R - 1}" fill="none" stroke="rgba(255,255,255,0.10)" stroke-width="1"/>
+      <circle cx="${C}" cy="${C}" r="${R - 5}" fill="none" stroke="${pal.edge}" stroke-width="1.6" opacity="0.65"/>
+      <!-- press rings -->
+      <circle cx="${C}" cy="${C}" r="${R * 0.48}" fill="none" stroke="${pal.ink}" stroke-width="0.6" opacity="0.10"/>
+      <circle cx="${C}" cy="${C}" r="${R * 0.62}" fill="none" stroke="${pal.ink}" stroke-width="0.6" opacity="0.08"/>
+
+      <!-- curved type -->
+      <text font-size="${titleSize.toFixed(1)}" font-weight="500" letter-spacing="1.6" fill="${pal.ink}">
+        <textPath href="#lbl-arc-top" startOffset="50%" text-anchor="middle">${esc(album.toUpperCase())}</textPath>
+      </text>
+      <text font-size="${artistSize.toFixed(1)}" font-weight="400" letter-spacing="1.8" fill="${pal.ink}" opacity="0.82">
+        <textPath href="#lbl-arc-bottom" startOffset="50%" text-anchor="middle">${esc(artist.toUpperCase())}</textPath>
+      </text>
+
+      <!-- marque + record company -->
+      ${recLabel ? `<text x="${C}" y="${C - marqueY + 6}" font-size="7.5" letter-spacing="1.8" fill="${pal.ink}" opacity="0.55" text-anchor="middle">${esc(recLabel)}</text>` : ""}
+      <text x="${C}" y="${C + marqueY}" font-size="8.5" letter-spacing="2.2" fill="${pal.ink}" opacity="0.68" text-anchor="middle">${esc(marque)}</text>
+
+      <!-- side marker + year -->
+      <text x="${C - sideX}" y="${C + 6}" font-size="17" font-weight="600" fill="${pal.ink}" text-anchor="middle">${side}</text>
+      ${year ? `<text x="${C + sideX}" y="${C + 5}" font-size="9.5" letter-spacing="1" fill="${pal.ink}" opacity="0.75" text-anchor="middle">${esc(year)}</text>` : ""}
+
+      <!-- center hole (the static spindle sits over this) -->
+      ${adapter}
+      <circle cx="${C}" cy="${C}" r="${holeR}" fill="#000"/>
+      <circle cx="${C}" cy="${C}" r="${holeR}" fill="none" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+    `;
   }
 
   // ── Lyrics ──
@@ -998,6 +1174,12 @@
     vinyl.classList.add("flipping");
     artworkEl.classList.add("art-changing");
     window.setTimeout(() => artworkEl.classList.remove("art-changing"), FLIP_DURATION);
+    // Turn the record over: the side marker alternates A/B, swapped at the
+    // flip's midpoint while the disc is edge-on and the label is invisible.
+    window.setTimeout(() => {
+      sideB = !sideB;
+      renderLabel();
+    }, FLIP_DURATION / 2);
   }
 
   function setPillMetadata(trackName, artistName, animateChange) {
@@ -1240,6 +1422,11 @@
     // Pause icon — two vertical bars in center when paused
     if (!state.isPlaying && state.trackId) {
       const barW = 5, barH = 24, gap = 8;
+      // Soft dark backing so the bars read on light label paper too
+      ctx.beginPath();
+      ctx.arc(cx, cy, 26, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(8,6,4,0.45)";
+      ctx.fill();
       ctx.fillStyle = "rgba(255,255,255,0.6)";
       ctx.beginPath();
       ctx.roundRect(cx - gap/2 - barW, cy - barH/2, barW, barH, 2);
@@ -1269,6 +1456,11 @@
     state.isSingle = isSingle;
     rpmTarget = isSingle ? RPM_SINGLE : RPM_BASE;
     viewport.classList.toggle("single", isSingle);
+    // A 7" label is wider — grooves start beyond it, and the label re-renders
+    // in its big-hole form.
+    drawGrooves(isSingle ? 122 : GROOVE_START);
+    lastLabelKey = "";
+    renderLabel();
   }
 
   // ── Poll Spotify ──
@@ -1282,6 +1474,8 @@
       state.trackName = "";
       state.artistName = "";
       state.albumName = "";
+      state.releaseDate = "";
+      state.recordLabel = "";
       if (!pausedSince) pausedSince = performance.now();
       setPillMetadata("", "", false);
       timeElapsed.textContent = "0:00";
@@ -1312,6 +1506,12 @@
       const preload = new Image();
       preload.onload = () => { artworkEl.src = artUrl; };
       preload.src = artUrl;
+      // Tint the record label from the new artwork's palette.
+      sampleLabelPalette(artUrl).then(p => {
+        labelPalette = p;
+        lastLabelKey = "";
+        renderLabel();
+      });
     }
 
     // Track info
@@ -1349,9 +1549,13 @@
     state.durationMs = track.duration_ms || 1;
     state.lastUpdate = performance.now();
 
-    // 45 Mode — album_type arrives via background enrichment, so check every
-    // poll rather than only on track change.
+    // 45 Mode + label metadata — these arrive via background enrichment a
+    // poll or two after the track starts, so check every poll rather than
+    // only on track change.
     setSingleMode(((track.album || {}).album_type || "") === "single");
+    state.releaseDate = (track.album || {}).release_date || "";
+    state.recordLabel = (track.album || {}).label || "";
+    renderLabel();
 
     // Pause/idle tracking for screen dimming
     if (!state.isPlaying && !pausedSince) {
