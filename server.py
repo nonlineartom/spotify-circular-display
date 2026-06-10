@@ -58,6 +58,8 @@ _user_token_expiry = 0
 _track_cache = {}  # track_id -> {name, artists, album, images, duration_ms}
 _playlist_cache = {"loaded_at": 0, "items": []}
 _album_cache = {}  # album_id -> {"label": str}
+_uri_image_cache = {}   # spotify uri -> resolved cover art url
+_uri_image_failed = {}  # spotify uri -> wall time of last failed resolve
 _enrich_inflight = set()  # track_ids with a background enrichment thread running
 _enrich_last_attempt = {}  # track_id -> wall time of last enrichment attempt
 _enrich_lock = threading.Lock()
@@ -74,6 +76,54 @@ def load_config():
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
+
+
+def resolve_uri_image(uri):
+    """Best-effort cover art for a spotify:{type}:{id} URI via client credentials.
+
+    Lets idle_playlists.json entries omit the manual "image" field — the kiosk
+    shelf still gets real sleeves. Successes cache forever; failures back off
+    for 10 minutes.
+    """
+    if uri in _uri_image_cache:
+        return _uri_image_cache[uri]
+    if time.time() - _uri_image_failed.get(uri, 0) < 600:
+        return ""
+
+    parts = uri.split(":")
+    if len(parts) != 3:
+        return ""
+    endpoint = {
+        "playlist": f"/playlists/{parts[2]}",
+        "album": f"/albums/{parts[2]}",
+        "artist": f"/artists/{parts[2]}",
+        "track": f"/tracks/{parts[2]}",
+    }.get(parts[1])
+    if not endpoint:
+        return ""
+
+    token = get_client_token()
+    if not token:
+        return ""
+
+    try:
+        resp = requests.get(
+            f"{SPOTIFY_API_BASE}{endpoint}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=5,
+        )
+        if resp.status_code != 200:
+            _uri_image_failed[uri] = time.time()
+            return ""
+        data = resp.json()
+        images = data.get("images") or (data.get("album") or {}).get("images") or []
+        url = images[0].get("url", "") if images else ""
+        _uri_image_cache[uri] = url
+        return url
+    except Exception as e:
+        print(f"Cover art resolve failed for {uri}: {e}")
+        _uri_image_failed[uri] = time.time()
+        return ""
 
 
 def load_idle_playlists():
@@ -103,7 +153,7 @@ def load_idle_playlists():
             "title": item.get("title", "Playlist"),
             "subtitle": item.get("subtitle", "House pick"),
             "uri": uri,
-            "image": item.get("image", ""),
+            "image": item.get("image", "") or resolve_uri_image(uri),
             "accent": item.get("accent", "#ffffff"),
         })
 

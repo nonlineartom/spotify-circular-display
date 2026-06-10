@@ -487,6 +487,76 @@
     }
   }
 
+  /* ── Record Shelf (idle launcher) ── */
+  #shelf {
+    position: absolute;
+    inset: 0;
+    z-index: 32;
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.7s ease, visibility 0.7s;
+  }
+  #shelf.visible {
+    opacity: 1;
+    visibility: visible;
+  }
+  #shelf-title {
+    position: absolute;
+    top: 438px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 15px;
+    font-weight: 400;
+    letter-spacing: 0.34em;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.5);
+    text-shadow: 0 2px 10px rgba(0,0,0,0.6);
+  }
+  .sleeve {
+    position: absolute;
+    top: 0; left: 0;
+    width: 150px;
+    pointer-events: auto;
+    transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.5s ease;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .sleeve .cover {
+    width: 150px;
+    height: 150px;
+    border-radius: 5px;
+    background-size: cover;
+    background-position: center;
+    background-color: #1b1b20;
+    border-left: 5px solid var(--accent, #888);
+    box-shadow:
+      0 14px 30px rgba(0,0,0,0.55),
+      inset 0 1px 0 rgba(255,255,255,0.10);
+  }
+  .sleeve .name {
+    margin-top: 10px;
+    width: 150px;
+    text-align: center;
+    font-size: 13px;
+    font-weight: 400;
+    color: rgba(255,255,255,0.8);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-shadow: 0 1px 4px rgba(0,0,0,0.6);
+  }
+  .sleeve .sub {
+    margin-top: 2px;
+    width: 150px;
+    text-align: center;
+    font-size: 10.5px;
+    font-weight: 300;
+    color: rgba(255,255,255,0.42);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
   /* ── Screen dimmer (saves display after extended idle) ── */
   #dimmer {
     position: absolute;
@@ -706,6 +776,11 @@
 
 	  <!-- Outer rim depth shadow — creates 3D recessed look -->
 	  <div id="rim-shadow"></div>
+
+  <!-- Record Shelf — idle launcher: house picks as album sleeves -->
+  <div id="shelf">
+    <div id="shelf-title"></div>
+  </div>
 
   <!-- Screen dimmer — fades to near-black after extended idle -->
   <div id="dimmer"></div>
@@ -1463,6 +1538,101 @@
     renderLabel();
   }
 
+  // ── Record Shelf (idle launcher) ──
+  // When nothing is playing, the house picks fan out as album sleeves on a
+  // gentle arc. Tap one and it goes onto the platter — /api/idle/play starts
+  // it on the local receiver, the record flip and spin-up take over.
+  const shelf = $("shelf");
+  const shelfTitle = $("shelf-title");
+  const SHELF_CARD = 150;
+  const SHELF_PIVOT_Y = 2090;   // arc center, well below the screen
+  const SHELF_ARC_R = 1500;
+  const SHELF_STEP_DEG = 6.0;
+  let shelfData = null;
+  let shelfFetchedAt = -Infinity;
+  let shelfLaunchedAt = -Infinity;
+  let shelfRenderKey = "";
+
+  function renderShelf(payload) {
+    shelf.querySelectorAll(".sleeve").forEach(el => el.remove());
+    shelfTitle.textContent = payload.title || "House picks";
+    const items = (payload.playlists || []).slice(0, 6);
+    const startDeg = -((items.length - 1) / 2) * SHELF_STEP_DEG;
+
+    items.forEach((item, i) => {
+      const deg = startDeg + i * SHELF_STEP_DEG;
+      const rad = (deg * Math.PI) / 180;
+      const x = 540 + SHELF_ARC_R * Math.sin(rad);
+      const y = SHELF_PIVOT_Y - SHELF_ARC_R * Math.cos(rad);
+      const el = document.createElement("div");
+      el.className = "sleeve";
+      const base = `translate(${(x - SHELF_CARD / 2).toFixed(1)}px, ${(y - SHELF_CARD / 2 - 38).toFixed(1)}px) rotate(${deg.toFixed(2)}deg)`;
+      el.style.transform = base;
+      el.dataset.base = base;
+      const coverStyle = `--accent:${esc(item.accent || "#888")};`
+        + (item.image ? `background-image:url('${esc(item.image)}');` : "");
+      el.innerHTML = `
+        <div class="cover" style="${coverStyle}"></div>
+        <div class="name">${esc(item.title || "")}</div>
+        <div class="sub">${esc(item.subtitle || "")}</div>`;
+      el.addEventListener("click", () => launchSleeve(el, item));
+      shelf.appendChild(el);
+    });
+  }
+
+  async function launchSleeve(el, item) {
+    if (performance.now() - shelfLaunchedAt < 4000) return;
+    shelfLaunchedAt = performance.now();
+    el.style.transform = el.dataset.base + " scale(1.16)";
+    el.style.opacity = "0";
+    try {
+      const r = await fetch("/api/idle/play", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uri: item.uri }),
+      });
+      if (!r.ok) throw new Error("idle play failed: " + r.status);
+      shelf.classList.remove("visible");
+      startRecordFlip("next"); // pull the record onto the platter
+      setTimeout(poll, 600);
+      setTimeout(poll, 1800);
+    } catch (e) {
+      shelfLaunchedAt = -Infinity;
+      el.style.transform = el.dataset.base;
+      el.style.opacity = "";
+      showWledToast("Couldn't start playback — speaker not ready");
+    }
+  }
+
+  async function updateShelf() {
+    if (state.trackId) {
+      shelf.classList.remove("visible");
+      return;
+    }
+    // Just launched something — stay hidden while the receiver starts up.
+    if (performance.now() - shelfLaunchedAt < 10000) return;
+
+    const now = performance.now();
+    if (!shelfData || now - shelfFetchedAt > 60000) {
+      shelfFetchedAt = now;
+      try {
+        const r = await fetch("/api/idle/playlists");
+        if (r.ok) shelfData = await r.json();
+      } catch (e) { /* offline — try again next cycle */ }
+    }
+    const items = (shelfData && shelfData.playlists) || [];
+    if (!items.length) {
+      shelf.classList.remove("visible");
+      return;
+    }
+    const key = JSON.stringify(items.map(p => [p.uri, p.image, p.title, p.accent]));
+    if (key !== shelfRenderKey) {
+      shelfRenderKey = key;
+      renderShelf(shelfData);
+    }
+    if (!state.trackId) shelf.classList.add("visible");
+  }
+
   // ── Poll Spotify ──
   async function poll() {
     const data = await api("GET", "/now-playing");
@@ -1491,12 +1661,14 @@
       lyricsWrap.classList.remove("visible");
       setSingleMode(false);
       setSpinTarget(0);
+      updateShelf();
       return;
     }
 
     const track = data.item;
     const newId = track.id;
     pill.classList.add("visible");
+    shelf.classList.remove("visible");
 
     // Art
     const images = (track.album || {}).images || [];

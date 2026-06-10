@@ -13,6 +13,9 @@ A vinyl-inspired Spotify player for circular screens, built for the Raspberry Pi
 - **Zero-config playback** — No OAuth login needed. Anyone on the network selects "Pi Display" in Spotify and it just works
 - **Local touch controls** — Swipe/tap controls go through the on-device Spotify Connect receiver, not a personal Spotify Web API token
 - **Spinning vinyl record** — Album art fills a rotating platter at 33&#8531; RPM with smooth CSS GPU-accelerated animation
+- **45 Mode** — Singles speed the platter up to 45 RPM with a 7" big-hole-adapter label; albums stay at 33&#8531;. The WLED gradient follows the same speed
+- **Procedural record labels** — Every album gets a generated center label tinted from its artwork: curved title/artist type, RPM marque, record company, release year, an A/B side marker that alternates with each record flip, and a faint dead-wax etching in the run-out
+- **Record Shelf** — When idle, the house-pick playlists fan out as tappable album sleeves; one touch pulls a record onto the platter (covers auto-resolved from Spotify, no manual image URLs needed)
 - **Eased spin-up/spin-down** — 4-second cubic ease-in-out ramp when playback starts/stops, with return-to-zero when paused
 - **Vinyl grooves** — Canvas-rendered concentric groove lines overlaid on the artwork
 - **Circular progress ring** — Canvas arc on the center label with an animated dot tip, warm-to-white gradient
