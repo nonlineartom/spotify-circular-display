@@ -443,10 +443,11 @@ def crate_payload():
     if _crate_cache["payload"] and now - _crate_cache["built_at"] < 120:
         return _crate_cache["payload"]
 
+    # Ordered by how good the first impression is: personal playlists lead
+    # (always have covers), then the local listening history, then the
+    # dig-deeper albums. House picks last — editorial-playlist covers can't
+    # be resolved by newer API apps, so they may render as blank sleeves.
     sections = []
-    house = load_idle_playlists()
-    if house:
-        sections.append({"id": "house", "title": "House picks", "items": house})
     yours = fetch_user_playlists(limit=50)
     if yours:
         sections.append({"id": "yours", "title": "Your playlists", "items": yours})
@@ -456,6 +457,9 @@ def crate_payload():
     deeper = deeper_cut_items()
     if deeper:
         sections.append({"id": "deeper", "title": "Deeper cuts", "items": deeper})
+    house = load_idle_playlists()
+    if house:
+        sections.append({"id": "house", "title": "House picks", "items": house})
 
     payload = {"sections": sections}
     _crate_cache["payload"] = payload
