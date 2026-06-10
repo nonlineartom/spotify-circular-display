@@ -1,5 +1,45 @@
 # Troubleshooting and QoL notes
 
+## Multi-touch gestures aren't recognized (single taps/swipes work)
+
+If two-finger gestures (twist-seek, pinch, two-finger tap) do nothing while
+single-finger taps and swipes work fine, the compositor is almost certainly
+converting touch into emulated mouse input — one pointer only, the second
+finger silently dropped.
+
+On labwc (Raspberry Pi OS Wayland) check `~/.config/labwc/rc.xml` and
+`/etc/xdg/labwc/rc.xml` for your touch device:
+
+```xml
+<touch deviceName="Waveshare  Waveshare -079-HD" mapToOutput="HDMI-A-1" mouseEmulation="yes"/>
+```
+
+`mouseEmulation="yes"` (which Waveshare's own setup instructions use) is the
+culprit. Set it to `"no"` — keep the `mapToOutput`, it pins the touch
+coordinates to the right display:
+
+```xml
+<touch deviceName="Waveshare  Waveshare -079-HD" mapToOutput="HDMI-A-1" mouseEmulation="no"/>
+```
+
+Then reload labwc and re-add the panel (or just reboot):
+
+```bash
+kill -HUP $(pgrep -x labwc)
+# soft-replug the USB touch panel so it re-attaches under the new config
+echo 0 | sudo tee /sys/bus/usb/devices/<usb-port>/authorized
+echo 1 | sudo tee /sys/bus/usb/devices/<usb-port>/authorized
+```
+
+Chromium synthesizes clicks from native touch itself, so single-finger
+controls keep working — and the page receives real `pointerType: "touch"`
+events for every finger.
+
+Diagnosis tip: the panel itself can be checked with
+`grep -A5 Waveshare /proc/bus/input/devices` (look for `hid-multitouch` in
+dmesg — this one reports 10 contacts). If the kernel side is fine but the
+page sees `pointerType: "mouse"`, it's the compositor's emulation.
+
 ## Wi-Fi password popup appears over the kiosk (e.g. after a nightly router reboot)
 
 **Symptom:** in the morning the display shows a Linux Wi-Fi password prompt with
