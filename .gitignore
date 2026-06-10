@@ -35,3 +35,4 @@ go-librespot/lockfile
 go-librespot/state.json
 go-librespot/credentials.json
 index.html
+recently_spun.json

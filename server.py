@@ -25,6 +25,7 @@ app.secret_key = os.urandom(24)
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 IDLE_PLAYLISTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "idle_playlists.json")
+RECENT_SPINS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recently_spun.json")
 IDLE_PLAYLISTS_EXAMPLE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "idle_playlists.example.json")
 STATE_FILE = "/tmp/spotify-state.json"
 GO_LIBRESPOT_API_BASE = os.environ.get("GO_LIBRESPOT_API_BASE", "http://127.0.0.1:3678").rstrip("/")
@@ -60,6 +61,11 @@ _playlist_cache = {"loaded_at": 0, "items": []}
 _album_cache = {}  # album_id -> {"label": str}
 _uri_image_cache = {}   # spotify uri -> resolved cover art url
 _uri_image_failed = {}  # spotify uri -> wall time of last failed resolve
+_artist_albums_cache = {}  # artist_id -> [crate item dicts]
+_recent_spins = {"loaded": False, "items": []}  # newest first
+_recent_spins_lock = threading.Lock()
+_last_spin_album = None
+_crate_cache = {"built_at": 0, "payload": None}
 _enrich_inflight = set()  # track_ids with a background enrichment thread running
 _enrich_last_attempt = {}  # track_id -> wall time of last enrichment attempt
 _enrich_lock = threading.Lock()
@@ -228,7 +234,7 @@ def lookup_track(track_id):
             "id": data.get("id", track_id),
             "name": data.get("name", "Unknown Track"),
             "duration_ms": data.get("duration_ms", 0),
-            "artists": [{"name": a.get("name", "")} for a in data.get("artists", [])],
+            "artists": [{"name": a.get("name", ""), "id": a.get("id", "")} for a in data.get("artists", [])],
             "album": {
                 "id": data.get("album", {}).get("id", ""),
                 "name": data.get("album", {}).get("name", ""),
@@ -309,6 +315,154 @@ def queue_track_enrichment(track_id):
     threading.Thread(target=_job, daemon=True).start()
 
 
+def _load_recent_spins():
+    with _recent_spins_lock:
+        if _recent_spins["loaded"]:
+            return
+        try:
+            with open(RECENT_SPINS_FILE, "r") as f:
+                _recent_spins["items"] = json.load(f).get("items", [])
+        except (FileNotFoundError, json.JSONDecodeError):
+            _recent_spins["items"] = []
+        _recent_spins["loaded"] = True
+
+
+def record_spin(item, cached_album):
+    """Remember an album the display has played — the 'Recently spun' crate.
+
+    Called from the now-playing path once enrichment metadata is cached, so
+    it never adds latency. Local-first: persists to a gitignored JSON file.
+    """
+    global _last_spin_album
+    album_id = cached_album.get("id")
+    if not album_id or album_id == _last_spin_album:
+        return
+    _last_spin_album = album_id
+
+    album = item.get("album") or {}
+    images = album.get("images") or []
+    artists = item.get("artists") or []
+    entry = {
+        "id": f"spin-{album_id}",
+        "uri": f"spotify:album:{album_id}",
+        "title": album.get("name", ""),
+        "subtitle": ", ".join(a.get("name", "") for a in artists if a.get("name")),
+        "image": images[0].get("url", "") if images else "",
+        "accent": "#d8b96a",
+        "type": "album",
+        "artist_ids": [a.get("id") for a in (cached_album.get("artists") or []) if a.get("id")],
+        "ts": time.time(),
+    }
+
+    _load_recent_spins()
+    with _recent_spins_lock:
+        items = [e for e in _recent_spins["items"] if e.get("uri") != entry["uri"]]
+        items.insert(0, entry)
+        _recent_spins["items"] = items[:40]
+        try:
+            with open(RECENT_SPINS_FILE, "w") as f:
+                json.dump({"items": _recent_spins["items"]}, f)
+        except OSError as e:
+            print(f"Could not persist recent spins: {e}")
+
+
+def recent_spin_items():
+    _load_recent_spins()
+    with _recent_spins_lock:
+        return [dict(e) for e in _recent_spins["items"]]
+
+
+def fetch_artist_albums(artist_id, fallback_artist_name=""):
+    """Albums by an artist via client credentials — fuels the 'Deeper cuts'
+    crate. Cached forever per artist."""
+    if not artist_id:
+        return []
+    if artist_id in _artist_albums_cache:
+        return _artist_albums_cache[artist_id]
+
+    token = get_client_token()
+    if not token:
+        return []
+
+    try:
+        resp = requests.get(
+            f"{SPOTIFY_API_BASE}/artists/{artist_id}/albums",
+            params={"include_groups": "album", "limit": 10},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=5,
+        )
+        if resp.status_code != 200:
+            _artist_albums_cache[artist_id] = []
+            return []
+        items = []
+        for a in resp.json().get("items", []):
+            images = a.get("images") or []
+            artist = ", ".join(x.get("name", "") for x in (a.get("artists") or [])) or fallback_artist_name
+            items.append({
+                "id": f"deep-{a.get('id', '')}",
+                "uri": a.get("uri", ""),
+                "title": a.get("name", ""),
+                "subtitle": artist,
+                "image": images[0].get("url", "") if images else "",
+                "accent": "#8a6fd1",
+                "type": "album",
+            })
+        _artist_albums_cache[artist_id] = items
+        return items
+    except requests.RequestException as e:
+        print(f"Artist albums fetch failed for {artist_id}: {e}")
+        return []
+
+
+def deeper_cut_items():
+    """Discographies of recently spun artists, minus what's already in the
+    recent crate — dig deeper into the artists this house actually plays."""
+    spins = recent_spin_items()
+    seen_albums = {e["uri"] for e in spins}
+    artist_ids = []
+    for e in spins:
+        for aid in e.get("artist_ids") or []:
+            if aid and aid not in artist_ids:
+                artist_ids.append(aid)
+        if len(artist_ids) >= 6:
+            break
+
+    items = []
+    for aid in artist_ids[:6]:
+        for album in fetch_artist_albums(aid):
+            if album["uri"] in seen_albums:
+                continue
+            seen_albums.add(album["uri"])
+            items.append(album)
+    return items[:24]
+
+
+def crate_payload():
+    """All browsable music, in sections, for the kiosk crate UI."""
+    now = time.time()
+    if _crate_cache["payload"] and now - _crate_cache["built_at"] < 120:
+        return _crate_cache["payload"]
+
+    sections = []
+    house = load_idle_playlists()
+    if house:
+        sections.append({"id": "house", "title": "House picks", "items": house})
+    yours = fetch_user_playlists(limit=50)
+    if yours:
+        sections.append({"id": "yours", "title": "Your playlists", "items": yours})
+    spins = recent_spin_items()
+    if spins:
+        sections.append({"id": "recent", "title": "Recently spun", "items": spins})
+    deeper = deeper_cut_items()
+    if deeper:
+        sections.append({"id": "deeper", "title": "Deeper cuts", "items": deeper})
+
+    payload = {"sections": sections}
+    _crate_cache["payload"] = payload
+    _crate_cache["built_at"] = now
+    return payload
+
+
 def attach_album_extras(state):
     """Merge cached album extras (album_type, release_date, label) into a
     now-playing payload.
@@ -333,6 +487,11 @@ def attach_album_extras(state):
         if cached_album.get(key) and not album.get(key):
             album[key] = cached_album[key]
 
+    # Feed the 'Recently spun' crate. The artist ids live on the cached
+    # track, not the album — pass them along for the deeper-cuts crate.
+    if state.get("is_playing"):
+        record_spin(item, {**cached_album, "artists": cached.get("artists") or []})
+
     album_id = cached_album.get("id")
     if album_id:
         extra = _album_cache.get(album_id)
@@ -351,9 +510,9 @@ def fetch_user_playlists(limit=6):
     try:
         resp = requests.get(
             f"{SPOTIFY_API_BASE}/me/playlists",
-            params={"limit": limit, "offset": 0},
+            params={"limit": min(50, limit), "offset": 0},
             headers={"Authorization": f"Bearer {token}"},
-            timeout=5,
+            timeout=8,
         )
     except requests.RequestException as e:
         print(f"User playlist lookup failed: {e}")
@@ -943,12 +1102,20 @@ def idle_playlists():
     })
 
 
+@app.route("/api/crate")
+def crate():
+    """Sections of browsable music for the kiosk crate UI."""
+    return jsonify(crate_payload())
+
+
 @app.route("/api/idle/play", methods=["POST"])
 def idle_play():
-    """Start playback from an idle launcher card."""
+    """Start playback from a crate / idle launcher card."""
     data = request.get_json(silent=True) or {}
     uri = data.get("uri", "")
     allowed = {item["uri"] for item in idle_launcher_payload()["playlists"]}
+    for section in crate_payload()["sections"]:
+        allowed.update(item["uri"] for item in section["items"])
     if uri not in allowed:
         return jsonify({"error": "Playlist is not configured for this display"}), 400
 

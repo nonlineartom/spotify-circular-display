@@ -542,57 +542,95 @@
     visibility: visible;
     transform: scale(1);
   }
-  #shelf-title {
+  /* Section chips — switch between crates */
+  #crate-chips {
     position: absolute;
-    top: 438px;
-    left: 50%;
-    transform: translateX(-50%);
-    font-size: 15px;
-    font-weight: 400;
-    letter-spacing: 0.34em;
-    text-transform: uppercase;
-    color: rgba(255,255,255,0.5);
-    text-shadow: 0 2px 10px rgba(0,0,0,0.6);
+    top: 392px;
+    left: 0; right: 0;
+    display: flex;
+    justify-content: center;
+    gap: 12px;
   }
-  .sleeve {
+  .crate-chip {
+    pointer-events: none;
+    padding: 10px 20px;
+    border-radius: 999px;
+    background: rgba(20, 20, 22, 0.66);
+    border: 1px solid rgba(255,255,255,0.09);
+    color: rgba(255,255,255,0.55);
+    font-size: 13.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    -webkit-tap-highlight-color: transparent;
+    transition: color 0.25s ease, background 0.25s ease, border-color 0.25s ease;
+  }
+  #shelf.visible .crate-chip { pointer-events: auto; }
+  .crate-chip.active {
+    color: rgba(255,255,255,0.95);
+    background: rgba(255,255,255,0.12);
+    border-color: rgba(255,255,255,0.22);
+  }
+
+  /* The crate itself — a draggable belt of standing records */
+  #crate {
     position: absolute;
-    top: 0; left: 0;
-    width: 150px;
-    pointer-events: auto;
-    transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.5s ease;
+    top: 440px;
+    left: 0; right: 0;
+    height: 330px;
+    perspective: 1300px;
+    perspective-origin: 50% 42%;
+    touch-action: none;
     -webkit-tap-highlight-color: transparent;
   }
-  .sleeve .cover {
-    width: 150px;
-    height: 150px;
+  #shelf.visible #crate { pointer-events: auto; }
+  .crate-card {
+    position: absolute;
+    top: 0; left: 0;
+    width: 200px;
+    height: 200px;
     border-radius: 5px;
     background-size: cover;
     background-position: center;
     background-color: #1b1b20;
-    border-left: 5px solid var(--accent, #888);
+    border-left: 6px solid var(--accent, #888);
     box-shadow:
-      0 14px 30px rgba(0,0,0,0.55),
+      0 18px 36px rgba(0,0,0,0.6),
       inset 0 1px 0 rgba(255,255,255,0.10);
+    will-change: transform, opacity;
+    pointer-events: none; /* the belt handles all input */
+    backface-visibility: hidden;
   }
-  .sleeve .name {
-    margin: 10px auto 0;
-    width: 128px;
+  .crate-card.focused {
+    box-shadow:
+      0 26px 52px rgba(0,0,0,0.7),
+      0 0 36px rgba(255,255,255,0.06),
+      inset 0 1px 0 rgba(255,255,255,0.16);
+  }
+
+  /* Caption for the focused record */
+  #crate-caption {
+    position: absolute;
+    top: 796px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 460px;
     text-align: center;
-    font-size: 12px;
-    font-weight: 400;
-    color: rgba(255,255,255,0.8);
+    pointer-events: none;
+  }
+  #crate-caption .cap-title {
+    font-size: 19px;
+    font-weight: 500;
+    color: rgba(255,255,255,0.88);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    text-shadow: 0 1px 4px rgba(0,0,0,0.6);
+    text-shadow: 0 2px 8px rgba(0,0,0,0.7);
   }
-  .sleeve .sub {
-    margin: 2px auto 0;
-    width: 128px;
-    text-align: center;
-    font-size: 10px;
+  #crate-caption .cap-sub {
+    margin-top: 4px;
+    font-size: 13px;
     font-weight: 300;
-    color: rgba(255,255,255,0.42);
+    color: rgba(255,255,255,0.48);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -895,9 +933,14 @@
 	  <!-- Outer rim depth shadow — creates 3D recessed look -->
 	  <div id="rim-shadow"></div>
 
-  <!-- Record Shelf — idle launcher: house picks as album sleeves -->
+  <!-- Record Shelf — the crate: riffle through records, tap to put one on -->
   <div id="shelf">
-    <div id="shelf-title"></div>
+    <div id="crate-chips"></div>
+    <div id="crate"><div id="crate-belt"></div></div>
+    <div id="crate-caption">
+      <div class="cap-title"></div>
+      <div class="cap-sub"></div>
+    </div>
   </div>
 
   <!-- Volume HUD — arc fader hugging the right rim -->
@@ -1493,6 +1536,9 @@
     // --- Lyrics ---
     updateLyrics(now);
 
+    // --- Crate glide/snap ---
+    updateCrate(now, dt);
+
     // --- Screen dim after extended idle/paused state ---
     const timePaused = pausedSince > 0 ? now - pausedSince : 0;
     setPlayerMode(!!state.trackId);
@@ -1684,53 +1730,185 @@
     renderLabel();
   }
 
-  // ── Record Shelf (idle launcher) ──
-  // When nothing is playing, the house picks fan out as album sleeves on a
-  // gentle arc. Tap one and it goes onto the platter — /api/idle/play starts
-  // it on the local receiver, the record flip and spin-up take over.
+  // ── Record Shelf — the crate ──
+  // Sections of records (house picks, your playlists, recently spun, deeper
+  // cuts) presented as a draggable crate: riffle through with momentum and
+  // snap, the focused record turns face-on and lifts, tap it to put it on.
   const shelf = $("shelf");
-  const shelfTitle = $("shelf-title");
-  const SHELF_CARD = 150;
-  const SHELF_PIVOT_Y = 2090;   // arc center, well below the screen
-  const SHELF_ARC_R = 1500;
-  const SHELF_STEP_DEG = 6.0;
-  let shelfData = null;
+  const crateEl = $("crate");
+  const crateBelt = $("crate-belt");
+  const crateChips = $("crate-chips");
+  const capTitle = document.querySelector("#crate-caption .cap-title");
+  const capSub = document.querySelector("#crate-caption .cap-sub");
+
+  const CRATE_SPACING = 148;   // px between records in the row
+  const CRATE_CARD = 200;      // face size
+  let crateData = null;        // {sections: [...]}
+  let crateSection = null;     // active section id
+  let crateItems = [];
+  let crateCards = [];
+  let crateScroll = 0;
+  let crateTarget = 0;         // null while dragging
+  let crateDrag = null;
+  let crateCaptionIdx = -1;
   let shelfFetchedAt = -Infinity;
   let shelfLaunchedAt = -Infinity;
   let shelfRenderKey = "";
 
-  function renderShelf(payload) {
-    shelf.querySelectorAll(".sleeve").forEach(el => el.remove());
-    shelfTitle.textContent = payload.title || "House picks";
-    const items = (payload.playlists || []).slice(0, 6);
-    const startDeg = -((items.length - 1) / 2) * SHELF_STEP_DEG;
-
-    items.forEach((item, i) => {
-      const deg = startDeg + i * SHELF_STEP_DEG;
-      const rad = (deg * Math.PI) / 180;
-      const x = 540 + SHELF_ARC_R * Math.sin(rad);
-      const y = SHELF_PIVOT_Y - SHELF_ARC_R * Math.cos(rad);
-      const el = document.createElement("div");
-      el.className = "sleeve";
-      const base = `translate(${(x - SHELF_CARD / 2).toFixed(1)}px, ${(y - SHELF_CARD / 2 - 38).toFixed(1)}px) rotate(${deg.toFixed(2)}deg)`;
-      el.style.transform = base;
-      el.dataset.base = base;
-      const coverStyle = `--accent:${esc(item.accent || "#888")};`
-        + (item.image ? `background-image:url('${esc(item.image)}');` : "");
-      el.innerHTML = `
-        <div class="cover" style="${coverStyle}"></div>
-        <div class="name">${esc(item.title || "")}</div>
-        <div class="sub">${esc(item.subtitle || "")}</div>`;
-      el.addEventListener("click", () => launchSleeve(el, item));
-      shelf.appendChild(el);
-    });
+  function crateMaxScroll() {
+    return Math.max(0, (crateItems.length - 1) * CRATE_SPACING);
   }
 
-  async function launchSleeve(el, item) {
+  function crateFocusedIndex() {
+    return Math.max(0, Math.min(crateItems.length - 1, Math.round(crateScroll / CRATE_SPACING)));
+  }
+
+  function renderChips() {
+    crateChips.innerHTML = "";
+    for (const s of crateData.sections) {
+      const chip = document.createElement("div");
+      chip.className = "crate-chip" + (s.id === crateSection ? " active" : "");
+      chip.textContent = s.title;
+      chip.addEventListener("click", () => {
+        if (crateSection === s.id) return;
+        crateSection = s.id;
+        buildCrate();
+        renderChips();
+      });
+      crateChips.appendChild(chip);
+    }
+  }
+
+  function buildCrate() {
+    const sections = crateData.sections;
+    const section = sections.find(s => s.id === crateSection) || sections[0];
+    if (!section) return;
+    crateSection = section.id;
+    crateItems = section.items || [];
+    crateBelt.innerHTML = "";
+    crateCards = crateItems.map(item => {
+      const el = document.createElement("div");
+      el.className = "crate-card";
+      el.style.setProperty("--accent", item.accent || "#888");
+      if (item.image) el.style.backgroundImage = `url('${esc(item.image)}')`;
+      crateBelt.appendChild(el);
+      return el;
+    });
+    crateScroll = 0;
+    crateTarget = 0;
+    crateCaptionIdx = -1;
+    layoutCrate();
+  }
+
+  function layoutCrate() {
+    const focusIdx = crateFocusedIndex();
+    for (let i = 0; i < crateCards.length; i++) {
+      const el = crateCards[i];
+      const d = i * CRATE_SPACING - crateScroll;
+      const ad = Math.abs(d);
+      if (ad > 560) {
+        el.style.opacity = "0";
+        el.style.transform = "translate3d(-9999px,0,0)";
+        continue;
+      }
+      const t = Math.max(-1, Math.min(1, d / 240));
+      const lift = 1 - Math.abs(t);
+      const x = 540 + d * 1.02 - CRATE_CARD / 2;
+      const y = 148 - lift * 38 - CRATE_CARD / 2 + 100;
+      const z = lift * 150;
+      const rotY = -t * 58;
+      const scale = 0.85 + lift * 0.27;
+      el.style.transform =
+        `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, ${z.toFixed(1)}px) rotateY(${rotY.toFixed(1)}deg) scale(${scale.toFixed(3)})`;
+      el.style.opacity = ad > 460 ? String(Math.max(0, 1 - (ad - 460) / 100)) : "1";
+      el.style.zIndex = String(200 - Math.round(ad / 10));
+      el.classList.toggle("focused", i === focusIdx);
+    }
+    if (focusIdx !== crateCaptionIdx && crateItems[focusIdx]) {
+      crateCaptionIdx = focusIdx;
+      capTitle.textContent = crateItems[focusIdx].title || "";
+      capSub.textContent = crateItems[focusIdx].subtitle || "";
+    }
+  }
+
+  // Crate physics — exponential glide toward the snap target; momentum comes
+  // from projecting the release velocity forward before snapping.
+  function updateCrate(now, dt) {
+    if (!crateCards.length || !shelf.classList.contains("visible")) return;
+    if (!crateDrag && crateTarget !== null && crateScroll !== crateTarget) {
+      const k = 1 - Math.exp(-dt / 130);
+      crateScroll += (crateTarget - crateScroll) * k;
+      if (Math.abs(crateTarget - crateScroll) < 0.4) crateScroll = crateTarget;
+      layoutCrate();
+    }
+  }
+
+  crateEl.addEventListener("pointerdown", e => {
+    if (!crateCards.length) return;
+    crateEl.setPointerCapture(e.pointerId);
+    crateDrag = {
+      id: e.pointerId,
+      startX: e.clientX,
+      startScroll: crateScroll,
+      lastX: e.clientX,
+      lastT: performance.now(),
+      vel: 0,
+      moved: false,
+    };
+  });
+
+  crateEl.addEventListener("pointermove", e => {
+    if (!crateDrag || e.pointerId !== crateDrag.id) return;
+    const now = performance.now();
+    if (Math.abs(e.clientX - crateDrag.startX) > 9) crateDrag.moved = true;
+    let next = crateDrag.startScroll - (e.clientX - crateDrag.startX);
+    const max = crateMaxScroll();
+    if (next < 0) next *= 0.35;                       // rubber band
+    else if (next > max) next = max + (next - max) * 0.35;
+    const dtm = Math.max(1, now - crateDrag.lastT);
+    crateDrag.vel = 0.75 * crateDrag.vel + 0.25 * (-(e.clientX - crateDrag.lastX) / dtm);
+    crateDrag.lastX = e.clientX;
+    crateDrag.lastT = now;
+    crateScroll = next;
+    crateTarget = null;
+    layoutCrate();
+    e.preventDefault();
+  }, { passive: false });
+
+  function crateRelease(e) {
+    if (!crateDrag || e.pointerId !== crateDrag.id) return;
+    const drag = crateDrag;
+    crateDrag = null;
+    const max = crateMaxScroll();
+
+    if (!drag.moved) {
+      // Tap — invert the layout to find which record was touched.
+      const d = (e.clientX - 540) / 1.02;
+      const idx = Math.round((crateScroll + d) / CRATE_SPACING);
+      if (idx >= 0 && idx < crateItems.length) {
+        const offset = Math.abs(d - (idx * CRATE_SPACING - crateScroll));
+        if (idx === crateFocusedIndex() && offset < CRATE_CARD * 0.7) {
+          launchItem(crateItems[idx]);   // tap the focused record → play it
+        } else {
+          crateTarget = Math.min(max, Math.max(0, idx * CRATE_SPACING));
+        }
+      }
+      return;
+    }
+    // Flick — project the velocity forward, snap to the nearest record.
+    const projected = crateScroll + drag.vel * 260;
+    crateTarget = Math.min(max, Math.max(0, Math.round(projected / CRATE_SPACING) * CRATE_SPACING));
+  }
+  crateEl.addEventListener("pointerup", crateRelease);
+  crateEl.addEventListener("pointercancel", e => {
+    if (!crateDrag || e.pointerId !== crateDrag.id) return;
+    crateDrag = null;
+    crateTarget = Math.min(crateMaxScroll(), Math.max(0, Math.round(crateScroll / CRATE_SPACING) * CRATE_SPACING));
+  });
+
+  async function launchItem(item) {
     if (performance.now() - shelfLaunchedAt < 4000) return;
     shelfLaunchedAt = performance.now();
-    el.style.transform = el.dataset.base + " scale(1.16)";
-    el.style.opacity = "0";
     try {
       const r = await fetch("/api/idle/play", {
         method: "POST",
@@ -1749,8 +1927,6 @@
       setTimeout(poll, 1800);
     } catch (e) {
       shelfLaunchedAt = -Infinity;
-      el.style.transform = el.dataset.base;
-      el.style.opacity = "";
       // "not ready" = go-librespot has no stored session yet. One Spotify
       // Connect visit fixes it for good (credentials persist from then on).
       showWledToast(/not ready/i.test(e.message)
@@ -1768,22 +1944,24 @@
     if (performance.now() - shelfLaunchedAt < 10000) return;
 
     const now = performance.now();
-    if (!shelfData || now - shelfFetchedAt > 60000) {
+    if (!crateData || now - shelfFetchedAt > 120000) {
       shelfFetchedAt = now;
       try {
-        const r = await fetch("/api/idle/playlists");
-        if (r.ok) shelfData = await r.json();
+        const r = await fetch("/api/crate");
+        if (r.ok) crateData = await r.json();
       } catch (e) { /* offline — try again next cycle */ }
     }
-    const items = (shelfData && shelfData.playlists) || [];
-    if (!items.length) {
+    const sections = (crateData && crateData.sections) || [];
+    if (!sections.length) {
       shelf.classList.remove("visible");
       return;
     }
-    const key = JSON.stringify(items.map(p => [p.uri, p.image, p.title, p.accent]));
+    const key = JSON.stringify(sections.map(s => [s.id, (s.items || []).length, s.items[0] && s.items[0].uri]));
     if (key !== shelfRenderKey) {
       shelfRenderKey = key;
-      renderShelf(shelfData);
+      if (!crateSection || !sections.find(s => s.id === crateSection)) crateSection = sections[0].id;
+      renderChips();
+      buildCrate();
     }
     if (!state.trackId || state.browsing) shelf.classList.add("visible");
   }
