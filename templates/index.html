@@ -1591,7 +1591,11 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ uri: item.uri }),
       });
-      if (!r.ok) throw new Error("idle play failed: " + r.status);
+      if (!r.ok) {
+        let msg = "";
+        try { msg = (await r.json()).error || ""; } catch (e2) {}
+        throw new Error(msg || ("idle play failed: " + r.status));
+      }
       shelf.classList.remove("visible");
       startRecordFlip("next"); // pull the record onto the platter
       setTimeout(poll, 600);
@@ -1600,7 +1604,11 @@
       shelfLaunchedAt = -Infinity;
       el.style.transform = el.dataset.base;
       el.style.opacity = "";
-      showWledToast("Couldn't start playback — speaker not ready");
+      // "not ready" = go-librespot has no stored session yet. One Spotify
+      // Connect visit fixes it for good (credentials persist from then on).
+      showWledToast(/not ready/i.test(e.message)
+        ? "One-time setup: pick “Pi Display” in Spotify once — then the shelf can start music by itself"
+        : "Couldn't start playback — speaker not ready");
     }
   }
 

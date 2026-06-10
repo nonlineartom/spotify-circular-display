@@ -13,7 +13,11 @@ zeroconf_backend: avahi
 credentials:
   type: zeroconf
   zeroconf:
-    persist_credentials: false
+    # Keep the last connected account's credentials so the display can start
+    # playback on its own (Record Shelf taps) without a phone present.
+    # One-time setup: pick "Pi Display" in Spotify once after this changes.
+    # The credentials file lives in this directory and is gitignored.
+    persist_credentials: true
 server:
   enabled: true
   address: 127.0.0.1
