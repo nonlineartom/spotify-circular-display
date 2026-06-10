@@ -879,6 +879,59 @@ def control(action):
     return jsonify({"error": msg}), status
 
 
+@app.route("/api/control/seek", methods=["POST"])
+def control_seek():
+    """Seek within the current track (kiosk twist gesture)."""
+    data = request.get_json(silent=True) or {}
+    try:
+        position_ms = max(0, int(data.get("position_ms")))
+    except (TypeError, ValueError):
+        return jsonify({"error": "position_ms required"}), 400
+
+    try:
+        resp = requests.post(
+            f"{GO_LIBRESPOT_API_BASE}/player/seek",
+            json={"position": position_ms},
+            timeout=2.5,
+        )
+    except requests.RequestException as e:
+        return jsonify({"error": f"Local player API unavailable: {e}"}), 503
+    if resp.status_code in (200, 204):
+        return jsonify({"status": "ok", "position_ms": position_ms})
+    return jsonify({"error": f"Local player API error: {resp.status_code}"}), 502
+
+
+@app.route("/api/control/volume", methods=["POST"])
+def control_volume():
+    """Set playback volume by percent (kiosk fader/pinch gestures)."""
+    data = request.get_json(silent=True) or {}
+    try:
+        percent = max(0, min(100, int(data.get("percent"))))
+    except (TypeError, ValueError):
+        return jsonify({"error": "percent required"}), 400
+
+    # Translate percent to go-librespot volume steps.
+    steps_max = 100
+    try:
+        status = requests.get(f"{GO_LIBRESPOT_API_BASE}/status", timeout=1.5)
+        if status.status_code == 200:
+            steps_max = int(status.json().get("volume_steps") or 100)
+    except (requests.RequestException, ValueError):
+        pass
+
+    try:
+        resp = requests.post(
+            f"{GO_LIBRESPOT_API_BASE}/player/volume",
+            json={"volume": int(round(percent / 100 * steps_max))},
+            timeout=2.5,
+        )
+    except requests.RequestException as e:
+        return jsonify({"error": f"Local player API unavailable: {e}"}), 503
+    if resp.status_code in (200, 204):
+        return jsonify({"status": "ok", "percent": percent})
+    return jsonify({"error": f"Local player API error: {resp.status_code}"}), 502
+
+
 @app.route("/api/idle/playlists")
 def idle_playlists():
     """Return house playlists for the idle launcher."""

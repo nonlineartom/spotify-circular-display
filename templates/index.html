@@ -98,6 +98,37 @@
       0 0 40px rgba(0,0,0,0.3);
   }
 
+  /* ── Platter — the player layer that minimizes away (iOS-style) ── */
+  #platter {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    transform-origin: 50% 50%;
+    will-change: transform;
+    transition: transform 680ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  /* Browse mode: platter recedes in z to a mini-disc parked up top,
+     the shelf rises into view beneath it. */
+  #viewport.browsing #platter {
+    transform: translateY(-310px) scale(0.30);
+  }
+  /* Live pinch feedback must track the fingers, not ease behind them */
+  #platter.no-transition {
+    transition: none;
+  }
+  #viewport.browsing #pill,
+  #viewport.browsing #lyrics-wrap,
+  #viewport.browsing .skip-btn {
+    opacity: 0 !important;
+    pointer-events: none !important;
+  }
+  #viewport.browsing #pause-btn {
+    pointer-events: none;
+  }
+  #viewport.browsing #shelf {
+    transition: opacity 0.55s ease 0.12s, visibility 0.55s, transform 680ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+
   /* ── Vinyl record (rotates) ── */
   #vinyl {
     position: absolute;
@@ -503,11 +534,13 @@
     pointer-events: none;
     opacity: 0;
     visibility: hidden;
-    transition: opacity 0.7s ease, visibility 0.7s;
+    transform: scale(1.12);
+    transition: opacity 0.7s ease, visibility 0.7s, transform 0.7s ease;
   }
   #shelf.visible {
     opacity: 1;
     visibility: visible;
+    transform: scale(1);
   }
   #shelf-title {
     position: absolute;
@@ -563,6 +596,76 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  /* ── Volume HUD — arc fader on the right rim ── */
+  #volume-hud {
+    position: absolute;
+    inset: 0;
+    z-index: 45;
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.35s ease, visibility 0.35s;
+  }
+  #volume-hud.visible {
+    opacity: 1;
+    visibility: visible;
+  }
+  #volume-hud svg {
+    position: absolute;
+    inset: 0;
+    width: 100%; height: 100%;
+  }
+  #volume-hud.pinned svg {
+    pointer-events: auto;
+    touch-action: none;
+  }
+  #vol-knob {
+    filter: drop-shadow(0 0 10px rgba(255,255,255,0.45));
+  }
+  #vol-label {
+    position: absolute;
+    right: 148px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 26px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    color: rgba(255,255,255,0.92);
+    text-shadow: 0 2px 12px rgba(0,0,0,0.7);
+  }
+  #vol-label::after {
+    content: "%";
+    font-size: 15px;
+    font-weight: 300;
+    color: rgba(255,255,255,0.55);
+    margin-left: 2px;
+  }
+
+  /* ── Gesture chip — transient twist-seek readout ── */
+  #gesture-chip {
+    position: absolute;
+    top: 132px;
+    left: 50%;
+    transform: translateX(-50%) translateY(-8px);
+    z-index: 45;
+    padding: 12px 24px;
+    border-radius: 999px;
+    background: rgba(15, 15, 17, 0.86);
+    border: 1px solid rgba(255,255,255,0.10);
+    color: rgba(255,255,255,0.92);
+    font-size: 22px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.04em;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s ease, transform 0.25s ease;
+  }
+  #gesture-chip.visible {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
   }
 
   /* ── Screen dimmer (saves display after extended idle) ── */
@@ -737,23 +840,26 @@
 <body>
 
 <div id="viewport">
-  <!-- Vinyl record — this whole div rotates -->
-  <div id="vinyl">
-    <img id="artwork" src="" alt="" draggable="false" ondragstart="return false" onmousedown="return false">
-    <!-- Procedural record label — rendered per track, spins and flips with the record -->
-    <svg id="label" viewBox="0 0 1080 1080" xmlns="http://www.w3.org/2000/svg"></svg>
+  <!-- Platter — everything that shrinks away when the player minimizes -->
+  <div id="platter">
+    <!-- Vinyl record — this whole div rotates -->
+    <div id="vinyl">
+      <img id="artwork" src="" alt="" draggable="false" ondragstart="return false" onmousedown="return false">
+      <!-- Procedural record label — rendered per track, spins and flips with the record -->
+      <svg id="label" viewBox="0 0 1080 1080" xmlns="http://www.w3.org/2000/svg"></svg>
+    </div>
+
+    <canvas id="grooves" width="1080" height="1080"></canvas>
+
+    <!-- Spindle (static, doesn't rotate) -->
+    <div id="spindle"></div>
+
+    <!-- Circular progress ring (canvas-based for smooth rendering) -->
+    <canvas id="progress-ring-canvas" width="296" height="296"></canvas>
   </div>
-
-  <canvas id="grooves" width="1080" height="1080"></canvas>
-
-  <!-- Spindle (static, doesn't rotate) -->
-  <div id="spindle"></div>
 
 	  <!-- Static overlay layer -->
 	  <div id="static-layer">
-    <!-- Circular progress ring (canvas-based for smooth rendering) -->
-    <canvas id="progress-ring-canvas" width="296" height="296"></canvas>
-
     <!-- Lyrics -->
     <div id="lyrics-wrap">
       <div id="lyrics-inner"></div>
@@ -789,6 +895,19 @@
   <div id="shelf">
     <div id="shelf-title"></div>
   </div>
+
+  <!-- Volume HUD — arc fader hugging the right rim -->
+  <div id="volume-hud">
+    <svg viewBox="0 0 1080 1080" xmlns="http://www.w3.org/2000/svg">
+      <path id="vol-track" fill="none" stroke="rgba(255,255,255,0.14)" stroke-width="12" stroke-linecap="round"/>
+      <path id="vol-fill" fill="none" stroke="rgba(255,255,255,0.88)" stroke-width="12" stroke-linecap="round"/>
+      <circle id="vol-knob" r="14" fill="#fff"/>
+    </svg>
+    <div id="vol-label">50</div>
+  </div>
+
+  <!-- Gesture chip — transient readout for twist-seek -->
+  <div id="gesture-chip"></div>
 
   <!-- Screen dimmer — fades to near-black after extended idle -->
   <div id="dimmer"></div>
@@ -851,6 +970,13 @@
   const skipNext   = $("skip-next");
   const pauseBtn   = $("pause-btn");
   const dimmer     = $("dimmer");
+  const platter    = $("platter");
+  const volumeHud  = $("volume-hud");
+  const volTrack   = $("vol-track");
+  const volFill    = $("vol-fill");
+  const volKnob    = $("vol-knob");
+  const volLabel   = $("vol-label");
+  const gestureChip = $("gesture-chip");
 
   // Progress ring constants (canvas is 296x296 = 2x the CSS size for retina)
   const RING_CX = 148;
@@ -877,6 +1003,7 @@
     isSingle: false,
     releaseDate: "",
     recordLabel: "",
+    browsing: false,
     lastUpdate: performance.now(),
   };
 
@@ -1605,6 +1732,7 @@
         throw new Error(msg || ("idle play failed: " + r.status));
       }
       shelf.classList.remove("visible");
+      exitBrowse(); // zoom the platter back up for the new record
       startRecordFlip("next"); // pull the record onto the platter
       setTimeout(poll, 600);
       setTimeout(poll, 1800);
@@ -1621,7 +1749,7 @@
   }
 
   async function updateShelf() {
-    if (state.trackId) {
+    if (state.trackId && !state.browsing) {
       shelf.classList.remove("visible");
       return;
     }
@@ -1646,7 +1774,146 @@
       shelfRenderKey = key;
       renderShelf(shelfData);
     }
-    if (!state.trackId) shelf.classList.add("visible");
+    if (!state.trackId || state.browsing) shelf.classList.add("visible");
+  }
+
+  // ── Browse mode (pinch-in minimize) ──
+  // The platter recedes to a mini-disc parked up top while the shelf rises
+  // beneath — layers moving in z, like minimizing an app. Tap the mini-disc
+  // (or wait) to zoom back; tap a sleeve to put on a new record.
+  let browseTimer = null;
+
+  function enterBrowse() {
+    if (state.browsing || !state.trackId) return;
+    state.browsing = true;
+    viewport.classList.add("browsing");
+    shelfFetchedAt = -Infinity; // refresh picks on entry
+    updateShelf();
+    armBrowseTimeout();
+  }
+
+  function exitBrowse() {
+    if (!state.browsing) return;
+    state.browsing = false;
+    viewport.classList.remove("browsing");
+    if (browseTimer) { clearTimeout(browseTimer); browseTimer = null; }
+    if (state.trackId) shelf.classList.remove("visible");
+  }
+
+  function armBrowseTimeout() {
+    if (browseTimer) clearTimeout(browseTimer);
+    browseTimer = setTimeout(exitBrowse, 45000);
+  }
+
+  // Tap the parked mini-disc to return to the player.
+  viewport.addEventListener("click", e => {
+    if (!state.browsing) return;
+    const dx = e.clientX - 540, dy = e.clientY - 230;
+    if (Math.hypot(dx, dy) <= 175) exitBrowse();
+  });
+
+  // ── Volume HUD (two-finger drag / pinch-out) ──
+  const VOL_ARC_R = 505;
+  const VOL_A0 = -55, VOL_A1 = 55; // degrees on the right rim; -55 = top = 100%
+  let volHudTimer = null;
+  let volSendTimer = null;
+  let volPendingPct = null;
+  let volLastSetAt = -Infinity;
+
+  function volPoint(deg) {
+    const r = (deg * Math.PI) / 180;
+    return [540 + VOL_ARC_R * Math.cos(r), 540 + VOL_ARC_R * Math.sin(r)];
+  }
+  function volArcPath(a0, a1) {
+    const [x0, y0] = volPoint(a0), [x1, y1] = volPoint(a1);
+    return `M ${x0.toFixed(1)} ${y0.toFixed(1)} A ${VOL_ARC_R} ${VOL_ARC_R} 0 0 1 ${x1.toFixed(1)} ${y1.toFixed(1)}`;
+  }
+
+  function renderVolume(pct) {
+    const a = VOL_A1 - (pct / 100) * (VOL_A1 - VOL_A0);
+    volFill.setAttribute("d", volArcPath(a, VOL_A1));
+    const [kx, ky] = volPoint(a);
+    volKnob.setAttribute("cx", kx.toFixed(1));
+    volKnob.setAttribute("cy", ky.toFixed(1));
+    volLabel.textContent = String(Math.round(pct));
+  }
+
+  function showVolumeHud(opts) {
+    renderVolume(state.volume);
+    volumeHud.classList.add("visible");
+    volumeHud.classList.toggle("pinned", !!(opts && opts.pinned));
+    if (volHudTimer) clearTimeout(volHudTimer);
+    volHudTimer = setTimeout(() => {
+      volumeHud.classList.remove("visible", "pinned");
+    }, (opts && opts.pinned) ? 4500 : 2600);
+  }
+
+  function setVolume(pct) {
+    pct = Math.max(0, Math.min(100, pct));
+    state.volume = pct;
+    volLastSetAt = performance.now();
+    renderVolume(pct);
+    // Throttle the POSTs; always deliver the final value.
+    volPendingPct = Math.round(pct);
+    if (!volSendTimer) {
+      volSendTimer = setTimeout(async () => {
+        volSendTimer = null;
+        const send = volPendingPct;
+        volPendingPct = null;
+        try {
+          await fetch("/api/control/volume", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ percent: send }),
+          });
+        } catch (e) { /* receiver offline — HUD still reflects intent */ }
+      }, 150);
+    }
+  }
+
+  // Pinned HUD: drag anywhere along the right rim to set volume directly.
+  function hudPointerVolume(e) {
+    if (!volumeHud.classList.contains("pinned")) return;
+    const deg = (Math.atan2(e.clientY - 540, e.clientX - 540) * 180) / Math.PI;
+    if (deg < VOL_A0 - 14 || deg > VOL_A1 + 14) return;
+    setVolume(((VOL_A1 - deg) / (VOL_A1 - VOL_A0)) * 100);
+    showVolumeHud({ pinned: true }); // keep it open while interacting
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  volumeHud.querySelector("svg").addEventListener("pointerdown", hudPointerVolume);
+  volumeHud.querySelector("svg").addEventListener("pointermove", e => {
+    if (e.buttons || e.pressure > 0) hudPointerVolume(e);
+  });
+
+  // ── Twist-seek chip ──
+  let chipTimer = null;
+  function showGestureChip(text, autoHideMs) {
+    gestureChip.textContent = text;
+    gestureChip.classList.add("visible");
+    if (chipTimer) clearTimeout(chipTimer);
+    if (autoHideMs) {
+      chipTimer = setTimeout(() => gestureChip.classList.remove("visible"), autoHideMs);
+    }
+  }
+  function hideGestureChip(afterMs) {
+    if (chipTimer) clearTimeout(chipTimer);
+    chipTimer = setTimeout(() => gestureChip.classList.remove("visible"), afterMs || 0);
+  }
+
+  async function commitSeek(positionMs) {
+    try {
+      const r = await fetch("/api/control/seek", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ position_ms: Math.round(positionMs) }),
+      });
+      if (r.ok) {
+        state.progressMs = positionMs;
+        state.lastUpdate = performance.now();
+        setTimeout(poll, 400);
+      }
+    } catch (e) { /* receiver offline */ }
   }
 
   // ── Poll Spotify ──
@@ -1677,6 +1944,7 @@
       lyricsWrap.classList.remove("visible");
       setSingleMode(false);
       setSpinTarget(0);
+      if (state.browsing) exitBrowse(); // track ended — idle shelf takes over
       updateShelf();
       return;
     }
@@ -1684,7 +1952,13 @@
     const track = data.item;
     const newId = track.id;
     pill.classList.add("visible");
-    shelf.classList.remove("visible");
+    if (!state.browsing) shelf.classList.remove("visible");
+
+    // Volume from the receiver — unless the user is mid-adjustment here.
+    const devVol = (data.device || {}).volume_percent;
+    if (typeof devVol === "number" && performance.now() - volLastSetAt > 1500) {
+      state.volume = devVol;
+    }
 
     // Art
     const images = (track.album || {}).images || [];
@@ -1786,12 +2060,14 @@
   }
 
   skipPrev.addEventListener("click", async () => {
+    if (performance.now() < suppressTapUntil) return;
     if (await controlAction("previous")) {
       startRecordFlip("previous");
       confirmSwipe("previous");
     }
   });
   skipNext.addEventListener("click", async () => {
+    if (performance.now() < suppressTapUntil) return;
     if (await controlAction("next")) {
       startRecordFlip("next");
       confirmSwipe("next");
@@ -1845,20 +2121,172 @@
     }, 360);
   }
 
-  viewport.addEventListener("pointerdown", e => {
-    if (!state.trackId || swipeGesture) return;
-    swipeGesture = {
-      pointerId: e.pointerId,
-      startX: e.clientX,
-      startY: e.clientY,
-      startTime: performance.now(),
-      captured: false,
-      swipeInProgress: false,
+  // ── Multi-touch gesture engine ──
+  // The panel reports 10 touch points; we use two:
+  //   twist        → scrub (1 turn = 60s), the platter rotates under your fingers
+  //   vertical drag→ volume fader
+  //   two-finger tap → play/pause
+  //   pinch in     → minimize to the shelf (browse mode)
+  //   pinch out    → pin the volume HUD open
+  const activePointers = new Map(); // pointerId -> {x, y}
+  let mtGesture = null;
+
+  const TWIST_SECONDS_PER_TURN = 60;
+  const MT_TAP_MAX_MS = 300;
+  const MT_TAP_MAX_MOVE = 18;
+  const PINCH_COMMIT_PX = 90;
+
+  function currentProgressMs() {
+    let p = state.progressMs;
+    if (state.isPlaying) p += performance.now() - state.lastUpdate;
+    return Math.min(p, state.durationMs);
+  }
+
+  function mtGeometry(ids) {
+    const a = activePointers.get(ids[0]);
+    const b = activePointers.get(ids[1]);
+    const dx = b.x - a.x, dy = b.y - a.y;
+    return {
+      dist: Math.hypot(dx, dy),
+      angle: (Math.atan2(dy, dx) * 180) / Math.PI,
+      cy: (a.y + b.y) / 2,
     };
+  }
+
+  function cancelSwipe() {
+    if (!swipeGesture) return;
     clearSwipeFeedback();
+    if (swipeGesture.captured && viewport.releasePointerCapture) {
+      try { viewport.releasePointerCapture(swipeGesture.pointerId); } catch (e) {}
+    }
+    swipeGesture = null;
+  }
+
+  function startMtGesture() {
+    const ids = [...activePointers.keys()].slice(0, 2);
+    const g = mtGeometry(ids);
+    cancelSwipe();
+    mtGesture = {
+      ids,
+      mode: null,
+      t0: performance.now(),
+      d0: g.dist,
+      cy0: g.cy,
+      prevAngle: g.angle,
+      accumDeg: 0,
+      lastDDist: 0,
+      maxMove: 0,
+      seekBase: currentProgressMs(),
+      seekPreview: null,
+      volBase: state.volume,
+      startPts: ids.map(id => ({ ...activePointers.get(id) })),
+    };
+  }
+
+  function processMtGesture(e) {
+    const g = mtGeometry(mtGesture.ids);
+    for (let i = 0; i < 2; i++) {
+      const s = mtGesture.startPts[i];
+      const c = activePointers.get(mtGesture.ids[i]);
+      mtGesture.maxMove = Math.max(mtGesture.maxMove, Math.hypot(c.x - s.x, c.y - s.y));
+    }
+    const dDist = g.dist - mtGesture.d0;
+    mtGesture.lastDDist = dDist;
+    let stepA = g.angle - mtGesture.prevAngle;
+    if (stepA > 180) stepA -= 360;
+    else if (stepA < -180) stepA += 360;
+    mtGesture.prevAngle = g.angle;
+    mtGesture.accumDeg += stepA;
+    const dCy = g.cy - mtGesture.cy0;
+
+    if (!mtGesture.mode) {
+      if (Math.abs(dDist) > 48) mtGesture.mode = "pinch";
+      else if (Math.abs(mtGesture.accumDeg) > 7) mtGesture.mode = "twist";
+      else if (Math.abs(dCy) > 36 && Math.abs(dDist) < 40) mtGesture.mode = "vdrag";
+    }
+
+    if (mtGesture.mode === "twist") {
+      // The record follows your fingers — DJ-style.
+      returningToZero = false;
+      currentAngle = (currentAngle + stepA + 360) % 360;
+      const preview = Math.max(0, Math.min(
+        mtGesture.seekBase + (mtGesture.accumDeg / 360) * TWIST_SECONDS_PER_TURN * 1000,
+        state.durationMs));
+      mtGesture.seekPreview = preview;
+      showGestureChip((mtGesture.accumDeg >= 0 ? "⟳ " : "⟲ ") + fmt(preview));
+    } else if (mtGesture.mode === "vdrag") {
+      setVolume(mtGesture.volBase + (-dCy / 620) * 100);
+      showVolumeHud();
+    } else if (mtGesture.mode === "pinch") {
+      // Live z-depth feedback while pinching — tracks fingers instantly.
+      platter.classList.add("no-transition");
+      const s = Math.max(0.82, Math.min(1.06, 1 + dDist / 1400));
+      platter.style.transform = `scale(${s.toFixed(3)})`;
+    }
+    e.preventDefault();
+  }
+
+  function finalizeMtGesture() {
+    const g = mtGesture;
+    const dur = performance.now() - g.t0;
+
+    if (g.mode === null) {
+      if (dur <= MT_TAP_MAX_MS && g.maxMove <= MT_TAP_MAX_MOVE) {
+        controlAction("play-pause"); // two-finger tap
+      }
+    } else if (g.mode === "twist") {
+      hideGestureChip(550);
+      if (g.seekPreview !== null && Math.abs(g.seekPreview - g.seekBase) > 1500) {
+        commitSeek(g.seekPreview);
+      }
+    } else if (g.mode === "pinch") {
+      // Re-enable the transition first so the release animates — either the
+      // snap back to full size or the recede into browse mode.
+      platter.classList.remove("no-transition");
+      platter.style.transform = "";
+      if (g.lastDDist <= -PINCH_COMMIT_PX) {
+        enterBrowse();              // pinch in → out to the shelf
+      } else if (g.lastDDist >= PINCH_COMMIT_PX) {
+        showVolumeHud({ pinned: true }); // pinch out → volume control
+      }
+    }
+    // vdrag needs no finalize — the throttled sender delivers the last value.
+
+    suppressTapUntil = performance.now() + 700;
+    mtGesture = null;
+  }
+
+  viewport.addEventListener("pointerdown", e => {
+    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (state.browsing) return; // browse mode: sleeve taps + mini-disc only
+
+    if (activePointers.size === 2 && state.trackId && !mtGesture) {
+      startMtGesture();
+    } else if (activePointers.size === 1 && state.trackId && !mtGesture && !swipeGesture) {
+      swipeGesture = {
+        pointerId: e.pointerId,
+        startX: e.clientX,
+        startY: e.clientY,
+        startTime: performance.now(),
+        captured: false,
+        swipeInProgress: false,
+      };
+      clearSwipeFeedback();
+    }
   });
 
   viewport.addEventListener("pointermove", e => {
+    const p = activePointers.get(e.pointerId);
+    if (p) { p.x = e.clientX; p.y = e.clientY; }
+
+    if (mtGesture) {
+      if (mtGesture.ids.includes(e.pointerId)
+          && mtGesture.ids.every(id => activePointers.has(id))) {
+        processMtGesture(e);
+      }
+      return;
+    }
+
     if (!swipeGesture || e.pointerId !== swipeGesture.pointerId) return;
 
     const dx = e.clientX - swipeGesture.startX;
@@ -1878,7 +2306,19 @@
     }
   }, { passive: false });
 
+  function releasePointer(e) {
+    activePointers.delete(e.pointerId);
+
+    if (mtGesture && mtGesture.ids.includes(e.pointerId)) {
+      finalizeMtGesture();
+      return true;
+    }
+    return false;
+  }
+
   viewport.addEventListener("pointerup", e => {
+    if (releasePointer(e)) { e.preventDefault(); return; }
+
     if (!swipeGesture || e.pointerId !== swipeGesture.pointerId) return;
 
     const now = performance.now();
@@ -1920,12 +2360,9 @@
   }, { passive: false });
 
   viewport.addEventListener("pointercancel", e => {
+    if (releasePointer(e)) return;
     if (!swipeGesture || e.pointerId !== swipeGesture.pointerId) return;
-    clearSwipeFeedback();
-    if (swipeGesture.captured && viewport.releasePointerCapture) {
-      viewport.releasePointerCapture(e.pointerId);
-    }
-    swipeGesture = null;
+    cancelSwipe();
   });
 
   // ── Prevent all image/element dragging ──
@@ -2153,6 +2590,8 @@
 
   // ── Init ──
   drawGrooves();
+  volTrack.setAttribute("d", volArcPath(VOL_A0, VOL_A1));
+  renderVolume(state.volume);
   requestAnimationFrame(animate);
   poll();
   setInterval(poll, 2000);
