@@ -161,6 +161,8 @@ def fetch_now_playing():
         "track_id": item.get("id"),
         "duration_ms": int(item.get("duration_ms") or 0),
         "art_url": art_url,
+        # 45 Mode: singles rotate the gradient at 45 RPM, matching the kiosk.
+        "is_single": (album.get("album_type") or "") == "single",
         "wall_time": time.time(),
     }
 
@@ -556,6 +558,13 @@ def main():
     spin_start_time = 0.0
     spin_start_speed = 0.0
 
+    # 45 Mode — singles rotate at 45 RPM instead of 33⅓. The factor eases
+    # toward its target (matching the kiosk's platter-motor ramp) so a
+    # mid-set album→single change doesn't snap the gradient speed.
+    RPM_SINGLE_FACTOR = 45.0 / (100.0 / 3.0)  # = 1.35
+    RPM_EASE_SECONDS = 0.45
+    rpm_factor = 1.0
+
     while True:
         # Monotonic clock for everything render-timing-related: it can't jump
         # backward on NTP corrections, which would otherwise stall the loop
@@ -637,7 +646,12 @@ def main():
         # captures the easing accurately rather than sampling at send time.
         drift_period = max(0.5, config["gradient_drift_seconds"])
         dt = max(0.0, now - phase_updated_at)
-        phase = (phase + spin_speed * dt / drift_period) % 1.0
+        rpm_target = RPM_SINGLE_FACTOR if snap.get("is_single") else 1.0
+        if rpm_factor != rpm_target:
+            rpm_factor += (rpm_target - rpm_factor) * min(1.0, dt / RPM_EASE_SECONDS)
+            if abs(rpm_factor - rpm_target) < 0.001:
+                rpm_factor = rpm_target
+        phase = (phase + spin_speed * rpm_factor * dt / drift_period) % 1.0
         phase_updated_at = now
 
         # Long pause = treat as idle: stop sending so WLED's realtime mode

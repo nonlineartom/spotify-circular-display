@@ -176,6 +176,13 @@
       inset 0 0 0 1px rgba(255,255,255,0.05),
       inset 0 0 18px rgba(255,255,255,0.035),
       0 10px 34px rgba(0,0,0,0.36);
+    transition: width 0.8s ease, height 0.8s ease;
+  }
+
+  /* 45 Mode — singles get the classic 7" big-hole look */
+  #viewport.single {
+    --label-radius: 114px;
+    --spindle-radius: 30px;
   }
 
   /* Spindle */
@@ -189,6 +196,7 @@
     background: #323232;
     border: 1px solid #1e1e1e;
     z-index: 10;
+    transition: width 0.8s ease, height 0.8s ease;
   }
   #spindle::after {
     content: '';
@@ -736,8 +744,12 @@
   const GROOVE_COUNT = 120;
   const GROOVE_START = 100;
   const GROOVE_END = 530;
-  const RPM = 33.333;
-  const DEG_PER_MS = (RPM * 360) / 60000; // degrees per millisecond
+  // 45 Mode: albums spin at 33⅓, singles at 45 — like the real shelf.
+  const RPM_BASE = 33.333;
+  const RPM_SINGLE = 45;
+  const RPM_EASE_MS = 450;   // exponential approach time constant
+  let rpmCurrent = RPM_BASE;
+  let rpmTarget = RPM_BASE;
 
   // Eased spin-up / spin-down duration (ms)
   const SPIN_RAMP = 4000;
@@ -784,6 +796,7 @@
     albumName: "",
     artUrl: "",
     volume: 50,
+    isSingle: false,
     lastUpdate: performance.now(),
   };
 
@@ -1059,7 +1072,13 @@
     // same angle the moment the flip ends.
     else if (spinSpeed > 0.001 && !flipStartTime) {
       returningToZero = false;
-      currentAngle += DEG_PER_MS * dt * spinSpeed;
+      // Ease toward the target RPM so a 33⅓ ↔ 45 change reads as the
+      // platter motor catching up, not a snap.
+      if (rpmCurrent !== rpmTarget) {
+        rpmCurrent += (rpmTarget - rpmCurrent) * Math.min(1, dt / RPM_EASE_MS);
+        if (Math.abs(rpmCurrent - rpmTarget) < 0.02) rpmCurrent = rpmTarget;
+      }
+      currentAngle += ((rpmCurrent * 360) / 60000) * dt * spinSpeed;
       currentAngle %= 360;
     }
 
@@ -1244,6 +1263,14 @@
     spinStartSpeed = spinSpeed;
   }
 
+  // ── 45 Mode ──
+  function setSingleMode(isSingle) {
+    if (state.isSingle === isSingle) return;
+    state.isSingle = isSingle;
+    rpmTarget = isSingle ? RPM_SINGLE : RPM_BASE;
+    viewport.classList.toggle("single", isSingle);
+  }
+
   // ── Poll Spotify ──
   async function poll() {
     const data = await api("GET", "/now-playing");
@@ -1268,6 +1295,7 @@
       currentLyricIdx = -1;
       lyricsInner.innerHTML = "";
       lyricsWrap.classList.remove("visible");
+      setSingleMode(false);
       setSpinTarget(0);
       return;
     }
@@ -1320,6 +1348,10 @@
     state.progressMs = data.progress_ms || 0;
     state.durationMs = track.duration_ms || 1;
     state.lastUpdate = performance.now();
+
+    // 45 Mode — album_type arrives via background enrichment, so check every
+    // poll rather than only on track change.
+    setSingleMode(((track.album || {}).album_type || "") === "single");
 
     // Pause/idle tracking for screen dimming
     if (!state.isPlaying && !pausedSince) {

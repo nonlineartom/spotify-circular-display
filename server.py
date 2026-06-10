@@ -57,6 +57,10 @@ _user_token = None
 _user_token_expiry = 0
 _track_cache = {}  # track_id -> {name, artists, album, images, duration_ms}
 _playlist_cache = {"loaded_at": 0, "items": []}
+_album_cache = {}  # album_id -> {"label": str}
+_enrich_inflight = set()  # track_ids with a background enrichment thread running
+_enrich_last_attempt = {}  # track_id -> wall time of last enrichment attempt
+_enrich_lock = threading.Lock()
 
 # WLED discovery cache: ip -> {"name": str, "ip": str, "port": int, "last_seen": float}
 _wled_devices = {}
@@ -176,8 +180,13 @@ def lookup_track(track_id):
             "duration_ms": data.get("duration_ms", 0),
             "artists": [{"name": a.get("name", "")} for a in data.get("artists", [])],
             "album": {
+                "id": data.get("album", {}).get("id", ""),
                 "name": data.get("album", {}).get("name", ""),
                 "images": data.get("album", {}).get("images", []),
+                # 'single' drives the kiosk's 45 RPM mode; release_date feeds
+                # the procedural record label.
+                "album_type": data.get("album", {}).get("album_type", ""),
+                "release_date": data.get("album", {}).get("release_date", ""),
             },
         }
         _track_cache[track_id] = track_info
@@ -186,6 +195,101 @@ def lookup_track(track_id):
     except Exception as e:
         print(f"Track lookup failed for {track_id}: {e}")
         return None
+
+
+def lookup_album(album_id):
+    """Look up album-level metadata (record label) via client credentials.
+
+    Cached forever by album_id; failures cache an empty dict so we don't
+    hammer the API for albums it can't serve.
+    """
+    if not album_id:
+        return None
+    if album_id in _album_cache:
+        return _album_cache[album_id]
+
+    token = get_client_token()
+    if not token:
+        return None
+
+    try:
+        resp = requests.get(
+            f"{SPOTIFY_API_BASE}/albums/{album_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=5,
+        )
+        if resp.status_code != 200:
+            print(f"Album lookup error for {album_id}: {resp.status_code}")
+            _album_cache[album_id] = {}
+            return None
+        info = {"label": resp.json().get("label", "")}
+        _album_cache[album_id] = info
+        return info
+    except Exception as e:
+        print(f"Album lookup failed for {album_id}: {e}")
+        return None
+
+
+def queue_track_enrichment(track_id):
+    """Fetch track/album extras on a background thread.
+
+    /api/now-playing is polled every 2s by both the kiosk and wled_sync, so it
+    must never block on Spotify API calls. First sighting of a track queues
+    this job; the extras appear in the payload on a later poll once cached.
+    """
+    now = time.time()
+    with _enrich_lock:
+        if track_id in _enrich_inflight:
+            return
+        if now - _enrich_last_attempt.get(track_id, 0) < 60:
+            return
+        _enrich_last_attempt[track_id] = now
+        _enrich_inflight.add(track_id)
+
+    def _job():
+        try:
+            info = lookup_track(track_id)
+            album_id = ((info or {}).get("album") or {}).get("id")
+            if album_id and album_id not in _album_cache:
+                lookup_album(album_id)
+        finally:
+            with _enrich_lock:
+                _enrich_inflight.discard(track_id)
+
+    threading.Thread(target=_job, daemon=True).start()
+
+
+def attach_album_extras(state):
+    """Merge cached album extras (album_type, release_date, label) into a
+    now-playing payload.
+
+    go-librespot's local API doesn't expose these, so they come from the
+    client-credentials metadata cache. Missing extras queue a background
+    fetch rather than blocking the response.
+    """
+    item = state.get("item") or {}
+    track_id = item.get("id")
+    if not track_id:
+        return
+
+    cached = _track_cache.get(track_id)
+    if cached is None:
+        queue_track_enrichment(track_id)
+        return
+
+    album = item.setdefault("album", {})
+    cached_album = cached.get("album") or {}
+    for key in ("album_type", "release_date"):
+        if cached_album.get(key) and not album.get(key):
+            album[key] = cached_album[key]
+
+    album_id = cached_album.get("id")
+    if album_id:
+        extra = _album_cache.get(album_id)
+        if extra is None:
+            queue_track_enrichment(track_id)
+        elif extra.get("label") and not album.get("label"):
+            album["label"] = extra["label"]
 
 
 def fetch_user_playlists(limit=6):
@@ -654,6 +758,7 @@ def now_playing():
     state = read_playback_state()
     if state is None:
         return "", 204  # No content — nothing playing
+    attach_album_extras(state)
     return jsonify(state)
 
 
