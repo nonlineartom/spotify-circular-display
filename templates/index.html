@@ -593,8 +593,8 @@
   .crate-card {
     position: absolute;
     top: 0; left: 0;
-    width: 248px;
-    height: 248px;
+    width: 272px;
+    height: 272px;
     border-radius: 5px;
     background-size: cover;
     background-position: center;
@@ -1748,10 +1748,10 @@
   const capTitle = document.querySelector("#crate-caption .cap-title");
   const capSub = document.querySelector("#crate-caption .cap-sub");
 
-  const CRATE_SPACING = 184;   // px between records in the row
-  const CRATE_CARD = 248;      // face size
-  const CRATE_ROW_Y = 540;     // vertical center of the row (screen middle)
-  const CRATE_LIFT = 48;       // how far the focused record rises out of the crate
+  const CRATE_SPACING = 198;   // px between records in the row
+  const CRATE_CARD = 272;      // face size
+  const CRATE_ROW_Y = 548;     // vertical center of the row (screen middle)
+  const CRATE_LIFT = 54;       // how far the focused record rises out of the crate
   let crateData = null;        // {sections: [...]}
   let crateSection = null;     // active section id
   let crateItems = [];
@@ -1820,13 +1820,13 @@
         el.style.transform = "translate3d(-9999px,0,0)";
         continue;
       }
-      const t = Math.max(-1, Math.min(1, d / 300));
+      const t = Math.max(-1, Math.min(1, d / 320));
       const lift = 1 - Math.abs(t);
       const x = 540 + d * 1.02 - CRATE_CARD / 2;
       const y = CRATE_ROW_Y - lift * CRATE_LIFT - CRATE_CARD / 2;
-      const z = lift * 185;
+      const z = lift * 200;
       const rotY = -t * 56;
-      const scale = 0.82 + lift * 0.32;
+      const scale = 0.80 + lift * 0.36;
       el.style.transform =
         `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, ${z.toFixed(1)}px) rotateY(${rotY.toFixed(1)}deg) scale(${scale.toFixed(3)})`;
       el.style.opacity = ad > 560 ? String(Math.max(0, 1 - (ad - 560) / 140)) : "1";
