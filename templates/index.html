@@ -1421,12 +1421,12 @@
   }
 
   function applyVinylTransform(now) {
-    // Flip is a single rigid rotation about the horizontal centre axis
-    // (rotateX), pivoting around the centre of the record. The vinyl spin
-    // is frozen for the duration so the flip reads as one clean motion —
-    // a record being turned over rather than tumbling through space.
-    // `flipDirection` chooses the tip direction so "next" and "previous"
-    // skips visibly differ (forward tips top-away, back tips top-toward).
+    // Flip is a single rigid rotation about the VERTICAL centre axis
+    // (rotateY) so it matches the horizontal skip swipe — a "next" swipe
+    // (right→left) turns the record over to the left like a page, and a
+    // "previous" swipe (left→right) turns it the other way. The vinyl spin
+    // is frozen for the duration so the flip reads as one clean motion.
+    // `flipDirection` carries the swipe's sign.
     let flipAngle = 0;
     let sheen = 0;
 
@@ -1446,11 +1446,11 @@
 
     vinyl.style.setProperty("--flip-sheen", sheen.toFixed(3));
     if (flipStartTime) {
-      // Spin (rotate = rotateZ) before the flip so the spin axis is the
-      // record's own centre and the flip pivots about the screen's
-      // horizontal axis — never around a tilted local axis.
+      // Spin (rotate = rotateZ) is applied first (innermost) so it stays the
+      // record's own centre spin, then the flip pivots about the screen's
+      // vertical axis — matching the horizontal swipe, never a tilted axis.
       vinyl.style.transform =
-        `perspective(1600px) rotateX(${flipAngle.toFixed(2)}deg) rotate(${currentAngle.toFixed(2)}deg)`;
+        `perspective(1600px) rotateY(${flipAngle.toFixed(2)}deg) rotate(${currentAngle.toFixed(2)}deg)`;
     } else {
       vinyl.style.transform = `rotate(${currentAngle.toFixed(2)}deg)`;
     }
