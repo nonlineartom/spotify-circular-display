@@ -167,6 +167,16 @@
     display: block;
   }
 
+  /* Everything printed on the disc — mirrored as one unit at the flip's
+     hidden 90° point. Deliberately NO transition: the counter-mirror must
+     snap in the same frame as the rotation math, never ease. */
+  #disc-face {
+    position: absolute;
+    inset: 0;
+    transform-origin: 50% 50%;
+    border-radius: 50%;
+  }
+
   /* Album art fills the vinyl */
   #artwork {
     position: absolute;
@@ -900,12 +910,15 @@
   <div id="platter">
     <!-- Vinyl record — this whole div rotates -->
     <div id="vinyl">
-      <img id="artwork" src="" alt="" draggable="false" ondragstart="return false" onmousedown="return false">
-      <!-- Grooves live inside #vinyl so they foreshorten and flip with the
-           record disc rather than staying flat circles during a flip. -->
-      <canvas id="grooves" width="1080" height="1080"></canvas>
-      <!-- Procedural record label — rendered per track, spins and flips with the record -->
-      <svg id="label" viewBox="0 0 1080 1080" xmlns="http://www.w3.org/2000/svg"></svg>
+      <!-- disc-face wraps everything printed on the disc so the 90° counter-
+           mirror moves art, grooves and label as ONE object, instantly
+           (the wrapper has no CSS transitions). -->
+      <div id="disc-face">
+        <img id="artwork" src="" alt="" draggable="false" ondragstart="return false" onmousedown="return false">
+        <canvas id="grooves" width="1080" height="1080"></canvas>
+        <!-- Procedural record label — rendered per track, spins and flips with the record -->
+        <svg id="label" viewBox="0 0 1080 1080" xmlns="http://www.w3.org/2000/svg"></svg>
+      </div>
     </div>
 
     <!-- Spindle (static, doesn't rotate) -->
@@ -1041,6 +1054,7 @@
   const dimmer     = $("dimmer");
   const groovesEl  = $("grooves");
   const spindleEl  = $("spindle");
+  const discFace   = $("disc-face");
   const platter    = $("platter");
   const volumeHud  = $("volume-hud");
   const volTrack   = $("vol-track");
@@ -1117,11 +1131,13 @@
   // New art/label are revealed at the flip's hidden 90° point. They're staged
   // here while the front half plays, then swapped; if a fresh skip's art is
   // slow to load the flip holds edge-on (up to FLIP_HOLD_MAX) until it arrives.
+  // If nothing arrives at all, the flip completes as a plain turn-over.
   let pendingArt = null;
   let pendingPalette = undefined;
   let flipArtSwapped = false;
   let flipHoldDeadline = 0;
-  const FLIP_HOLD_MAX = 500;
+  let lastFlipStartedAt = -Infinity;
+  const FLIP_HOLD_MAX = 1800;
   let lastProgressDraw = 0;
   let lastProgressEmpty = false;
   const PROGRESS_DRAW_INTERVAL = 125;
@@ -1446,18 +1462,22 @@
       let t = Math.min((now - flipStartTime) / FLIP_DURATION, 1);
 
       // At the hidden 90° point, reveal the new track's art + label and
-      // counter-mirror so the back half (90→180°) reads upright. If the art
-      // isn't loaded yet (fresh skip), hold edge-on until it is.
+      // counter-mirror the whole disc face so the back half (90→180°) reads
+      // upright. If the art isn't loaded yet (fresh skip), hold edge-on until
+      // it arrives; if nothing ever arrives, finish as a plain turn-over
+      // (no swap, no mirror — the pre-existing look).
       if (!flipArtSwapped && t >= 0.5) {
-        if (pendingArt !== null || (flipHoldDeadline && now >= flipHoldDeadline)) {
+        if (pendingArt !== null) {
           flipArtSwapped = true;
-          if (pendingArt !== null) { artworkEl.src = pendingArt; pendingArt = null; }
+          artworkEl.src = pendingArt;
+          pendingArt = null;
           if (pendingPalette !== undefined) { labelPalette = pendingPalette; pendingPalette = undefined; }
           sideB = !sideB;
           lastLabelKey = "";
           renderLabel();
-          artworkEl.style.transform = "scaleX(-1) scale(1.035)";
-          labelSvg.style.transform = "scaleX(-1)";
+          discFace.style.transform = "scaleX(-1)";
+        } else if (flipHoldDeadline && now >= flipHoldDeadline) {
+          flipArtSwapped = true; // give up waiting — plain turn-over
         } else {
           if (!flipHoldDeadline) flipHoldDeadline = now + FLIP_HOLD_MAX;
           flipStartTime = now - FLIP_DURATION * 0.5;
@@ -1475,8 +1495,10 @@
         sheen = 0;
         vinyl.classList.remove("flipping");
         artworkEl.classList.remove("art-changing");
-        artworkEl.style.transform = "";
-        labelSvg.style.transform = "";
+        // Cleared in the same frame the rotateY(180°) below disappears —
+        // rotateY(180)+mirror ≡ upright, so the hand-off is invisible. The
+        // wrapper has no transition, so both snap together.
+        discFace.style.transform = "";
       }
     }
 
@@ -1509,18 +1531,18 @@
   function startRecordFlip(direction) {
     flipDirection = direction === "previous" ? 1 : -1;
     flipStartTime = performance.now();
+    lastFlipStartedAt = flipStartTime;
     flipArtSwapped = false;
     flipHoldDeadline = 0;
     pendingArt = null;
     pendingPalette = undefined;
     // Clear any counter-mirror a prior (rapidly-superseded) flip left behind,
     // so this flip's front half is never mirrored.
-    artworkEl.style.transform = "";
-    labelSvg.style.transform = "";
+    discFace.style.transform = "";
     vinyl.classList.add("flipping");
     artworkEl.classList.add("art-changing");
-    // The art + label side swap, and the art-changing cleanup, are handled at
-    // the hidden 90° point and on flip completion inside applyVinylTransform.
+    // The disc-face swap, and the art-changing cleanup, are handled at the
+    // hidden 90° point and on flip completion inside applyVinylTransform.
   }
 
   // Stage new artwork/palette so a running flip reveals it at the hidden 90°
@@ -2294,8 +2316,17 @@
     // lands at the hidden 90° point instead of popping at a visible angle.
     if (newId !== state.trackId) {
       const hadTrack = !!state.trackId;
-      if (hadTrack && !flipStartTime) {
+      // A manual skip already flipped via the swipe handler — if the poll
+      // notices the track change just after that flip finished, don't play a
+      // second one. (Mid-flip changes are staged into the running flip.)
+      if (hadTrack && !flipStartTime && performance.now() - lastFlipStartedAt > 2600) {
         startRecordFlip("next");
+      }
+      // Same-album track change: the artwork URL won't change, so nothing
+      // would ever be staged — feed the current art to the running flip so
+      // the 90° reveal (with its A/B side toggle) happens without holding.
+      if (flipStartTime && !flipArtSwapped && artUrl && artUrl === state.artUrl) {
+        pendingArt = artUrl;
       }
       state.trackId = newId;
       state.trackName = track.name || "";
