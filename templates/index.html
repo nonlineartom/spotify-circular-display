@@ -1108,7 +1108,9 @@
 
   let pausedSince = 0;
   let screenDimmed = false;
-  const DIM_DELAY = 5 * 60 * 1000;
+  // Idle time before the screen dims. Overridable for testing/tuning via
+  // URL param, e.g. /?dim=30 dims after 30 seconds.
+  const DIM_DELAY = (parseInt(new URLSearchParams(location.search).get("dim"), 10) || 5 * 60) * 1000;
 
   // Lyrics state
   let lyricsLines = [];      // [{time: ms, text: ""}, ...]
