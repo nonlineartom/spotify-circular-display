@@ -748,9 +748,17 @@
     z-index: 50;
     pointer-events: none;
     opacity: 0;
+    /* base transition = the WAKE fade: quick */
+    transition: opacity 0.45s ease;
+  }
+  /* While dimmed the overlay swallows all input — the first press anywhere
+     only wakes the screen, it can never activate what's underneath. */
+  #dimmer.dim {
+    opacity: 0.85;
+    pointer-events: auto;
+    /* dimming down stays slow and gentle */
     transition: opacity 3s ease-in-out;
   }
-  #dimmer.dim { opacity: 0.85; }
 
   /* ── WLED setup affordance (idle only) ── */
   #wled-chip {
@@ -2743,6 +2751,22 @@
     if (!swipeGesture || e.pointerId !== swipeGesture.pointerId) return;
     cancelSwipe();
   });
+
+  // ── Wake from screen dim ──
+  // While dimmed, #dimmer sits on top with pointer-events:auto, so the first
+  // press lands here and ONLY wakes the screen: restart the idle countdown
+  // (animate() then drops .dim, restoring pointer-events:none) and stop the
+  // event so nothing underneath is activated. Touch pointers implicitly
+  // capture to the dimmer, so the matching pointerup/click can't leak either.
+  function wakeScreen(e) {
+    e.stopPropagation();
+    e.preventDefault();
+    pausedSince = performance.now();
+    suppressTapUntil = performance.now() + 650; // belt & braces vs stray clicks
+  }
+  dimmer.addEventListener("pointerdown", wakeScreen);
+  dimmer.addEventListener("pointerup", e => { e.stopPropagation(); e.preventDefault(); });
+  dimmer.addEventListener("click", e => { e.stopPropagation(); e.preventDefault(); });
 
   // ── Prevent all image/element dragging ──
   document.addEventListener("dragstart", e => e.preventDefault());
