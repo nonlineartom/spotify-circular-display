@@ -260,7 +260,13 @@
     height: calc((var(--ring-radius) * 2) + 40px);
     z-index: 25;
     pointer-events: none;
-    transition: width 0.8s ease, height 0.8s ease;
+    transition: width 0.8s ease, height 0.8s ease, opacity 0.28s ease;
+  }
+  /* The ring doesn't flip with the disc — hide it during the flip so the
+     static notches aren't a distraction. !important so it also wins over
+     the inline opacity the minimize morph manages. */
+  #progress-ring-canvas.flip-hidden {
+    opacity: 0 !important;
   }
   /* On a 7" single the label is wider — swell the ring to its edge so it
      hugs the paper instead of cutting through the curved type. The canvas
@@ -1495,6 +1501,7 @@
         sheen = 0;
         vinyl.classList.remove("flipping");
         artworkEl.classList.remove("art-changing");
+        progressCanvas.classList.remove("flip-hidden"); // notches ease back in
         // Cleared in the same frame the rotateY(180°) below disappears —
         // rotateY(180)+mirror ≡ upright, so the hand-off is invisible. The
         // wrapper has no transition, so both snap together.
@@ -1541,6 +1548,7 @@
     discFace.style.transform = "";
     vinyl.classList.add("flipping");
     artworkEl.classList.add("art-changing");
+    progressCanvas.classList.add("flip-hidden"); // static notches fade off for the flip
     // The disc-face swap, and the art-changing cleanup, are handled at the
     // hidden 90° point and on flip completion inside applyVinylTransform.
   }
