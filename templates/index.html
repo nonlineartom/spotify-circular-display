@@ -105,7 +105,7 @@
     z-index: 1;
     transform-origin: 50% 50%;
     will-change: transform;
-    transition: transform 680ms cubic-bezier(0.32, 0.72, 0, 1), opacity 480ms ease;
+    transition: transform 680ms cubic-bezier(0.32, 0.72, 0, 1), opacity 480ms ease, filter 480ms ease;
   }
   /* Browse mode: platter shrinks to a square album cover parked at the top,
      the crate fills the screen beneath it. (The circle→square morph and
@@ -755,13 +755,13 @@
   }
 
   /* ── Track list — pinch-out album browser over the spinning record ── */
-  /* Defocus the platter: push it back (scale) and fade it to a faint ghost
-     (compositor-only opacity — no per-frame blur, which is costly on a
-     spinning element). Fading the whole platter mutes the bright centre label
-     so the centred track name stays readable over it. */
+  /* Defocus the platter: shrink it a touch and blur it so the still-spinning
+     record reads as sunk into the background (iOS-style depth), dimmed enough
+     that the tracklist stays legible over it. */
   #viewport.tracklisting #platter {
-    transform: scale(0.9);
-    opacity: 0.3;
+    transform: scale(0.86);
+    filter: blur(7px);
+    opacity: 0.5;
   }
   #viewport.tracklisting #pill,
   #viewport.tracklisting #lyrics-wrap,
@@ -777,6 +777,7 @@
     z-index: 44;
     opacity: 0;
     visibility: hidden;
+    touch-action: none; /* we handle scroll + pinch ourselves */
     transition: opacity 0.4s ease, visibility 0.4s;
   }
   #tracklist.visible { opacity: 1; visibility: visible; }
@@ -2608,31 +2609,56 @@
     }
   }
 
-  // Picker scroll — drag with snap; wheel for testing on a desktop.
-  let tlDrag = null;
-  tlPicker.addEventListener("pointerdown", e => {
-    tlDrag = { y: e.clientY, o: tlOffset };
-    tlDragMoved = false;
-    cancelAnimationFrame(tlSnapRaf);
-    tlPicker.setPointerCapture(e.pointerId);
-    armTlTimeout();
-  });
-  tlPicker.addEventListener("pointermove", e => {
-    if (!tlDrag) return;
-    const dy = e.clientY - tlDrag.y;
-    if (Math.abs(dy) > 5) tlDragMoved = true;
-    tlOffset = Math.max(0, Math.min(tlTracks.length - 1, tlDrag.o - dy / TL_ROW_PX));
-    tlLayout();
-  });
-  function tlEndDrag(e) {
-    if (!tlDrag) return;
-    tlDrag = null;
-    try { tlPicker.releasePointerCapture(e.pointerId); } catch (e2) {}
-    if (tlDragMoved) tlSnap();
-    setTimeout(() => { tlDragMoved = false; }, 0); // let the click handler see it first
+  // One pointer tracker for the whole overlay drives BOTH interactions:
+  // one finger on the list column scrolls it; two fingers pinching in closes
+  // the tracklist (back to the player — same as tapping aside). Events on the
+  // rows/picker bubble up to #tracklist, so no pointer capture is needed.
+  const tlPts = new Map();        // pointerId -> {x, y}
+  let tlScroll = null;            // {id, y, o} active one-finger scroll
+  let tlPinch = null;             // {d0} active two-finger pinch
+  function tlDist() {
+    const p = [...tlPts.values()];
+    return Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y);
   }
-  tlPicker.addEventListener("pointerup", tlEndDrag);
-  tlPicker.addEventListener("pointercancel", tlEndDrag);
+  tlEl.addEventListener("pointerdown", e => {
+    tlPts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    armTlTimeout();
+    if (tlPts.size === 2) {
+      tlScroll = null;            // a second finger landed — it's a pinch, not a scroll
+      tlPinch = { d0: tlDist() };
+    } else if (tlPts.size === 1 && e.target.closest("#tl-picker")) {
+      tlScroll = { id: e.pointerId, y: e.clientY, o: tlOffset };
+      tlDragMoved = false;
+      cancelAnimationFrame(tlSnapRaf);
+    }
+  });
+  tlEl.addEventListener("pointermove", e => {
+    const p = tlPts.get(e.pointerId);
+    if (!p) return;
+    p.x = e.clientX; p.y = e.clientY;
+    if (tlPinch && tlPts.size >= 2) {
+      // Fingers drawn together past the commit distance → back to the player.
+      if (tlDist() - tlPinch.d0 <= -PINCH_COMMIT_PX) { tlPinch = null; closeTracklist(); }
+      return;
+    }
+    if (tlScroll && e.pointerId === tlScroll.id) {
+      const dy = e.clientY - tlScroll.y;
+      if (Math.abs(dy) > 5) tlDragMoved = true;
+      tlOffset = Math.max(0, Math.min(tlTracks.length - 1, tlScroll.o - dy / TL_ROW_PX));
+      tlLayout();
+    }
+  });
+  function tlPointerEnd(e) {
+    tlPts.delete(e.pointerId);
+    if (tlScroll && e.pointerId === tlScroll.id) {
+      tlScroll = null;
+      if (tlDragMoved) tlSnap();
+      setTimeout(() => { tlDragMoved = false; }, 0); // let the row click see it first
+    }
+    if (tlPts.size < 2) tlPinch = null;
+  }
+  tlEl.addEventListener("pointerup", tlPointerEnd);
+  tlEl.addEventListener("pointercancel", tlPointerEnd);
   tlPicker.addEventListener("wheel", e => {
     e.preventDefault();
     tlOffset = Math.max(0, Math.min(tlTracks.length - 1, tlOffset + (e.deltaY > 0 ? 0.5 : -0.5)));
