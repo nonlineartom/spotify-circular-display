@@ -2202,8 +2202,10 @@
       shelf.classList.remove("visible");
       return;
     }
-    // Just launched something — stay hidden while the receiver starts up.
-    if (performance.now() - shelfLaunchedAt < 10000) return;
+    // Just launched something — keep the *idle* shelf hidden while the receiver
+    // starts up. But if the user has pinched back into browse mode they want the
+    // crate NOW, so don't let the startup window swallow a deliberate re-entry.
+    if (!state.browsing && performance.now() - shelfLaunchedAt < 10000) return;
 
     const now = performance.now();
     if (!crateData || now - shelfFetchedAt > 120000) {
