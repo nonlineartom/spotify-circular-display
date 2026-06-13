@@ -2169,6 +2169,26 @@
     }
   }
 
+  // Warm every crate cover into the browser's HTTP cache ahead of time, so the
+  // background-images that buildCrate() assigns paint instantly at pinch-in
+  // instead of downloading blank-first over Wi-Fi. Image refs are held until
+  // load so the fetch can't be GC-cancelled; URLs are de-duped across refreshes.
+  const _crateImgWarm = new Map();
+  function preloadCrateImages(data) {
+    if (!data || !data.sections) return;
+    for (const s of data.sections) {
+      for (const it of (s.items || [])) {
+        const u = it && it.image;
+        if (!u || _crateImgWarm.has(u)) continue;
+        const im = new Image();
+        _crateImgWarm.set(u, im);
+        im.decoding = "async";
+        im.onload = im.onerror = () => { _crateImgWarm.delete(u); };
+        im.src = u;
+      }
+    }
+  }
+
   async function updateShelf() {
     if (state.trackId && !state.browsing) {
       shelf.classList.remove("visible");
@@ -2185,7 +2205,7 @@
           const r = await fetch("/api/crate");
           if (r.ok) {
             const d = await r.json();
-            if (d && d.sections && d.sections.length) crateData = d;
+            if (d && d.sections && d.sections.length) { crateData = d; preloadCrateImages(d); }
           }
         } catch (e) { /* offline — try again next cycle */ }
       })();
@@ -3079,6 +3099,7 @@
     if (d && d.sections && d.sections.length && !crateData) {
       crateData = d;
       shelfFetchedAt = performance.now();
+      preloadCrateImages(d); // warm covers during playback so the pinch reveal is instant
     }
   }).catch(() => {});
   requestAnimationFrame(animate);
