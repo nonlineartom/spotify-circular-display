@@ -593,8 +593,10 @@
   #lava .b2 { left: 30%;  top: -10%; background: radial-gradient(circle at 50% 50%, var(--lava-2), rgba(0,0,0,0) 60%); animation: lava2 41s ease-in-out infinite; }
   #lava .b3 { left: -12%; top: 28%;  background: radial-gradient(circle at 50% 50%, var(--lava-3), rgba(0,0,0,0) 58%); animation: lava3 37s ease-in-out infinite; }
   #lava .b4 { left: 26%;  top: 30%;  background: radial-gradient(circle at 50% 50%, var(--lava-1), rgba(0,0,0,0) 62%); animation: lava4 47s ease-in-out infinite; }
-  /* Only animate while the crate is visible — no cost during playback. */
-  #shelf:not(.visible) #lava .blob { animation-play-state: paused; }
+  /* Only animate while the crate is visible and the screen is awake — no cost
+     during playback, and none once dimmed (rendering is paused then). */
+  #shelf:not(.visible) #lava .blob,
+  #viewport.dimmed #lava .blob { animation-play-state: paused; }
   @keyframes lava1 { 0%{transform:translate(0,0) scale(1)}    50%{transform:translate(16%,20%) scale(1.22)}  100%{transform:translate(0,0) scale(1)} }
   @keyframes lava2 { 0%{transform:translate(0,0) scale(1.1)}  50%{transform:translate(-18%,16%) scale(0.92)} 100%{transform:translate(0,0) scale(1.1)} }
   @keyframes lava3 { 0%{transform:translate(0,0) scale(0.95)} 50%{transform:translate(22%,-14%) scale(1.2)}  100%{transform:translate(0,0) scale(0.95)} }
@@ -1689,6 +1691,25 @@
     const dt = now - lastFrameTime;
     lastFrameTime = now;
 
+    // --- Screen dim / wake — decided first so a dimmed screen can skip all
+    // rendering. Dimming only happens when not playing; pausing here idles the
+    // GPU during those hours (the crate + lava would otherwise animate forever
+    // behind the overlay). rAF stays alive — it's near-free — so the wake tap
+    // is still detected next frame. ---
+    setPlayerMode(!!state.trackId);
+    const timePaused = pausedSince > 0 ? now - pausedSince : 0;
+    const shouldDim = !state.isPlaying && timePaused >= DIM_DELAY;
+    if (shouldDim && !screenDimmed) {
+      dimmer.classList.add("dim");
+      viewport.classList.add("dimmed");
+      screenDimmed = true;
+    } else if (!shouldDim && screenDimmed) {
+      dimmer.classList.remove("dim");
+      viewport.classList.remove("dimmed");
+      screenDimmed = false;
+    }
+    if (screenDimmed) return; // paused: render nothing while the screen is dim
+
     // --- Minimize morph easing (pinch to/from the crate) ---
     const minTarget = state.browsing ? 1 : 0;
     if (minimizeProg !== minTarget) {
@@ -1765,19 +1786,6 @@
 
     // --- Crate glide/snap ---
     updateCrate(now, dt);
-
-    // --- Screen dim after extended idle/paused state ---
-    const timePaused = pausedSince > 0 ? now - pausedSince : 0;
-    setPlayerMode(!!state.trackId);
-
-    const shouldDim = !state.isPlaying && timePaused >= DIM_DELAY;
-    if (shouldDim && !screenDimmed) {
-      dimmer.classList.add("dim");
-      screenDimmed = true;
-    } else if (!shouldDim && screenDimmed) {
-      dimmer.classList.remove("dim");
-      screenDimmed = false;
-    }
   }
 
   function updateProgressRing(now) {
