@@ -59,6 +59,7 @@ _user_token_expiry = 0
 _track_cache = {}  # track_id -> {name, artists, album, images, duration_ms}
 _playlist_cache = {"loaded_at": 0, "items": []}
 _album_cache = {}  # album_id -> {"label": str}
+_album_tracks_cache = {}  # album_id -> [{number, disc, name, duration_ms, uri}]
 _uri_image_cache = {}   # spotify uri -> resolved cover art url
 _uri_image_failed = {}  # spotify uri -> wall time of last failed resolve
 _artist_albums_cache = {}  # artist_id -> [crate item dicts]
@@ -286,6 +287,71 @@ def lookup_album(album_id):
     except Exception as e:
         print(f"Album lookup failed for {album_id}: {e}")
         return None
+
+
+def lookup_album_tracks(album_id):
+    """Full tracklist for an album via client credentials (no user login).
+
+    Returns a list of {number, disc, name, duration_ms, uri}, ordered as on the
+    record. Cached forever by album_id; a transient failure returns [] without
+    caching so a later request can retry.
+    """
+    if not album_id:
+        return []
+    if album_id in _album_tracks_cache:
+        return _album_tracks_cache[album_id]
+
+    token = get_client_token()
+    if not token:
+        return []
+
+    tracks = []
+    url = f"{SPOTIFY_API_BASE}/albums/{album_id}/tracks"
+    params = {"limit": 50}
+    try:
+        # Spotify paginates at 50; walk `next` so long box sets are complete.
+        while url:
+            resp = requests.get(
+                url,
+                params=params,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=5,
+            )
+            if resp.status_code != 200:
+                print(f"Album tracks error for {album_id}: {resp.status_code}")
+                return []
+            data = resp.json()
+            for t in data.get("items", []):
+                uri = t.get("uri", "")
+                if not uri:
+                    continue
+                tracks.append({
+                    "number": t.get("track_number", len(tracks) + 1),
+                    "disc": t.get("disc_number", 1),
+                    "name": t.get("name", ""),
+                    "duration_ms": t.get("duration_ms", 0),
+                    "uri": uri,
+                })
+            url = data.get("next")
+            params = None  # `next` already carries offset/limit
+    except requests.RequestException as e:
+        print(f"Album tracks fetch failed for {album_id}: {e}")
+        return []
+
+    _album_tracks_cache[album_id] = tracks
+    return tracks
+
+
+def current_album_id():
+    """Album id of whatever is playing right now, from the enrichment cache.
+
+    None until the current track's first enrichment lands. Used to scope the
+    tracklist + play-track endpoints to the record actually on the platter.
+    """
+    state = read_playback_state()
+    track_id = ((state or {}).get("item") or {}).get("id")
+    cached = _track_cache.get(track_id) if track_id else None
+    return ((cached or {}).get("album") or {}).get("id")
 
 
 def queue_track_enrichment(track_id):
@@ -568,6 +634,7 @@ def attach_album_extras(state):
 
     album_id = cached_album.get("id")
     if album_id:
+        album.setdefault("id", album_id)  # lets the kiosk fetch the album's tracklist
         extra = _album_cache.get(album_id)
         if extra is None:
             queue_track_enrichment(track_id)
@@ -941,15 +1008,24 @@ def control_playback_local(action):
     return False, f"Local player API error: {resp.status_code}"
 
 
-def play_uri_local(uri):
-    """Start playback of a Spotify URI through go-librespot's local API."""
+def play_uri_local(uri, skip_to_uri=None):
+    """Start playback of a Spotify URI through go-librespot's local API.
+
+    Pass skip_to_uri to begin a context (album/playlist) at a specific track,
+    so the rest of the record keeps playing after it — go-librespot's
+    /player/play accepts a `skip_to_uri` alongside the context `uri`.
+    """
     if not uri or not uri.startswith("spotify:"):
         return False, "Invalid Spotify URI"
+
+    payload = {"uri": uri}
+    if skip_to_uri:
+        payload["skip_to_uri"] = skip_to_uri
 
     try:
         resp = requests.post(
             f"{GO_LIBRESPOT_API_BASE}/player/play",
-            json={"uri": uri},
+            json=payload,
             timeout=2.5,
         )
     except requests.RequestException as e:
@@ -1240,6 +1316,52 @@ def idle_play():
         return jsonify({"error": "Playlist is not configured for this display"}), 400
 
     ok, msg = play_uri_local(uri)
+    if ok:
+        return jsonify({"status": "ok"})
+    status = 503 if "unavailable" in msg.lower() or "not ready" in msg.lower() else 502
+    return jsonify({"error": msg}), status
+
+
+@app.route("/api/album/tracks")
+def album_tracks():
+    """Tracklist for an album — defaults to whatever is playing now.
+
+    Scoped to the current record: an explicit ?album_id must match what's on
+    the platter, so this can't be used as an open Spotify metadata proxy.
+    """
+    playing = current_album_id()
+    requested = request.args.get("album_id", "").strip()
+    album_id = requested or playing
+    if not album_id:
+        return jsonify({"album_id": None, "tracks": []})  # not enriched yet
+    if requested and playing and requested != playing:
+        return jsonify({"error": "Album is not currently playing"}), 409
+
+    tracks = lookup_album_tracks(album_id)
+    return jsonify({"album_id": album_id, "tracks": tracks})
+
+
+@app.route("/api/album/play-track", methods=["POST"])
+def album_play_track():
+    """Play a track from the currently playing album, keeping album context.
+
+    Only tracks that belong to the record on the platter are accepted, so the
+    endpoint can't start arbitrary playback.
+    """
+    data = request.get_json(silent=True) or {}
+    track_uri = data.get("uri", "")
+    if not track_uri.startswith("spotify:track:"):
+        return jsonify({"error": "Invalid track URI"}), 400
+
+    album_id = current_album_id()
+    if not album_id:
+        return jsonify({"error": "Nothing is playing"}), 409
+
+    tracks = lookup_album_tracks(album_id)
+    if track_uri not in {t["uri"] for t in tracks}:
+        return jsonify({"error": "Track is not on the current album"}), 400
+
+    ok, msg = play_uri_local(f"spotify:album:{album_id}", skip_to_uri=track_uri)
     if ok:
         return jsonify({"status": "ok"})
     status = 503 if "unavailable" in msg.lower() or "not ready" in msg.lower() else 502
