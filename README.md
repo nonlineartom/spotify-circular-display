@@ -8,10 +8,10 @@ A vinyl-inspired Spotify player for circular screens, built for the Raspberry Pi
   <img src="demo.gif" alt="Spotify Circular Display demo" width="400">
 </p>
 
-| Record Shelf (idle) | The Pressing | 45 Mode |
+| The Crate | The Pressing | 45 Mode |
 |:--:|:--:|:--:|
-| <img src="screenshots/record-shelf.png" alt="Idle Record Shelf — house picks fanned as tappable album sleeves" width="270"> | <img src="screenshots/the-pressing.png" alt="Procedural record label generated from the album art" width="270"> | <img src="screenshots/45-mode.png" alt="A single spinning at 45 RPM with the 7-inch big-hole label" width="270"> |
-| Tap a sleeve to put a record on | Every album gets its own pressed label | Singles spin at 45 RPM as a 7" |
+| <img src="screenshots/record-shelf.png" alt="The record crate — playing album minimized to a cover parked up top, records fanned below over an ambient lava-lamp glow in the album's colours" width="270"> | <img src="screenshots/the-pressing.png" alt="Procedural record label generated from the album art" width="270"> | <img src="screenshots/45-mode.png" alt="A single spinning at 45 RPM with the 7-inch big-hole label" width="270"> |
+| Pinch in to riffle the crate over a lava-lamp glow | Every album gets its own pressed label | Singles spin at 45 RPM as a 7" |
 
 <p align="center">
   <img src="screenshots/pressing-label-detail.png" alt="Label close-up — curved type, side marker, year, RPM marque, dead-wax etching" width="300"><br>
