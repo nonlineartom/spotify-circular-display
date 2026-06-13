@@ -1889,7 +1889,10 @@
       // square cover the right way up), coupled to the shrink progress.
       const e = easeOutQuint(Math.min(1, minimizeProg));
       currentAngle = browseStartAngle + (browseTargetAngle - browseStartAngle) * e;
-    } else {
+    } else if (!state.tracklisting) {
+      // (While the tracklist is up the record is held still — see below — so the
+      // blurred platter stays a cached layer instead of re-rasterising each
+      // frame as it spins. Through the blur the freeze is imperceptible.)
       // --- Spin easing ---
       if (spinSpeed !== spinTarget) {
         const elapsed = now - spinStartTime;
@@ -1945,14 +1948,14 @@
       lastMinimizeProg = minimizeProg;
     }
 
-    // --- Progress ring ---
-    updateProgressRing(now);
-
-    // --- Lyrics ---
-    updateLyrics(now);
-
-    // --- Crate glide/snap ---
-    updateCrate(now, dt);
+    // While the tracklist is up, the record is frozen and its furniture is
+    // hidden under the scrim — skip the per-frame canvas redraws so the blurred
+    // platter stays a cached layer (keeps the panel at 60fps under the blur).
+    if (!state.tracklisting) {
+      updateProgressRing(now); // progress ring
+      updateLyrics(now);       // lyrics
+      updateCrate(now, dt);    // crate glide/snap
+    }
   }
 
   function updateProgressRing(now) {
