@@ -1,5 +1,35 @@
 # Troubleshooting and QoL notes
 
+## Display brightness / backlight (this panel can't be dimmed in software)
+
+The display is a **Waveshare "7inch 1080×1080 LCD" (HDMI Round)** — EDID model
+`WS070Round`, USB touch controller `0712:000A` ("Waveshare-079-HD"). We
+investigated software backlight control thoroughly and the answer is: **there
+is no software path on this model.** Findings, all verified on the device:
+
+- **Kernel backlight (`/sys/class/backlight`)** — empty. Only exists for
+  DSI/SPI panels the SoC drives directly; an HDMI panel's backlight is on its
+  own controller, invisible to Linux.
+- **DDC/CI over HDMI** (`ddcutil setvcp 10`) — panel reports it does **not**
+  support DDC/CI (I²C addr 0x37 unresponsive).
+- **USB-HID** — the mechanism Waveshare's HDMI displays normally use, BUT their
+  tools (`RPi-USB-Brightness`, `Brightness-HDMI`) target the eGalax controller
+  (`0EEF:*`) and **reject this panel's `0712:000A` as "no connectable device"**.
+  The sibling-model report (`04 AA 01 00 00 00 <0-100> …` to `/dev/hidraw0`)
+  was tested here and did nothing. No GitHub project drives this controller's
+  brightness (exhaustively searched). The panel exposes a vendor HID channel
+  (report ID 9, usage page 0xFF00) but no published command maps to backlight.
+- **Waveshare's own spec sheet** lists `Backlight Adjustment: "Button backlight
+  adjustment"` — i.e. brightness on this model is a **physical button on the
+  driver board**, not software, despite looser marketing copy.
+
+So the idle "dimmer" is a CSS overlay only; it darkens the picture and pauses
+rendering (saves SoC/GPU heat) but the backlight stays at 100%. For a true
+power-down the only remaining lever is DPMS output-off via `wlopm`/`wlr-randr`
+(`wlopm --off HDMI-A-1`, restore with `--on`) — whether that actually cuts
+*this* panel's backlight is **unconfirmed** (left as a future test). `wlopm`,
+`wlr-randr` and `swayidle` are all installed on the Pi.
+
 ## Multi-touch gestures aren't recognized (single taps/swipes work)
 
 If two-finger gestures (twist-seek, pinch, two-finger tap) do nothing while
