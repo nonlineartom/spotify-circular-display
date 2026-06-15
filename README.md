@@ -61,6 +61,10 @@ That's it. No accounts to create, no QR codes to scan, no passwords.
 
 > **Note:** A Pi 4 (2GB+) or Pi 5 is recommended for smooth Chromium rendering. A pygame-based fallback (`display.py`) is included for lower-powered devices.
 
+### 3D-printed enclosure
+
+A parametric Fusion 360 "record disc" case (Ø250 mm, fits a Bambu X1/X1C bed) houses the Waveshare 7" round display + Pi 5, sits on a turntable platter via a centre spindle hole, and has a hidden WLED cove that drives the [`wled_sync.py`](wled_sync.py) lighting. Design state, files, key dimensions and how to resume the CAD are documented in **[`CASE_DESIGN.md`](CASE_DESIGN.md)**.
+
 ## Architecture
 
 ```
@@ -174,8 +178,9 @@ The setup script will:
 - Install systemd services for auto-start
 - Configure HDMI output for 1080x1080
 - Harden Wi-Fi for unattended operation (system-owned PSK, infinite autoconnect
-  retries, powersave off) so a nightly router reboot never pops a Wi-Fi password
-  prompt over the kiosk — see [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
+  retries, powersave off) **and** install a network watchdog that re-connects the
+  Wi-Fi during an outage — together they stop a nightly router reboot from leaving
+  the Linux Wi-Fi password prompt over the kiosk — see [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
 
 ### 5. Reboot and enjoy
 
@@ -192,7 +197,7 @@ After reboot, open Spotify on your phone, select **"Pi Display"** as the output 
 | `spotify-display` | Flask server — metadata lookup and web UI |
 | `spotify-kiosk` | Chromium in fullscreen kiosk mode |
 | `spotify-buttons` | GPIO button handler (optional) |
-| `spotify-network-watchdog` | Restarts Spotify services and clears any stuck Wi-Fi prompt after Wi-Fi returns |
+| `spotify-network-watchdog` | Re-connects Wi-Fi during an outage (e.g. a nightly router reboot), then clears any stuck password prompt and restarts Spotify services once it returns |
 | `spotify-wled` | WLED ambient lighting + progress dim-band (optional) |
 | `go-librespot` | Spotify Connect audio receiver + local state/control API |
 | `raspotify` | Disabled fallback Spotify Connect receiver + onevent |
