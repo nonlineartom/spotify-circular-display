@@ -19,6 +19,17 @@ has_network() {
     ip route get "$ROUTE_TARGET" >/dev/null 2>&1
 }
 
+# The Wi-Fi profile name (active OR not). NM keeps the same profile across an
+# outage, so cache it once. Never hardcodes an SSID.
+WIFI_CONN_CACHE=""
+wifi_conn() {
+    if [ -z "$WIFI_CONN_CACHE" ] && command -v nmcli >/dev/null 2>&1; then
+        WIFI_CONN_CACHE="$(nmcli -t -f NAME,TYPE connection show 2>/dev/null \
+            | awk -F: '$2 ~ /wireless/ {print $1; exit}')"
+    fi
+    printf '%s' "$WIFI_CONN_CACHE"
+}
+
 mark_display_idle() {
     local tmp_file
     tmp_file="${STATE_FILE}.tmp"
@@ -40,20 +51,27 @@ restart_spotify_stack() {
 # A stray NetworkManager secret-agent dialog — the Wi-Fi password box pre-filled
 # with masked dots — survives a kiosk restart because it belongs to a different
 # process (the desktop panel / nm-applet), not Chromium. So `try-restart
-# spotify-kiosk` above never clears it, and the device sits on the prompt until a
-# power cycle. On network recovery, close any such dialog and force a clean
-# re-activation so NM stops waiting on an outstanding secret request. With
-# harden-network.sh applied (psk-flags 0) this never fires; it rescues units that
-# were deployed before the hardening, without a power cycle.
-dismiss_wifi_prompt() {
+# spotify-kiosk` never clears it, and the device sits on the prompt until a power
+# cycle. Kill any standalone agent that drew one (best-effort backstop).
+kill_secret_dialogs() {
     pkill -f 'nm-connection-editor' 2>/dev/null || true
     pkill -x 'nm-applet' 2>/dev/null || true
     pkill -f 'polkit-gnome-authentication-agent' 2>/dev/null || true
+}
+
+# Force a clean Wi-Fi re-activation. `nmcli connection up` (a) uses the
+# system-owned PSK so it never prompts, (b) clears the autoconnect-blocked state
+# NM falls into when a mid-association dropout makes it ask an agent for a "new"
+# key and none answers — autoconnect-retries=0 does NOT clear that block, only an
+# explicit `connection up` does — and (c) makes NM cancel that outstanding secret
+# request, which dismisses any dialog an agent had drawn over the kiosk. Bounded
+# wait so a still-absent AP just fails fast and we retry next loop.
+reconnect_wifi() {
+    kill_secret_dialogs
     command -v nmcli >/dev/null 2>&1 || return 0
     local conn
-    conn="$(nmcli -t -f NAME,TYPE,DEVICE connection show --active 2>/dev/null \
-            | awk -F: '$2 ~ /wireless/ {print $1; exit}')"
-    [ -n "$conn" ] && nmcli connection up "$conn" >/dev/null 2>&1 || true
+    conn="$(wifi_conn)"
+    [ -n "$conn" ] && nmcli -w 25 connection up "$conn" >/dev/null 2>&1 || true
 }
 
 network_state="unknown"
@@ -62,7 +80,7 @@ while true; do
     if has_network; then
         if [ "$network_state" != "up" ]; then
             log "network is up; clearing any stuck Wi-Fi prompt and restarting Spotify display services"
-            dismiss_wifi_prompt
+            kill_secret_dialogs
             restart_spotify_stack
             network_state="up"
         fi
@@ -72,6 +90,13 @@ while true; do
             mark_display_idle
             network_state="down"
         fi
+        # While the network is down, keep nudging NetworkManager back up. A
+        # nightly router reboot can leave NM blocked on a no-secrets failure
+        # (it mis-reads the brief mid-association dropout as a bad key, asks a
+        # session agent for a new one, and gives up when none answers). Without
+        # this the Pi sits on dead Wi-Fi — and a stray password prompt — until a
+        # manual power cycle. reconnect_wifi also dismisses any such prompt.
+        reconnect_wifi
     fi
 
     sleep "$CHECK_INTERVAL"

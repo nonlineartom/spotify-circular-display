@@ -90,20 +90,30 @@ to `NEED_AUTH`, and asks the session agent for a "new" secret (`GetSecrets` with
 human. Restarting the kiosk only relaunches Chromium — a different process — so the
 dialog stays put, which is why only a power cycle has been clearing it.
 
-**This is now fixed automatically.** `setup.sh` runs `harden-network.sh`, which, for
-the active Wi-Fi profile:
+**This is now fixed automatically**, in two layers. `setup.sh` runs
+`harden-network.sh`, which, for the active Wi-Fi profile:
 
-- makes the PSK **system-owned** (`802-11-wireless-security.psk-flags 0`) — the
-  load-bearing fix: NetworkManager answers its own secret requests and never
-  consults an agent, so the dialog can no longer be raised;
+- makes the PSK **system-owned** (`802-11-wireless-security.psk-flags 0`) so
+  NetworkManager answers its *normal* secret requests from its own store and does
+  not consult a desktop agent;
 - sets `connection.autoconnect yes`, `connection.autoconnect-retries 0` (retry
   forever) and `802-11-wireless.powersave 2` (off), so a multi-minute outage never
   exhausts the retry budget and the radio re-associates quickly when the AP returns;
 - masks/kills any standalone desktop secret agent in the kiosk session.
 
-The `spotify-network-watchdog` now also dismisses a stuck dialog and re-activates
-Wi-Fi when the network returns, so already-deployed units recover without a power
-cycle.
+That covers the common case, but it is **not sufficient on its own**: when the AP
+vanishes *mid-association* (exactly what a router reboot does), NM can mis-read it
+as a wrong key and ask an agent for a *new* secret (`GetSecrets` with `REQUEST_NEW`)
+**regardless of `psk-flags`** — drawing the prompt — and when no agent answers, the
+activation fails with `no-secrets`, which **blocks autoconnect**. That block is not
+cleared by `autoconnect-retries`; only an explicit `nmcli connection up` clears it.
+
+So the load-bearing layer is the **`spotify-network-watchdog`**: while the network
+is down it keeps re-issuing `nmcli connection up` for the Wi-Fi profile. That uses
+the stored PSK (no prompt), reconnects within seconds of the AP returning, clears
+the `no-secrets` autoconnect block, and cancels NM's outstanding secret request —
+which dismisses any dialog an agent managed to draw. The Pi self-heals after a
+nightly router reboot with no power cycle.
 
 Re-run it any time — it is idempotent and auto-detects the active Wi-Fi (no SSID to
 edit):

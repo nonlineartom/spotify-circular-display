@@ -15,8 +15,11 @@
 #
 # What it does for the active Wi-Fi profile:
 #   1. Makes the PSK a SYSTEM-owned secret (psk-flags 0) so NetworkManager
-#      answers its own secret requests and never consults a desktop agent —
-#      the load-bearing fix; with this set the dialog cannot be raised.
+#      answers its NORMAL secret requests from its own store and does not
+#      consult a desktop agent. (This is necessary but NOT sufficient: on a
+#      mid-association dropout NM can still ask an agent for a NEW key with the
+#      REQUEST_NEW flag, bypassing psk-flags — the spotify-network-watchdog is
+#      what actually heals that case by re-upping the connection.)
 #   2. autoconnect=yes, autoconnect-retries=0 (retry forever), powersave=off
 #      so a multi-minute AP outage never exhausts the retry budget or slides
 #      into NEED_AUTH.
