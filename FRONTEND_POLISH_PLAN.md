@@ -26,6 +26,12 @@ live kiosk, and ordered so later phases build on earlier ones.
 3. Regression sweep (checklist below), then promote: restart `spotify-display` **and**
    `spotify-kiosk` (Jinja caches templates; Chromium caches the page).
 
+**Local fake-playback harness:** playback-dependent changes (lyrics, accent, ring) can be
+verified on a dev Mac without a receiver — in the browser console, override `window.fetch`
+to serve a fake `/api/now-playing` (with a canvas-generated data-URL cover) and fake
+`/api/lyrics` LRC. The whole pipeline runs: palette sampling, label render, accent
+propagation, synced lyrics. Used successfully for Phases 1–2.
+
 **Regression sweep (run after every phase):**
 - [ ] Track skip → flip animation clean, art swaps at the hidden 90° point
 - [ ] Same-album track change (no art change) still flips with A/B side toggle
@@ -99,30 +105,31 @@ guard). Skip rapidly: no color flashes ahead of the art swap.
 
 ---
 
-## Phase 2 — Lyrics engine refinement
+## Phase 2 — Lyrics engine refinement ✅ (2026-07-01, pending panel check)
 
 *Perf + correctness fix wearing a polish hat.*
 
 **Goal:** compositor-only lyric emphasis, stable scroll, cleaner panel.
 
-- [ ] **Scale, don't resize.** Replace the `font-size` 23→31px transition on `.lyric-line.active`
-      (index.html:508, 517–519) with `transform: scale(1.35)` + `transform-origin: center`.
-      All lines keep one layout size, so `offsetTop` is stable — fixes the current drift where
-      the scroll offset is computed mid-growth and never corrects.
-- [ ] **Scroll math update** in `updateLyrics()` (index.html:1696–1699): offsets are now
-      constant per line — compute directly from index × line-height instead of reading
-      `offsetTop` (kills the forced layout read too).
-- [ ] **Spring the scroll:** switch `#lyrics-inner`'s transition to `--ease-pop` with a touch
-      of overshoot.
-- [ ] **Borderless panel:** drop the visible border + panel background on `#lyrics-wrap`
-      (index.html:477–480); keep the radial contrast wash + existing mask. The scrim does the
-      work; no floating rectangle inside the circle.
-- [ ] Active-line glow already accent-tinted from Phase 1 — confirm it reads on the borderless
-      panel over bright artwork; if not, deepen the radial wash slightly.
+- [x] **Scale, don't resize.** All lines lay out at one constant size (26px / weight 450 in a
+      500px column — weight held constant too, since a weight change re-wraps like a size
+      change). Emphasis is pure transform: active `scale(1.19)` (reads ≈ old 31px, fits the
+      616px panel), inactive `scale(0.885)` (reads ≈ old 23px). Activating a line can no
+      longer reflow the column, which kills both the layout thrash and the scroll drift.
+- [x] **Scroll math.** Kept the `offsetTop` read (line heights legitimately vary — wrapped
+      lyrics — so index×height would be wrong) but it's now *stable*, one read per line
+      change, and exact. Verified: a wrapped line measures 69px next to 47px single-row
+      lines with no drift.
+- [x] **Spring the scroll:** `#lyrics-inner` glides on `cubic-bezier(0.3, 1.18, 0.35, 1)` —
+      a touch of overshoot.
+- [x] **Borderless panel:** border + white sheen gone; a single radial wash fading on all
+      sides (mask still handles top/bottom). No rectangle inside the circle.
+- [x] Accent glow confirmed via the fake-playback harness: teal test art → teal bloom on the
+      active line over the borderless wash.
 
-**Acceptance:** long-lyric track scrolls with zero jitter; active line emphasis never shifts
-neighboring lines; panel has no visible edges. Frame timing during lyric changes shows no
-layout spikes (Performance panel, or just eyeball on the Pi).
+**Acceptance (panel):** long-lyric track scrolls with zero jitter; active line emphasis never
+shifts neighboring lines; panel has no visible edges. *Trade to eyeball:* the lyric column is
+narrower than before (500px layout) — confirm wrap frequency feels fine on real songs.
 
 ---
 

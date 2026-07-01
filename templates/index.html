@@ -504,11 +504,11 @@
     visibility: hidden;
     content-visibility: hidden;
     transition: opacity 0.6s;
-    background:
-      radial-gradient(ellipse at 50% 34%, rgba(255,255,255,0.06), rgba(255,255,255,0) 64%),
-      rgba(0, 0, 0, 0.26);
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: var(--r-panel);
+    /* Borderless: a contrast wash that fades out on ALL sides (the mask
+       handles top/bottom, the radial handles left/right) — no floating
+       rectangle sitting inside the circle. */
+    background: radial-gradient(ellipse at 50% 50%,
+      rgba(0,0,0,0.40) 0%, rgba(0,0,0,0.32) 52%, rgba(0,0,0,0) 80%);
     /* Mask fades top/bottom — also softens the blur edges naturally */
     -webkit-mask-image: linear-gradient(to bottom,
       transparent 0%, transparent 9%, white 25%, white 66%, transparent 92%, transparent 100%);
@@ -525,29 +525,35 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    transition: transform 0.4s cubic-bezier(0.25, 0.1, 0.25, 1);
+    /* A touch of overshoot as the column glides to the next line */
+    transition: transform 0.55s cubic-bezier(0.3, 1.18, 0.35, 1);
   }
 
+  /* One constant layout size for every line (26px in a 500px column) —
+     emphasis is pure transform scale, so activating a line never reflows
+     the column and the measured scroll offsets stay exact. Weight is
+     constant too (variable-font 450): a weight change would re-wrap a
+     line exactly like a size change would. */
   .lyric-line {
-    font-size: 23px;
-    font-weight: 400;
+    font-size: 26px;
+    font-weight: 450;
     line-height: 1.28;
     text-align: center;
     padding: 7px 20px;
     color: rgba(255,255,255,0.24);
-    transition: color 0.35s, transform 0.35s, font-size 0.35s;
+    transform: scale(0.885);          /* reads ≈ the old 23px */
+    transform-origin: 50% 50%;
+    transition: color 0.35s, transform 0.35s ease;
     text-shadow: 0 2px 12px rgba(0,0,0,0.58);
     white-space: normal;
     overflow: hidden;
     text-overflow: clip;
-    max-width: 620px;
+    max-width: 500px;
     max-height: 2.65em;
   }
   .lyric-line.active {
     color: #fff;
-    font-size: 31px;
-    font-weight: 500;
-    transform: translateY(-1px);
+    transform: scale(1.19);           /* reads ≈ the old 31px, fits the 616px panel */
     text-shadow:
       0 2px 16px rgba(0,0,0,0.72),
       0 0 28px rgba(var(--ui-accent-rgb), 0.30);
@@ -1737,7 +1743,10 @@
       els[i].classList.toggle("past", i < idx);
     }
 
-    // Scroll so active line is near top of visible area
+    // Scroll so the active line sits in the focus lane. Line heights vary
+    // (some lyrics wrap to two rows) but they're STABLE — emphasis is a
+    // transform scale, never a font-size change — so this single offsetTop
+    // read is exact and the column can't drift mid-transition.
     if (idx >= 0 && els[idx]) {
       const offset = els[idx].offsetTop - 118; // keep the active line in the focus lane
       lyricsInner.style.transform = `translateY(${-offset}px)`;
