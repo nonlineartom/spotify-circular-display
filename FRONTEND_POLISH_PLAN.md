@@ -216,6 +216,11 @@ restores controls within one frame. Long titles legible without ellipsis truncat
 
 ## Efficiency backlog (RAM-focused — pick up opportunistically)
 
+**Measured baseline (2026-07-01, 1GB Pi 5, idle, 3d uptime):** 643 MB used / 346 MB
+available / 468 MB swap in use. Chromium ≈ 268 MB RSS (+~160 MB swapped), live Flask
+≈ 105 MB (+52 MB swap), go-librespot ≈ 19 MB. Every phase should leave these numbers
+the same or better — re-measure after promoting.
+
 Found while reading the code; each is a real win on the lower-RAM Pi. None are regressions
 waiting to happen — they're bounded, mechanical changes. Tackle alongside whichever phase
 touches the same code, or as a standalone efficiency pass.
