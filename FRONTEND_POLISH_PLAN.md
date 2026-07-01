@@ -133,28 +133,26 @@ narrower than before (500px layout) — confirm wrap frequency feels fine on rea
 
 ---
 
-## Phase 3 — Vinyl light & physicality
+## Phase 3 — Vinyl light & physicality ✅ (2026-07-01, pending panel check)
 
 *The realism pass. All static layers + trivial math in the existing per-frame transform.*
 
-- [ ] **Static specular sheen.** New `div` inside `#platter`, above `#vinyl` (z between the
-      vinyl and the spindle), containing a very low-opacity conic gradient — two soft opposing
-      highlight wedges — masked to the donut between label radius and rim
-      (`mask-image: radial-gradient`). It does **not** rotate; the grooves moving beneath a
-      fixed light is what sells it. Must fade with the same curve as the other furniture during
-      the minimize morph (`applyMinimizeMorph`, index.html:1781) and hide during the flip
-      (join the `flip-hidden` treatment) so it doesn't break the 3D read.
-      Start at opacity ~0.05–0.08; tune on the physical panel (its contrast differs from a Mac).
-- [ ] **Eccentricity wobble.** In `applyVinylTransform` (index.html:1711): add
-      `translate(wx, wy)` where `wx = 0.7 * cos(angle)`, `wy = 0.7 * sin(angle)` — a real
-      pressing's off-center sway. Constant `WOBBLE_PX` at top of script; `0` disables.
-      Skip it during flip/browse/tracklist (frozen record shouldn't wobble).
-- [ ] **Seating settle.** During the 4s spin-up ramp only: scale 1.004 → 1.0 tied to
-      `spinSpeed` easing. Piggyback on the same transform string.
+- [x] **Static specular sheen.** `#sheen` div in `#platter` between vinyl and spindle (z 7):
+      conic gradient with two opposing lobes (peaks 0.085 / 0.075 at 130° / 310°), masked to
+      the 152–452px donut. Does not rotate, never repaints. Fades with the furniture during
+      the minimize morph and joins the `flip-hidden` treatment during the flip (the flip has
+      its own sheen pulse). **Peak opacity is a panel-tuning knob** — the conic stops are the
+      place to adjust after seeing it on the physical display.
+- [x] **Eccentricity wobble.** `WOBBLE_PX = 0.7` orbit locked to the spin angle, scaled by
+      `spinSpeed` (fades in/out with the platter), frozen under the tracklist so the blurred
+      layer stays cached. Verified at runtime: translate traces the orbit, cos/sin match the
+      angle, 33⅓ RPM confirmed. `WOBBLE_PX = 0` disables.
+- [x] **Seating settle.** `1.004 → 1` scale across the spin-up ramp only (`SETTLE_SCALE`),
+      piggybacked on the same transform string — no extra invalidations.
 
-**Acceptance:** sheen invisible as an *object*, visible as *material* (screenshot A/B).
-Flip, pinch morph, and tracklist blur all still read correctly. 60fps unchanged (nothing
-new repaints per frame).
+**Acceptance (panel):** sheen invisible as an *object*, visible as *material* — tune the
+conic peaks on the physical panel. Flip, pinch morph, and tracklist blur still read
+correctly. 60fps unchanged (nothing new repaints per frame).
 
 ---
 

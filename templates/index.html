@@ -226,6 +226,38 @@
     transform: scale(1.035);
   }
 
+  /* ── Static specular sheen ──
+     A fixed light source over the moving grooves: two soft opposing
+     highlight lobes (conic), masked to the donut between label and rim.
+     It does NOT rotate and never repaints — the grooves turning beneath a
+     stationary reflection is what reads as light on vinyl. Compositor cost:
+     one static layer. */
+  #sheen {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    z-index: 7;
+    pointer-events: none;
+    background: conic-gradient(from 0deg at 50% 50%,
+      rgba(255,255,255,0) 0deg,
+      rgba(255,255,255,0) 95deg,
+      rgba(255,255,255,0.085) 130deg,
+      rgba(255,255,255,0) 168deg,
+      rgba(255,255,255,0) 275deg,
+      rgba(255,255,255,0.075) 310deg,
+      rgba(255,255,255,0) 348deg);
+    -webkit-mask-image: radial-gradient(circle at 50% 50%,
+      rgba(0,0,0,0) 0px, rgba(0,0,0,0) 112px, #000 152px, #000 452px, rgba(0,0,0,0) 528px);
+    mask-image: radial-gradient(circle at 50% 50%,
+      rgba(0,0,0,0) 0px, rgba(0,0,0,0) 112px, #000 152px, #000 452px, rgba(0,0,0,0) 528px);
+    transition: opacity 0.25s ease;
+  }
+  /* The flip tilts the disc in 3D — a full-face static reflection would give
+     the illusion away, so it sits out (the flip has its own sheen pulse). */
+  #sheen.flip-hidden {
+    opacity: 0 !important;
+  }
+
   /* Groove overlay — drawn by canvas */
   #grooves {
     position: absolute;
@@ -1148,6 +1180,9 @@
       </div>
     </div>
 
+    <!-- Static specular sheen — fixed light over the moving grooves -->
+    <div id="sheen"></div>
+
     <!-- Spindle (static, doesn't rotate) -->
     <div id="spindle"></div>
 
@@ -1282,6 +1317,12 @@
   // Eased spin-up / spin-down duration (ms)
   const SPIN_RAMP = 4000;
 
+  // Pressing physicality: sub-pixel eccentricity orbit (real records are
+  // never perfectly centred) and the seat-onto-the-platter settle scale
+  // applied across the spin-up ramp. Set WOBBLE_PX to 0 to disable.
+  const WOBBLE_PX = 0.7;
+  const SETTLE_SCALE = 0.004;
+
   // ── Elements ──
   const $ = id => document.getElementById(id);
   const viewport   = $("viewport");
@@ -1304,6 +1345,7 @@
   const groovesEl  = $("grooves");
   const spindleEl  = $("spindle");
   const discFace   = $("disc-face");
+  const sheenEl    = $("sheen");
   const platter    = $("platter");
   const volumeHud  = $("volume-hud");
   const volTrack   = $("vol-track");
@@ -1812,6 +1854,7 @@
         vinyl.classList.remove("flipping");
         artworkEl.classList.remove("art-changing");
         progressCanvas.classList.remove("flip-hidden"); // notches ease back in
+        sheenEl.classList.remove("flip-hidden");        // reflection eases back in
         // Cleared in the same frame the rotateY(180°) below disappears —
         // rotateY(180)+mirror ≡ upright, so the hand-off is invisible. The
         // wrapper has no transition, so both snap together.
@@ -1827,7 +1870,20 @@
       vinyl.style.transform =
         `perspective(1600px) rotateY(${flipAngle.toFixed(2)}deg) rotate(${currentAngle.toFixed(2)}deg)`;
     } else {
-      vinyl.style.transform = `rotate(${currentAngle.toFixed(2)}deg)`;
+      // Pressing eccentricity: a sub-pixel orbit of the spin centre, scaled
+      // by spinSpeed so it fades with the platter. Frozen while the tracklist
+      // is up so the blurred platter stays a cached layer. Settle: the record
+      // seats onto the platter (1.004 → 1) across the spin-up ramp.
+      let wx = 0, wy = 0;
+      if (!state.tracklisting && spinSpeed > 0.001) {
+        const rad = currentAngle * Math.PI / 180;
+        wx = WOBBLE_PX * spinSpeed * Math.cos(rad);
+        wy = WOBBLE_PX * spinSpeed * Math.sin(rad);
+      }
+      const settle = (spinTarget === 1 && spinSpeed < 1)
+        ? 1 + SETTLE_SCALE * (1 - spinSpeed) : 1;
+      vinyl.style.transform =
+        `translate(${wx.toFixed(2)}px, ${wy.toFixed(2)}px) rotate(${currentAngle.toFixed(2)}deg) scale(${settle.toFixed(4)})`;
     }
   }
 
@@ -1843,6 +1899,7 @@
     labelSvg.style.opacity = fade;
     spindleEl.style.opacity = fade;
     progressCanvas.style.opacity = fade;
+    sheenEl.style.opacity = fade; // a square cover has no vinyl to catch light
   }
 
   function startRecordFlip(direction) {
@@ -1859,6 +1916,7 @@
     vinyl.classList.add("flipping");
     artworkEl.classList.add("art-changing");
     progressCanvas.classList.add("flip-hidden"); // static notches fade off for the flip
+    sheenEl.classList.add("flip-hidden");        // static reflection sits the flip out
     // The disc-face swap, and the art-changing cleanup, are handled at the
     // hidden 90° point and on flip completion inside applyVinylTransform.
   }
