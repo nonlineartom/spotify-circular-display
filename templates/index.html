@@ -355,7 +355,7 @@
     pointer-events: auto;
     background: rgba(5, 7, 8, 0.78);
     border: 1px solid rgba(var(--ui-accent-rgb), 0.18);
-    border-radius: 8px;
+    border-radius: 22px;
     box-shadow:
       0 18px 42px rgba(0,0,0,0.46),
       inset 0 1px 0 rgba(255,255,255,0.08);
@@ -375,7 +375,7 @@
 
   #pill-track {
     font-size: 31px;
-    font-weight: 500;
+    font-weight: 600;
     line-height: 1.18;
     white-space: nowrap;
     overflow: hidden;
@@ -384,6 +384,23 @@
     text-align: center;
     padding-bottom: 2px;
     transition: opacity 0.28s ease, transform 0.36s ease, filter 0.36s ease;
+  }
+  /* Overflowing titles: right edge-fade instead of an ellipsis, plus ONE
+     gentle marquee pass on track change (transform-only), then settle. */
+  #pill-track .pt-inner { display: inline-block; }
+  #pill-track.overflowing {
+    text-overflow: clip;
+    -webkit-mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 46px), transparent 100%);
+    mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 46px), transparent 100%);
+  }
+  #pill-track.overflowing .pt-inner {
+    animation: pill-marq 9s ease-in-out 1.6s 1;
+  }
+  @keyframes pill-marq {
+    0% { transform: translateX(0); }
+    42% { transform: translateX(var(--marq, 0px)); }
+    58% { transform: translateX(var(--marq, 0px)); }
+    100% { transform: translateX(0); }
   }
 
   #pill-artist {
@@ -474,16 +491,22 @@
     transition: opacity var(--dur-fast) ease, transform var(--dur-fast) ease, filter var(--dur-fast) ease;
     -webkit-tap-highlight-color: transparent;
   }
+  /* Swipe feedback is an arc of light hugging the rim (same language as the
+     volume HUD) — the radial gradient's centre sits at the SCREEN centre, so
+     the lit band at radius ~470-540px follows the bezel's curve. */
   .skip-btn::before {
     content: '';
     position: absolute;
-    top: 24px; bottom: 24px;
-    width: 160px;
+    top: -60px; bottom: -60px;
+    left: 0; right: 0;
     opacity: calc(var(--swipe-strength) * 0.78);
     transition: opacity var(--dur-fast) ease;
     pointer-events: none;
   }
   .skip-btn.visible { opacity: 0.22; }
+  /* Quiet chrome: after 8s without a touch the arrows retire; any touch
+     brings them back instantly (swipes work regardless of visibility). */
+  #viewport.controls-idle .skip-btn.visible { opacity: 0; }
   .skip-btn.visible.dragging {
     opacity: calc(0.28 + var(--swipe-strength) * 0.62);
     transform: translateY(-50%) scale(calc(1 + var(--swipe-strength) * 0.08));
@@ -496,12 +519,16 @@
   #skip-prev { left: 0; }
   #skip-next { right: 0; }
   #skip-prev::before {
-    left: 0;
-    background: linear-gradient(to right, rgba(255,255,255,0.32), rgba(255,255,255,0));
+    /* screen centre is 540px right of this element's left edge */
+    background: radial-gradient(circle at 540px 50%,
+      rgba(0,0,0,0) 465px, rgba(255,255,255,0.30) 508px,
+      rgba(255,255,255,0.10) 530px, rgba(0,0,0,0) 542px);
   }
   #skip-next::before {
-    right: 0;
-    background: linear-gradient(to left, rgba(255,255,255,0.32), rgba(255,255,255,0));
+    /* screen centre is 368px left of this element's left edge */
+    background: radial-gradient(circle at -368px 50%,
+      rgba(0,0,0,0) 465px, rgba(255,255,255,0.30) 508px,
+      rgba(255,255,255,0.10) 530px, rgba(0,0,0,0) 542px);
   }
   .skip-btn svg {
     width: 58px;
@@ -676,17 +703,21 @@
     visibility: visible;
     transform: scale(1);
   }
-  /* Section chips — switch between crates */
+  /* Section chips — switch between crates. They sit on an arc that echoes
+     the bezel's curvature: the anchor is 2000px below the row, so each chip
+     tilts a few degrees and the outer ones sag the way the round bezel does.
+     renderChips() assigns the rotate+translateY transforms. */
   #crate-chips {
     position: absolute;
-    top: 300px;
-    left: 0; right: 0;
-    display: flex;
-    justify-content: center;
-    gap: 12px;
+    top: calc(322px + 2000px);   /* row centre + CHIP_ARC_R (must match JS) */
+    left: 540px;
+    width: 0; height: 0;
     z-index: 30; /* above the crate drag surface — chips must stay tappable */
   }
   .crate-chip {
+    position: absolute;
+    left: 0; top: 0;
+    white-space: nowrap;
     pointer-events: none;
     padding: 10px 20px;
     border-radius: var(--r-pill);
@@ -760,7 +791,7 @@
   }
   #crate-caption .cap-title {
     font-size: 23px;
-    font-weight: 500;
+    font-weight: 600;
     color: rgba(255,255,255,0.88);
     white-space: nowrap;
     overflow: hidden;
@@ -874,7 +905,7 @@
   }
   #tl-head .tl-album {
     font-size: 25px;
-    font-weight: 500;
+    font-weight: 600;
     color: rgba(255,255,255,0.92);
     white-space: nowrap;
     overflow: hidden;
@@ -965,16 +996,16 @@
   }
   .tl-row.tl-current .tl-title { font-weight: 500; }
   .tl-row.tl-current .tl-num i { font-size: 22px; }
+  /* Gesture hint set on an arc hugging the lower rim (SVG textPath — same
+     move as the label's dead-wax etching). Retires after 3 viewings. */
   #tl-hint {
     position: absolute;
-    bottom: 96px;
-    left: 50%;
-    transform: translateX(-50%);
-    font-size: 15px;
-    letter-spacing: 1.5px;
-    color: rgba(255,255,255,0.30);
+    inset: 0;
     pointer-events: none;
     z-index: 2;
+  }
+  #tl-hint text {
+    font-family: 'Montserrat', sans-serif;
   }
 
   /* ── Gesture chip — transient twist-seek readout ── */
@@ -995,6 +1026,55 @@
   #gesture-chip.visible {
     opacity: 1;
     transform: translateX(-50%) translateY(0);
+  }
+
+  /* ── Standby clock (flagged: ?standby=clock) — ultra-dim watch face while
+     the screen is dimmed, reusing the progress ring's tick language. One
+     canvas redraw per minute; the GPU stays essentially idle. ── */
+  #standby-clock {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: 440px; height: 440px;
+    z-index: 51;               /* above the dimmer */
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 2s ease;
+  }
+  #standby-clock.on { opacity: 1; }
+
+  /* ── Tonearm (flagged prototype: ?tonearm=1) — pivots at the upper-right
+     rim, stylus tracking lead-in → run-out with playback. Rotation updates
+     ride the progress ring's 125ms tick. ── */
+  #tonearm {
+    position: absolute;
+    inset: 0;
+    z-index: 27;               /* above the ring, below the pill */
+    pointer-events: none;
+    display: none;
+    transition: opacity 0.25s ease;
+  }
+  #tonearm.flip-hidden { opacity: 0 !important; }
+
+  /* ── Crate reflection (flagged: ?reflect=1) — mirrored slice of the
+     focused sleeve floating on the lava. Updated only when focus changes. ── */
+  #crate-reflection {
+    position: absolute;
+    top: 782px;
+    left: 50%;
+    width: 374px;
+    height: 92px;
+    margin-left: -187px;
+    display: none;
+    pointer-events: none;
+    z-index: 4;
+    background-size: 374px 374px;
+    background-position: 0 -282px;   /* the sleeve's bottom slice */
+    transform: scaleY(-1);           /* mirrored */
+    opacity: 0.16;
+    /* element is flipped, so "to bottom" fades the on-screen bottom edge */
+    -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,0) 12%, #000 100%);
+    mask-image: linear-gradient(to bottom, rgba(0,0,0,0) 12%, #000 100%);
   }
 
   /* ── Screen dimmer (saves display after extended idle) ── */
@@ -1065,8 +1145,8 @@
     width: 560px;
     max-width: 80%;
     background: #111114;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 22px;
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-panel);
     padding: 28px 28px 22px;
   }
   #wled-modal h2 {
@@ -1188,6 +1268,20 @@
 
     <!-- Circular progress ring (canvas-based for smooth rendering) -->
     <canvas id="progress-ring-canvas" width="296" height="296"></canvas>
+
+    <!-- Tonearm (flagged prototype: ?tonearm=1) -->
+    <svg id="tonearm" viewBox="0 0 1080 1080" xmlns="http://www.w3.org/2000/svg">
+      <g transform="translate(897,183)">
+        <g id="ta-arm">
+          <line x1="63" y1="-63" x2="-269" y2="269" stroke="#a9a9af" stroke-width="9" stroke-linecap="round"/>
+          <line x1="-238" y1="238" x2="-269" y2="269" stroke="#8e8e94" stroke-width="16" stroke-linecap="round"/>
+          <circle cx="76" cy="-76" r="24" fill="#2e2e33" stroke="#57575e" stroke-width="2"/>
+          <circle cx="-263" cy="263" r="4" fill="#e8e8ee"/>
+        </g>
+        <circle r="30" fill="#2a2a2f" stroke="#4c4c55" stroke-width="2"/>
+        <circle r="10" fill="#606068"/>
+      </g>
+    </svg>
   </div>
 
 	  <!-- Static overlay layer -->
@@ -1234,6 +1328,7 @@
     </div>
     <div id="crate-chips"></div>
     <div id="crate"><div id="crate-belt"></div></div>
+    <div id="crate-reflection"></div>
     <div id="crate-caption">
       <div class="cap-title"></div>
       <div class="cap-sub"></div>
@@ -1269,7 +1364,12 @@
     <div id="tl-gutter-r" class="tl-gutter"></div>
     <div id="tl-focus"></div>
     <div id="tl-picker"></div>
-    <div id="tl-hint">scroll · tap a track · tap aside to close</div>
+    <svg id="tl-hint" viewBox="0 0 1080 1080" xmlns="http://www.w3.org/2000/svg">
+      <defs><path id="tl-hint-arc" d="M 238 900 A 470 470 0 0 0 842 900"/></defs>
+      <text font-size="15" letter-spacing="1.5" fill="rgba(255,255,255,0.30)">
+        <textPath href="#tl-hint-arc" startOffset="50%" text-anchor="middle">scroll · tap a track · tap aside to close</textPath>
+      </text>
+    </svg>
   </div>
 
   <!-- Gesture chip — transient readout for twist-seek -->
@@ -1277,6 +1377,9 @@
 
   <!-- Screen dimmer — fades to near-black after extended idle -->
   <div id="dimmer"></div>
+
+  <!-- Standby clock (flagged: ?standby=clock) — drawn only while dimmed -->
+  <canvas id="standby-clock" width="440" height="440"></canvas>
 
   <!-- WLED setup affordance (only appears when idle and a new device is seen) -->
   <div id="wled-chip" class="chip"><span class="dot"></span><span class="label">WLED device found — tap to set up</span></div>
@@ -1353,6 +1456,9 @@
   const volKnob    = $("vol-knob");
   const volLabel   = $("vol-label");
   const gestureChip = $("gesture-chip");
+  const standbyClock = $("standby-clock");
+  const tonearmEl  = $("tonearm");
+  const taArm      = $("ta-arm");
 
   // Progress ring constants (canvas is 296x296 = 2x the CSS size for retina)
   const RING_CX = 148;
@@ -1390,6 +1496,21 @@
   // Idle time before the screen dims. Overridable for testing/tuning via
   // URL param, e.g. /?dim=30 dims after 30 seconds.
   const DIM_DELAY = (parseInt(new URLSearchParams(location.search).get("dim"), 10) || 5 * 60) * 1000;
+
+  // Quiet chrome: skip arrows retire after this long without a touch.
+  const CONTROLS_IDLE_MS = 8000;
+  let lastInteractionAt = performance.now();
+
+  // ── Flagged flourishes (Phase 6) — default OFF; enable via kiosk URL ──
+  //   ?standby=clock  ultra-dim analog clock while the screen is dimmed
+  //   ?tonearm=1      tonearm tracking lead-in → run-out with progress
+  //   ?boot=1         one-time groove sweep-in on load
+  //   ?reflect=1      floor reflection under the crate's focused sleeve
+  const FLAGS = new URLSearchParams(location.search);
+  const FLAG_STANDBY_CLOCK = FLAGS.get("standby") === "clock";
+  const FLAG_TONEARM = FLAGS.get("tonearm") === "1";
+  const FLAG_BOOT = FLAGS.get("boot") === "1";
+  const FLAG_REFLECT = FLAGS.get("reflect") === "1";
 
   // Lyrics state
   let lyricsLines = [];      // [{time: ms, text: ""}, ...]
@@ -1438,14 +1559,18 @@
   const PROGRESS_DRAW_INTERVAL = 125;
 
   // ── Draw grooves on canvas (redrawn when the label size changes) ──
-  function drawGrooves(startRadius) {
+  // reveal < 1 draws only the innermost fraction — used by the flagged boot
+  // moment to sweep the grooves in from the label outward.
+  function drawGrooves(startRadius, reveal) {
     const start = startRadius || GROOVE_START;
+    const frac = reveal === undefined ? 1 : reveal;
     const canvas = $("grooves");
     const ctx = canvas.getContext("2d");
     ctx.clearRect(0, 0, SIZE, SIZE);
     const spacing = (GROOVE_END - start) / GROOVE_COUNT;
+    const count = Math.max(1, Math.floor(GROOVE_COUNT * frac));
 
-    for (let i = 0; i < GROOVE_COUNT; i++) {
+    for (let i = 0; i < count; i++) {
       const r = start + i * spacing;
       const alpha = (15 + (i % 3) * 5) / 255;
       ctx.beginPath();
@@ -1455,12 +1580,73 @@
       ctx.stroke();
     }
 
+    if (frac < 1) return; // rim lands with the final frame of the sweep
+
     // Outer rim
     ctx.beginPath();
     ctx.arc(CENTER, CENTER, SIZE / 2 - 2, 0, Math.PI * 2);
     ctx.strokeStyle = "rgba(0,0,0,0.157)";
     ctx.lineWidth = 2;
     ctx.stroke();
+  }
+
+  // ── Standby clock (flagged: ?standby=clock) ──
+  let lastClockMin = -1;
+  function drawStandbyClock() {
+    const t = new Date();
+    const mins = t.getHours() * 60 + t.getMinutes();
+    if (mins === lastClockMin) return; // one redraw per minute
+    lastClockMin = mins;
+    const ctx = standbyClock.getContext("2d");
+    const C = 220, R = 190;
+    ctx.clearRect(0, 0, 440, 440);
+    for (let i = 0; i < 60; i++) {
+      const a = (i / 60) * Math.PI * 2 - Math.PI / 2;
+      const major = i % 5 === 0;
+      const len = major ? 14 : 5;
+      ctx.beginPath();
+      ctx.moveTo(C + (R - len) * Math.cos(a), C + (R - len) * Math.sin(a));
+      ctx.lineTo(C + R * Math.cos(a), C + R * Math.sin(a));
+      ctx.strokeStyle = major ? "rgba(255,255,255,0.10)" : "rgba(255,255,255,0.04)";
+      ctx.lineWidth = major ? 2 : 1;
+      ctx.stroke();
+    }
+    ctx.beginPath();
+    ctx.arc(C, C - R + 24, 3, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${uiAccentArr[0]},${uiAccentArr[1]},${uiAccentArr[2]},0.35)`;
+    ctx.fill();
+    const h = (((t.getHours() % 12) + t.getMinutes() / 60) / 12) * Math.PI * 2 - Math.PI / 2;
+    const m = (t.getMinutes() / 60) * Math.PI * 2 - Math.PI / 2;
+    ctx.lineCap = "round";
+    ctx.beginPath(); ctx.moveTo(C, C); ctx.lineTo(C + 92 * Math.cos(h), C + 92 * Math.sin(h));
+    ctx.strokeStyle = "rgba(255,255,255,0.12)"; ctx.lineWidth = 5; ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(C, C); ctx.lineTo(C + 148 * Math.cos(m), C + 148 * Math.sin(m));
+    ctx.strokeStyle = "rgba(255,255,255,0.09)"; ctx.lineWidth = 3; ctx.stroke();
+  }
+
+  // ── Tonearm (flagged prototype: ?tonearm=1) ──
+  // Stylus radius maps progress: lead-in 505px → run-out 160px. The arm angle
+  // is the two-circle intersection (disc centre radius r × pivot radius L),
+  // upper solution so the arm stays clear of the volume rim.
+  const TA_PIVOT = { x: 897, y: 183 };
+  const TA_LEN = 380;
+  const TA_BASE_DEG = 135; // artwork points at the disc centre at rot=0
+  if (FLAG_TONEARM) tonearmEl.style.display = "block";
+  function updateTonearm(pct, hasTrack) {
+    if (!FLAG_TONEARM) return;
+    tonearmEl.style.opacity = hasTrack ? "1" : "0";
+    if (!hasTrack) return;
+    const r = 505 - pct * (505 - 160);
+    const dx = 540 - TA_PIVOT.x, dy = 540 - TA_PIVOT.y;
+    const D = Math.hypot(dx, dy);
+    const a = (TA_LEN * TA_LEN - r * r + D * D) / (2 * D);
+    const h = Math.sqrt(Math.max(0, TA_LEN * TA_LEN - a * a));
+    const mx = TA_PIVOT.x + (a * dx) / D, my = TA_PIVOT.y + (a * dy) / D;
+    const p1 = { x: mx + (h * dy) / D, y: my - (h * dx) / D };
+    const p2 = { x: mx - (h * dy) / D, y: my + (h * dx) / D };
+    const p = p1.y < p2.y ? p1 : p2;
+    const rot = (Math.atan2(p.y - TA_PIVOT.y, p.x - TA_PIVOT.x) * 180) / Math.PI - TA_BASE_DEG;
+    taArm.setAttribute("transform", `rotate(${rot.toFixed(2)})`);
   }
 
   // ── Helpers ──
@@ -1855,6 +2041,7 @@
         artworkEl.classList.remove("art-changing");
         progressCanvas.classList.remove("flip-hidden"); // notches ease back in
         sheenEl.classList.remove("flip-hidden");        // reflection eases back in
+        tonearmEl.classList.remove("flip-hidden");      // arm drops back onto the record
         // Cleared in the same frame the rotateY(180°) below disappears —
         // rotateY(180)+mirror ≡ upright, so the hand-off is invisible. The
         // wrapper has no transition, so both snap together.
@@ -1917,6 +2104,7 @@
     artworkEl.classList.add("art-changing");
     progressCanvas.classList.add("flip-hidden"); // static notches fade off for the flip
     sheenEl.classList.add("flip-hidden");        // static reflection sits the flip out
+    tonearmEl.classList.add("flip-hidden");      // you lift the arm to flip a record
     // The disc-face swap, and the art-changing cleanup, are handled at the
     // hidden 90° point and on flip completion inside applyVinylTransform.
   }
@@ -1939,6 +2127,23 @@
     }
   }
 
+  // Title goes in as an inner span so overflow can edge-fade + take one
+  // marquee pass (transform-only) instead of truncating with an ellipsis.
+  function setTrackTitle(name) {
+    pillTrack.innerHTML = "";
+    const span = document.createElement("span");
+    span.className = "pt-inner";
+    span.textContent = name;
+    pillTrack.appendChild(span);
+    const over = span.scrollWidth - pillTrack.clientWidth;
+    if (over > 8) {
+      pillTrack.classList.add("overflowing");
+      pillTrack.style.setProperty("--marq", `${-(over + 46)}px`);
+    } else {
+      pillTrack.classList.remove("overflowing");
+    }
+  }
+
   function setPillMetadata(trackName, artistName, animateChange) {
     if (metadataTimer) {
       window.clearTimeout(metadataTimer);
@@ -1947,7 +2152,7 @@
 
     if (!animateChange) {
       pill.classList.remove("metadata-out", "metadata-in");
-      pillTrack.textContent = trackName;
+      setTrackTitle(trackName);
       pillArtist.textContent = artistName;
       return;
     }
@@ -1955,7 +2160,7 @@
     pill.classList.remove("metadata-in");
     pill.classList.add("metadata-out");
     metadataTimer = window.setTimeout(() => {
-      pillTrack.textContent = trackName;
+      setTrackTitle(trackName);
       pillArtist.textContent = artistName;
       pill.classList.remove("metadata-out");
       pill.classList.add("metadata-in");
@@ -1979,18 +2184,27 @@
     // behind the overlay). rAF stays alive — it's near-free — so the wake tap
     // is still detected next frame. ---
     setPlayerMode(!!state.trackId);
+    viewport.classList.toggle("controls-idle",
+      !!state.trackId && now - lastInteractionAt > CONTROLS_IDLE_MS);
     const timePaused = pausedSince > 0 ? now - pausedSince : 0;
     const shouldDim = !state.isPlaying && timePaused >= DIM_DELAY;
     if (shouldDim && !screenDimmed) {
       dimmer.classList.add("dim");
       viewport.classList.add("dimmed");
       screenDimmed = true;
+      if (FLAG_STANDBY_CLOCK) { standbyClock.classList.add("on"); lastClockMin = -1; }
     } else if (!shouldDim && screenDimmed) {
       dimmer.classList.remove("dim");
       viewport.classList.remove("dimmed");
       screenDimmed = false;
+      standbyClock.classList.remove("on");
     }
-    if (screenDimmed) return; // paused: render nothing while the screen is dim
+    if (screenDimmed) {
+      // Paused: render nothing while the screen is dim — except the flagged
+      // standby clock, which redraws once per minute (GPU stays idle).
+      if (FLAG_STANDBY_CLOCK) drawStandbyClock();
+      return;
+    }
 
     // --- Minimize morph easing (pinch to/from the crate) ---
     const minTarget = state.browsing ? 1 : 0;
@@ -2080,6 +2294,7 @@
         timeElapsed.textContent = "0:00";
         timeRemaining.textContent = "-0:00";
         timeFill.style.transform = "scaleX(0)";
+        updateTonearm(0, false); // arm lifts off with the record
         lastProgressEmpty = true;
       }
       return;
@@ -2094,6 +2309,7 @@
     }
     p = Math.min(p, state.durationMs);
     const pct = p / Math.max(state.durationMs, 1);
+    updateTonearm(pct, true); // rides the same 125ms tick
 
     const ctx = progressCtx;
     const cx = RING_CX, cy = RING_CY, r = RING_R;
@@ -2263,6 +2479,7 @@
   const crateEl = $("crate");
   const crateBelt = $("crate-belt");
   const crateChips = $("crate-chips");
+  const crateReflection = $("crate-reflection");
   const capTitle = document.querySelector("#crate-caption .cap-title");
   const capSub = document.querySelector("#crate-caption .cap-sub");
 
@@ -2291,8 +2508,10 @@
     return Math.max(0, Math.min(crateItems.length - 1, Math.round(crateScroll / CRATE_SPACING)));
   }
 
+  const CHIP_ARC_R = 2000; // px — must match the #crate-chips top offset
   function renderChips() {
     crateChips.innerHTML = "";
+    const els = [];
     for (const s of crateData.sections) {
       const chip = document.createElement("div");
       chip.className = "crate-chip" + (s.id === crateSection ? " active" : "");
@@ -2304,7 +2523,20 @@
         renderChips();
       });
       crateChips.appendChild(chip);
+      els.push(chip);
     }
+    // Arc layout: cumulative widths → angle about an anchor far below the
+    // row, so the chips follow the bezel's curvature and tilt with it.
+    const gap = 12;
+    const widths = els.map(el => el.offsetWidth);
+    const total = widths.reduce((a, b) => a + b, 0) + gap * (els.length - 1);
+    let cum = -total / 2;
+    els.forEach((el, i) => {
+      const theta = (((cum + widths[i] / 2) / CHIP_ARC_R) * 180) / Math.PI;
+      el.style.transform =
+        `translate(-50%, -50%) rotate(${theta.toFixed(3)}deg) translateY(${-CHIP_ARC_R}px)`;
+      cum += widths[i] + gap;
+    });
   }
 
   function buildCrate() {
@@ -2358,6 +2590,11 @@
       crateCaptionIdx = focusIdx;
       capTitle.textContent = crateItems[focusIdx].title || "";
       capSub.textContent = crateItems[focusIdx].subtitle || "";
+      if (FLAG_REFLECT) {
+        const img = crateItems[focusIdx].image;
+        crateReflection.style.display = img ? "block" : "none";
+        if (img) crateReflection.style.backgroundImage = `url('${esc(img)}')`;
+      }
     }
   }
 
@@ -2693,6 +2930,12 @@
     state.tracklisting = true;
     viewport.classList.add("tracklisting");
     tlEl.classList.add("visible");
+    // Progressive disclosure: the gesture hint retires after 3 viewings.
+    try {
+      const seen = +(localStorage.tlHintSeen || 0);
+      $("tl-hint").style.display = seen >= 3 ? "none" : "";
+      localStorage.tlHintSeen = seen + 1;
+    } catch (e) { /* storage unavailable — keep the hint */ }
     tlAlbumEl.textContent = state.albumName || "";
     tlArtistEl.textContent = state.artistName || "";
     loadTracklist();
@@ -3274,6 +3517,7 @@
   }
 
   viewport.addEventListener("pointerdown", e => {
+    lastInteractionAt = performance.now(); // wakes the retired skip arrows
     activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (state.browsing) return; // browse mode: sleeve taps + mini-disc only
     if (state.tracklisting) return; // tracklist open: picker scroll + gutter taps only
@@ -3623,7 +3867,17 @@
   });
 
   // ── Init ──
-  drawGrooves();
+  if (FLAG_BOOT) {
+    // Boot moment: grooves sweep in from the label outward over ~1.2s.
+    const bootT0 = performance.now();
+    (function bootSweep(now) {
+      const t = Math.min(1, (now - bootT0) / 1200);
+      drawGrooves(GROOVE_START, easeInOut(t));
+      if (t < 1) requestAnimationFrame(bootSweep);
+    })(bootT0);
+  } else {
+    drawGrooves();
+  }
   volTrack.setAttribute("d", volArcPath(VOL_A0, VOL_A1));
   $("vol-backing").setAttribute("d", volArcPath(VOL_A0, VOL_A1));
   renderVolume(state.volume);

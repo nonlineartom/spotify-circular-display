@@ -156,68 +156,70 @@ correctly. 60fps unchanged (nothing new repaints per frame).
 
 ---
 
-## Phase 4 — Circular-native geometry
+## Phase 4 — Circular-native geometry ✅ (2026-07-01, pending panel check)
 
 *Make the straight-edged elements acknowledge the round canvas.*
 
-- [ ] **Arc the crate chips.** In `renderChips()` (index.html:2174): position each chip along
-      an arc concentric with the screen — per-chip
-      `transform: rotate(θ) translateY(-R) rotate(-θ)` around screen center, θ spread by
-      cumulative chip width. Static CSS transforms, laid out once per build. Tap targets
-      unchanged (transform moves the hitbox with the chip).
-- [ ] **Arc the hint text.** `#tl-hint` (index.html:895) and any bottom-rim hint → SVG
-      `textPath` on an arc hugging the lower rim, same pattern as the dead-wax etching.
-- [ ] **Pill capsule.** `#pill` radius 8px → ~22px (index.html:296); hairline stays
-      accent-tinted from Phase 1. Nudge padding to keep the time row comfortable.
-- [ ] **Rim-arc swipe feedback.** Replace the straight vertical gradient strips on
-      `.skip-btn::before` (index.html:415–423, 436–443) with arc-shaped glows hugging the
-      left/right rim — same visual language as the volume HUD arc. SVG or a masked radial
-      gradient; driven by the existing `--swipe-strength` variable.
+- [x] **Arc the crate chips.** `renderChips()` lays chips on an arc anchored 2000px below
+      the row (`CHIP_ARC_R`, matching the `#crate-chips` CSS offset) — each chip tilts a few
+      degrees and the outer ones sag the way the bezel does. Chips keep their tilt (no
+      counter-rotation) so they read as set on the curve. Hitboxes move with the transforms.
+- [x] **Arc the hint text.** `#tl-hint` is now SVG `textPath` on a 470px-radius arc hugging
+      the lower rim — same construction as the dead-wax etching.
+- [x] **Pill capsule.** Radius 8px → 22px; accent hairline from Phase 1 kept.
+- [x] **Rim-arc swipe feedback.** The straight gradient strips are now radial gradients whose
+      centre sits at the *screen* centre, so the lit band (radius ~470–540px) follows the
+      bezel's curve. Still driven by `--swipe-strength`.
 
-**Acceptance:** chips readable and tappable at both ends of the arc; swipe drag glow follows
-the rim; nothing clips against the circular bezel. Screenshot set updated.
+**Acceptance (panel):** chips readable and tappable at both ends of the arc (verify with a
+full 5-section crate — dev crate only had one chip); swipe drag glow follows the rim;
+nothing clips against the bezel. Screenshot set worth refreshing.
 
 ---
 
-## Phase 5 — Quiet chrome & typographic hierarchy
+## Phase 5 — Quiet chrome & typographic hierarchy ✅ (2026-07-01, pending panel check)
 
 *The resting state is what the device shows 95% of the time — calm it down.*
 
-- [ ] **Auto-hide skip arrows.** Track last `pointerdown`; after ~8s without touch while
-      playing, add `controls-idle` on `#viewport` → `.skip-btn` fades to 0 (currently parked
-      at 0.22 forever, index.html:424). Any touch brings them back instantly. Swipe works
-      regardless of arrow visibility.
-- [ ] **Retire the tracklist hint.** Show `#tl-hint` for the first 3 opens
-      (`localStorage` counter), then drop it.
-- [ ] **Overflow titles: edge-fade + single marquee pass.** `#pill-track` (index.html:318–320):
-      replace ellipsis with a right-edge `mask-image` fade; on track change, if the title
-      overflows, one gentle transform-based scroll to the end and back, then settle. CSS
-      animation, compositor-only.
-- [ ] **Title weight.** `#pill-track`, crate `.cap-title`, `#tl-head .tl-album` → Montserrat
-      600 (hosted in Phase 0). Optional experiment behind a URL param: a second display face
-      for the title only — evaluate on the panel before adopting.
-- [ ] **WLED modal restyle** to Phase 0 tokens (chip class, radius scale, hairline) — lowest
-      priority, it's rarely seen.
+- [x] **Auto-hide skip arrows.** `controls-idle` on `#viewport` after 8s without touch
+      (`CONTROLS_IDLE_MS`); any pointerdown wakes them. Verified live: retired at 8s,
+      woke on touch. Swipes work regardless.
+- [x] **Retire the tracklist hint** after 3 viewings (`localStorage.tlHintSeen`); storage
+      failure keeps the hint.
+- [x] **Overflow titles.** Title renders in a `.pt-inner` span; overflow adds a right
+      edge-fade mask + ONE 9s transform-only marquee pass (out, hold, home), then settles
+      into the fade. Verified with a deliberately long title (−1011px sweep measured).
+- [x] **Title weight 600** on `#pill-track`, crate `.cap-title`, `#tl-head .tl-album` —
+      served by the Phase 0 variable font at zero extra font cost. (Second-display-face
+      experiment not pursued — 600 reads well; revisit only if the panel disagrees.)
+- [x] **WLED modal** on tokens (hairline + panel radius).
 
-**Acceptance:** after 8s untouched, the face is just record + pill + lyrics; touch anywhere
-restores controls within one frame. Long titles legible without ellipsis truncation.
+**Acceptance (panel):** after 8s untouched, the face is just record + pill + lyrics; touch
+restores controls within a frame. Long titles legible without ellipsis truncation.
 
 ---
 
-## Phase 6 — Flagship flourishes (optional, each behind a flag)
+## Phase 6 — Flagship flourishes ✅ implemented, ALL DEFAULT OFF (2026-07-01)
 
-*Bigger ideas — prototype behind URL params, adopt only what earns its keep on the panel.*
+*All four shipped as flagged prototypes — the live kiosk is unchanged until a flag is added
+to the kiosk URL (in `services/spotify-kiosk.service` / the Chromium launch line). Adopt
+whichever earn their keep on the panel by defaulting their flag.*
 
-- [ ] **Standby watch face** (`?standby=clock`). While dimmed, draw an ultra-dim analog clock
-      reusing the tick-ring language — hands at ~6% white, accent dot at 12. One redraw per
-      minute inside the existing dimmed early-return in `animate()` (index.html:1878); GPU
-      stays essentially idle. (Software overlay only — panel backlight has no software control.)
-- [ ] **Boot moment.** One-time ~1.2s sequence on first paint: grooves sweep in radially
-      (progressive-radius `drawGrooves` over rAF), label fades and settles.
-- [ ] **Crate reflection.** Single mirrored, gradient-masked copy of the *focused* card only,
-      floating over the lava. One extra composited layer; kill if crate drag drops frames.
-- [ ] **Tonearm progress** (`?tonearm=1`). Arm tracks lead-in → run-out with playback.
-      Honest risk: clutters a clean face. Prototype, screenshot, decide.
+- [x] **Standby watch face** — `?standby=clock`. Ultra-dim tick ring + hands + accent dot at
+      12 while dimmed; one canvas redraw per minute inside the dimmed early-return. Verified
+      live (drawn over the dimmed crate). Software overlay only — backlight is untouched.
+- [x] **Boot moment** — `?boot=1`. Grooves sweep label→rim over ~1.2s on load
+      (`drawGrooves(start, reveal)`), rim lands on the final frame.
+- [x] **Crate reflection** — `?reflect=1`. One mirrored, gradient-masked slice of the focused
+      sleeve; background updated only when focus changes; hides for imageless items
+      (verified both paths). One extra composited layer, 374×92.
+- [x] **Tonearm** — `?tonearm=1`. Pivot at the upper-right rim, stylus radius 505→160px with
+      progress via two-circle intersection, updates on the ring's 125ms tick, sits out the
+      flip, lifts off when idle. Verified sweep: ~68° (lead-in) → 40.7° (mid) → ~13°
+      (run-out). Judge the clutter question on the panel.
+
+**Flag combo for a full-flourish trial:**
+`http://localhost:5000/?standby=clock&boot=1&reflect=1&tonearm=1`
 
 ---
 
@@ -255,6 +257,29 @@ touches the same code, or as a standalone efficiency pass.
 - [x] **Fonts** — variable face + `unicode-range` subsets shipped in Phase 0: fewer font
       faces in RAM than the previous three Google-hosted static weights, zero network
       dependency.
+
+## Rollback
+
+Two annotated tags bracket the whole polish effort:
+
+- **`pre-polish`** — the last commit before any polish work (296a877)
+- **`polish-v1`** — the completed Phases 0–6 state
+
+**Full rollback to the pre-polish display:**
+```bash
+ssh admin@pi5.local
+cd ~/circle-pi-display
+git fetch --tags origin
+git reset --hard pre-polish
+sudo systemctl restart spotify-display spotify-kiosk
+```
+`reset --hard` removes the polish-era tracked files (static/fonts, plan doc) cleanly;
+config.json and other gitignored state are untouched. Roll forward again with
+`git reset --hard polish-v1` (or `origin/main`) + the same restarts.
+
+**Partial rollback:** each phase is one commit — `git log --oneline` and reset to the last
+good one. Phase 6 features need no rollback at all: they're OFF unless the kiosk URL
+carries their flag.
 
 ## Suggested sequencing
 
