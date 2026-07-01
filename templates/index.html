@@ -322,7 +322,7 @@
     z-index: 30;
     pointer-events: auto;
     background: rgba(5, 7, 8, 0.78);
-    border: 1px solid var(--hairline);
+    border: 1px solid rgba(var(--ui-accent-rgb), 0.18);
     border-radius: 8px;
     box-shadow:
       0 18px 42px rgba(0,0,0,0.46),
@@ -420,8 +420,8 @@
     transform: scaleX(0);
     border-radius: inherit;
     background:
-      linear-gradient(to right, rgba(255,255,255,0.58), rgba(255,255,255,0.96));
-    box-shadow: 0 0 16px rgba(255,255,255,0.18);
+      linear-gradient(to right, rgba(var(--ui-accent-rgb), 0.75), rgba(255,255,255,0.96));
+    box-shadow: 0 0 16px rgba(var(--ui-accent-rgb), 0.30);
     transition: transform 0.38s linear;
   }
 
@@ -550,7 +550,7 @@
     transform: translateY(-1px);
     text-shadow:
       0 2px 16px rgba(0,0,0,0.72),
-      0 0 28px rgba(255,255,255,0.18);
+      0 0 28px rgba(var(--ui-accent-rgb), 0.30);
   }
   .lyric-line.past {
     color: rgba(255,255,255,0.38);
@@ -694,7 +694,9 @@
     box-shadow:
       0 18px 36px rgba(0,0,0,0.6),
       inset 0 1px 0 rgba(255,255,255,0.10);
-    will-change: transform, opacity;
+    /* NO blanket will-change: on the 1GB Pi, promoting all ~50 sleeves cost
+       ~19MB of GPU layers for cards that are parked off-screen. layoutCrate
+       promotes only the visible window per-card. */
     pointer-events: none; /* the belt handles all input */
     backface-visibility: hidden;
   }
@@ -758,8 +760,13 @@
     pointer-events: auto;
     touch-action: none;
   }
+  /* Arc fill takes the record's accent; the knob stays a white thumb with an
+     accent halo so it keeps contrast over any artwork. */
+  #vol-fill {
+    stroke: var(--ui-accent);
+  }
   #vol-knob {
-    filter: drop-shadow(0 0 10px rgba(255,255,255,0.45));
+    filter: drop-shadow(0 0 10px rgba(var(--ui-accent-rgb), 0.55));
   }
   #vol-label {
     position: absolute;
@@ -1453,6 +1460,8 @@
   // ≤ 0.8) so muddy artwork never yields muddy chrome. Applied at the same
   // moments as the lava palette, so chrome tint flips with the artwork.
   let uiAccentKey = "";
+  let uiAccentArr = [240, 168, 104];              // canvas ring reads these
+  let uiAccentCss = "rgb(240,168,104)";           // guarded accent as CSS string
   function parseRgbStr(c) {
     if (c.charAt(0) === "#") {
       const n = parseInt(c.slice(1), 16);
@@ -1468,7 +1477,9 @@
     const [r, g, b] = parseRgbStr(src);
     const [h, s, v] = rgbToHsv(r, g, b);
     const [ur, ug, ub] = parseRgbStr(hsvToCss(h, Math.min(0.8, s), Math.max(0.72, v)));
-    viewport.style.setProperty("--ui-accent", `rgb(${ur},${ug},${ub})`);
+    uiAccentArr = [ur, ug, ub];
+    uiAccentCss = `rgb(${ur},${ug},${ub})`;
+    viewport.style.setProperty("--ui-accent", uiAccentCss);
     viewport.style.setProperty("--ui-accent-rgb", `${ur},${ug},${ub}`);
   }
 
@@ -2042,7 +2053,11 @@
       ctx.moveTo(x1, y1);
       ctx.lineTo(x2, y2);
       if (passed) {
-        ctx.strokeStyle = major ? "rgba(255,255,255,0.45)" : "rgba(255,255,255,0.2)";
+        // Passed ticks glow in the record's accent (a touch brighter than the
+        // old white — coloured light reads dimmer at equal alpha).
+        ctx.strokeStyle = major
+          ? `rgba(${uiAccentArr[0]},${uiAccentArr[1]},${uiAccentArr[2]},0.55)`
+          : `rgba(${uiAccentArr[0]},${uiAccentArr[1]},${uiAccentArr[2]},0.26)`;
       } else {
         ctx.strokeStyle = major ? "rgba(255,255,255,0.15)" : "rgba(255,255,255,0.06)";
       }
@@ -2075,13 +2090,14 @@
       const a0 = startAngle + t0 * pct * Math.PI * 2;
       const a1 = startAngle + Math.min(t1, 1) * pct * Math.PI * 2;
 
-      // Gradient: dim warm → bright white along the arc
+      // Gradient: the record's accent → bright white along the arc, so the
+      // trailing tail carries the album's colour and the leading edge stays
+      // a bright tip.
       const t = t0;
       const alpha = 0.3 + t * 0.7;
-      // Warm-to-white: start with subtle warm tint, end pure white
-      const rr = Math.round(180 + t * 75);
-      const gg = Math.round(170 + t * 85);
-      const bb = Math.round(160 + t * 95);
+      const rr = Math.round(uiAccentArr[0] + t * (255 - uiAccentArr[0]));
+      const gg = Math.round(uiAccentArr[1] + t * (255 - uiAccentArr[1]));
+      const bb = Math.round(uiAccentArr[2] + t * (255 - uiAccentArr[2]));
 
       ctx.beginPath();
       ctx.arc(cx, cy, r, a0, a1);
@@ -2252,8 +2268,10 @@
       if (ad > 720) {
         el.style.opacity = "0";
         el.style.transform = "translate3d(-9999px,0,0)";
+        el.style.willChange = "auto"; // demote parked sleeves — GPU layers cost real RAM on the 1GB Pi
         continue;
       }
+      el.style.willChange = "transform";
       const t = Math.max(-1, Math.min(1, d / 320));
       const lift = 1 - Math.abs(t);
       const x = 540 + d * 1.02 - CRATE_CARD / 2;
@@ -2509,7 +2527,9 @@
   let tlTimer = null;
   let tlLaunchAt = -Infinity;
 
-  function tlAccent() { return (labelPalette && labelPalette.accent) || "#f0a868"; }
+  // Tracklist highlight uses the guarded UI accent — same tint as the rest of
+  // the chrome, and never goes muddy on dark artwork like the raw accent could.
+  function tlAccent() { return uiAccentCss; }
 
   function tlLayout() {
     for (let i = 0; i < tlRows.length; i++) {

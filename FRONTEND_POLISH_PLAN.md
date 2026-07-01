@@ -72,28 +72,30 @@ sub-pixel timing. Regression sweep passes.
 
 ---
 
-## Phase 1 — Palette through the chrome
+## Phase 1 — Palette through the chrome ✅ (2026-07-01, pending panel check)
 
 *Highest visible impact. Small diff, mostly color plumbing.*
 
 **Goal:** every piece of UI chrome takes its tint from the record that's playing.
 
-- [ ] **Time bar fill** (index.html:393): white gradient → `accent-soft → white`.
-- [ ] **Progress ring** (canvas, index.html:2046–2049): warm-to-white hardcoded RGB ramp →
-      start from the accent (JS reads `labelPalette` directly; keep the ramp ending at white
-      so the leading edge stays bright). Tint *passed* ticks (index.html:2010) with a low-alpha
-      accent instead of plain white.
-- [ ] **Volume HUD** (index.html:1195): `#vol-fill` + `#vol-knob` tinted accent; backing/track
-      stay neutral.
-- [ ] **Active lyric glow** (index.html:521–524): the white `text-shadow` bloom → accent at
-      the same alpha. Text itself stays white.
-- [ ] **Pill hairline** (index.html:295): border color → accent at ~0.18 alpha.
-- [ ] **Timing:** accent flips with the artwork at the hidden 90° point (`stagePalette` already
-      guarantees this) — verify no mid-flip color pop.
+- [x] **Time bar fill**: `rgba(var(--ui-accent-rgb), .75) → white`, glow accent-tinted.
+- [x] **Progress ring** (canvas): ramp now interpolates guarded accent → white (leading edge
+      stays a bright tip); passed ticks accent at 0.55/0.26 alpha (brighter than the old
+      white — coloured light reads dimmer at equal alpha). JS reads `uiAccentArr` — no CSS
+      var lookups on the draw path.
+- [x] **Volume HUD**: arc fill stroked in the accent. *Deviation:* knob body stays a white
+      thumb (contrast over any artwork) with an accent halo instead of a fully tinted knob.
+      Leading-edge ring glow also kept white for the same reason.
+- [x] **Active lyric glow**: bloom → accent at 0.30 alpha; text stays white.
+- [x] **Pill hairline**: accent at 0.18 alpha.
+- [x] **Bonus:** `tlAccent()` (tracklist current-row tint) now returns the *guarded* accent
+      instead of the raw palette accent — consistent with the chrome and can't go muddy.
+- [x] **Timing:** consumers are CSS-var/`uiAccentArr` reads; `setUiAccent` fires at the same
+      moments as the lava palette incl. the flip's hidden-90° swap, so tint lands with the art.
 
-**Acceptance:** play three visually distinct albums (warm, cool, near-monochrome) — chrome
-tint follows each; near-monochrome art still yields a usable accent (legibility guard).
-Skip rapidly: no color flashes ahead of the art swap.
+**Acceptance (panel):** play three visually distinct albums (warm, cool, near-monochrome) —
+chrome tint follows each; near-monochrome art still yields a usable accent (legibility
+guard). Skip rapidly: no color flashes ahead of the art swap.
 
 ---
 
@@ -225,12 +227,10 @@ Found while reading the code; each is a real win on the lower-RAM Pi. None are r
 waiting to happen — they're bounded, mechanical changes. Tackle alongside whichever phase
 touches the same code, or as a standalone efficiency pass.
 
-- [ ] **Crate card layer explosion.** `.crate-card` sets `will-change: transform, opacity`
-      on *every* card, promoting each to its own composited layer — a 50-item section is
-      ~50 × 312×312×4 B ≈ **19 MB of GPU memory**, mostly for cards that are hidden
-      (`layoutCrate` already parks anything |d| > 720px at opacity 0). Fix: toggle
-      `will-change` per card inside `layoutCrate` — live only for the ~7 cards in the
-      visible window, `auto` for the rest. (Pairs naturally with Phase 4.)
+- [x] **Crate card layer explosion** *(fixed with Phase 1)*. Blanket `will-change` removed
+      from `.crate-card`; `layoutCrate` now promotes only cards inside the visible window
+      (|d| ≤ 720px) and demotes parked ones to `auto`. Verified at runtime: 4 promoted /
+      rest demoted on a 6-card section. Was ~19 MB of GPU layers on a 50-item section.
 - [ ] **Section switch decodes every cover.** `buildCrate()` assigns `background-image` to
       every item in the section up front, so all covers fetch + decode on a section switch
       even for cards never scrolled to. Fix: assign the image lazily in `layoutCrate` when a
