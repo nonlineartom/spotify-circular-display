@@ -201,9 +201,9 @@ restores controls within a frame. Long titles legible without ellipsis truncatio
 
 ## Phase 6 — Flagship flourishes ✅ implemented, ALL DEFAULT OFF (2026-07-01)
 
-*All four shipped as flagged prototypes — the live kiosk is unchanged until a flag is added
-to the kiosk URL (in `services/spotify-kiosk.service` / the Chromium launch line). Adopt
-whichever earn their keep on the panel by defaulting their flag.*
+*Shipped as flagged prototypes; the three survivors were **defaulted ON 2026-07-02** for a
+multi-day live trial. Each can be disabled via kiosk URL if the trial argues against it:
+`?standby=off`, `?boot=0`, `?reflect=0`.*
 
 - [x] **Standby watch face** — `?standby=clock`. Ultra-dim tick ring + hands + accent dot at
       12 while dimmed; one canvas redraw per minute inside the dimmed early-return. Verified
@@ -217,8 +217,8 @@ whichever earn their keep on the panel by defaulting their flag.*
       clutter risk called out at proposal time was real. The two-circle-intersection
       approach lives in git history (`polish-v1`) if it's ever wanted again.
 
-**Flag combo for a full-flourish trial:**
-`http://localhost:5000/?standby=clock&boot=1&reflect=1`
+**Trial notes to gather on the panel:** clock brightness at night, whether the boot sweep
+reads as intentional or as lag, reflection behaviour over the lava with real covers.
 
 ---
 

@@ -1472,14 +1472,15 @@
   const CONTROLS_IDLE_MS = 8000;
   let lastInteractionAt = performance.now();
 
-  // ── Flagged flourishes (Phase 6) — default OFF; enable via kiosk URL ──
-  //   ?standby=clock  ultra-dim analog clock while the screen is dimmed
-  //   ?boot=1         one-time groove sweep-in on load
-  //   ?reflect=1      floor reflection under the crate's focused sleeve
+  // ── Flourishes (Phase 6) — default ON since 2026-07-02; URL params
+  // disable individually if the live trial argues against one:
+  //   ?standby=off  no analog clock while the screen is dimmed
+  //   ?boot=0       no groove sweep-in on load
+  //   ?reflect=0    no floor reflection under the crate's focused sleeve
   const FLAGS = new URLSearchParams(location.search);
-  const FLAG_STANDBY_CLOCK = FLAGS.get("standby") === "clock";
-  const FLAG_BOOT = FLAGS.get("boot") === "1";
-  const FLAG_REFLECT = FLAGS.get("reflect") === "1";
+  const FLAG_STANDBY_CLOCK = FLAGS.get("standby") !== "off";
+  const FLAG_BOOT = FLAGS.get("boot") !== "0";
+  const FLAG_REFLECT = FLAGS.get("reflect") !== "0";
 
   // Lyrics state
   let lyricsLines = [];      // [{time: ms, text: ""}, ...]
