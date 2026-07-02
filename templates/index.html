@@ -1043,19 +1043,6 @@
   }
   #standby-clock.on { opacity: 1; }
 
-  /* ── Tonearm (flagged prototype: ?tonearm=1) — pivots at the upper-right
-     rim, stylus tracking lead-in → run-out with playback. Rotation updates
-     ride the progress ring's 125ms tick. ── */
-  #tonearm {
-    position: absolute;
-    inset: 0;
-    z-index: 27;               /* above the ring, below the pill */
-    pointer-events: none;
-    display: none;
-    transition: opacity 0.25s ease;
-  }
-  #tonearm.flip-hidden { opacity: 0 !important; }
-
   /* ── Crate reflection (flagged: ?reflect=1) — mirrored slice of the
      focused sleeve floating on the lava. Updated only when focus changes. ── */
   #crate-reflection {
@@ -1268,20 +1255,6 @@
 
     <!-- Circular progress ring (canvas-based for smooth rendering) -->
     <canvas id="progress-ring-canvas" width="296" height="296"></canvas>
-
-    <!-- Tonearm (flagged prototype: ?tonearm=1) -->
-    <svg id="tonearm" viewBox="0 0 1080 1080" xmlns="http://www.w3.org/2000/svg">
-      <g transform="translate(897,183)">
-        <g id="ta-arm">
-          <line x1="63" y1="-63" x2="-269" y2="269" stroke="#a9a9af" stroke-width="9" stroke-linecap="round"/>
-          <line x1="-238" y1="238" x2="-269" y2="269" stroke="#8e8e94" stroke-width="16" stroke-linecap="round"/>
-          <circle cx="76" cy="-76" r="24" fill="#2e2e33" stroke="#57575e" stroke-width="2"/>
-          <circle cx="-263" cy="263" r="4" fill="#e8e8ee"/>
-        </g>
-        <circle r="30" fill="#2a2a2f" stroke="#4c4c55" stroke-width="2"/>
-        <circle r="10" fill="#606068"/>
-      </g>
-    </svg>
   </div>
 
 	  <!-- Static overlay layer -->
@@ -1457,8 +1430,6 @@
   const volLabel   = $("vol-label");
   const gestureChip = $("gesture-chip");
   const standbyClock = $("standby-clock");
-  const tonearmEl  = $("tonearm");
-  const taArm      = $("ta-arm");
 
   // Progress ring constants (canvas is 296x296 = 2x the CSS size for retina)
   const RING_CX = 148;
@@ -1503,12 +1474,10 @@
 
   // ── Flagged flourishes (Phase 6) — default OFF; enable via kiosk URL ──
   //   ?standby=clock  ultra-dim analog clock while the screen is dimmed
-  //   ?tonearm=1      tonearm tracking lead-in → run-out with progress
   //   ?boot=1         one-time groove sweep-in on load
   //   ?reflect=1      floor reflection under the crate's focused sleeve
   const FLAGS = new URLSearchParams(location.search);
   const FLAG_STANDBY_CLOCK = FLAGS.get("standby") === "clock";
-  const FLAG_TONEARM = FLAGS.get("tonearm") === "1";
   const FLAG_BOOT = FLAGS.get("boot") === "1";
   const FLAG_REFLECT = FLAGS.get("reflect") === "1";
 
@@ -1622,31 +1591,6 @@
     ctx.strokeStyle = "rgba(255,255,255,0.12)"; ctx.lineWidth = 5; ctx.stroke();
     ctx.beginPath(); ctx.moveTo(C, C); ctx.lineTo(C + 148 * Math.cos(m), C + 148 * Math.sin(m));
     ctx.strokeStyle = "rgba(255,255,255,0.09)"; ctx.lineWidth = 3; ctx.stroke();
-  }
-
-  // ── Tonearm (flagged prototype: ?tonearm=1) ──
-  // Stylus radius maps progress: lead-in 505px → run-out 160px. The arm angle
-  // is the two-circle intersection (disc centre radius r × pivot radius L),
-  // upper solution so the arm stays clear of the volume rim.
-  const TA_PIVOT = { x: 897, y: 183 };
-  const TA_LEN = 380;
-  const TA_BASE_DEG = 135; // artwork points at the disc centre at rot=0
-  if (FLAG_TONEARM) tonearmEl.style.display = "block";
-  function updateTonearm(pct, hasTrack) {
-    if (!FLAG_TONEARM) return;
-    tonearmEl.style.opacity = hasTrack ? "1" : "0";
-    if (!hasTrack) return;
-    const r = 505 - pct * (505 - 160);
-    const dx = 540 - TA_PIVOT.x, dy = 540 - TA_PIVOT.y;
-    const D = Math.hypot(dx, dy);
-    const a = (TA_LEN * TA_LEN - r * r + D * D) / (2 * D);
-    const h = Math.sqrt(Math.max(0, TA_LEN * TA_LEN - a * a));
-    const mx = TA_PIVOT.x + (a * dx) / D, my = TA_PIVOT.y + (a * dy) / D;
-    const p1 = { x: mx + (h * dy) / D, y: my - (h * dx) / D };
-    const p2 = { x: mx - (h * dy) / D, y: my + (h * dx) / D };
-    const p = p1.y < p2.y ? p1 : p2;
-    const rot = (Math.atan2(p.y - TA_PIVOT.y, p.x - TA_PIVOT.x) * 180) / Math.PI - TA_BASE_DEG;
-    taArm.setAttribute("transform", `rotate(${rot.toFixed(2)})`);
   }
 
   // ── Helpers ──
@@ -2041,7 +1985,6 @@
         artworkEl.classList.remove("art-changing");
         progressCanvas.classList.remove("flip-hidden"); // notches ease back in
         sheenEl.classList.remove("flip-hidden");        // reflection eases back in
-        tonearmEl.classList.remove("flip-hidden");      // arm drops back onto the record
         // Cleared in the same frame the rotateY(180°) below disappears —
         // rotateY(180)+mirror ≡ upright, so the hand-off is invisible. The
         // wrapper has no transition, so both snap together.
@@ -2104,7 +2047,6 @@
     artworkEl.classList.add("art-changing");
     progressCanvas.classList.add("flip-hidden"); // static notches fade off for the flip
     sheenEl.classList.add("flip-hidden");        // static reflection sits the flip out
-    tonearmEl.classList.add("flip-hidden");      // you lift the arm to flip a record
     // The disc-face swap, and the art-changing cleanup, are handled at the
     // hidden 90° point and on flip completion inside applyVinylTransform.
   }
@@ -2294,7 +2236,6 @@
         timeElapsed.textContent = "0:00";
         timeRemaining.textContent = "-0:00";
         timeFill.style.transform = "scaleX(0)";
-        updateTonearm(0, false); // arm lifts off with the record
         lastProgressEmpty = true;
       }
       return;
@@ -2309,7 +2250,6 @@
     }
     p = Math.min(p, state.durationMs);
     const pct = p / Math.max(state.durationMs, 1);
-    updateTonearm(pct, true); // rides the same 125ms tick
 
     const ctx = progressCtx;
     const cx = RING_CX, cy = RING_CY, r = RING_R;

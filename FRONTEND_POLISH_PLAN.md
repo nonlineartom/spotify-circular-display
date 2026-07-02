@@ -213,13 +213,12 @@ whichever earn their keep on the panel by defaulting their flag.*
 - [x] **Crate reflection** — `?reflect=1`. One mirrored, gradient-masked slice of the focused
       sleeve; background updated only when focus changes; hides for imageless items
       (verified both paths). One extra composited layer, 374×92.
-- [x] **Tonearm** — `?tonearm=1`. Pivot at the upper-right rim, stylus radius 505→160px with
-      progress via two-circle intersection, updates on the ring's 125ms tick, sits out the
-      flip, lifts off when idle. Verified sweep: ~68° (lead-in) → 40.7° (mid) → ~13°
-      (run-out). Judge the clutter question on the panel.
+- ~~**Tonearm**~~ — prototyped (`?tonearm=1`), judged, and **removed** (2026-07-02): the
+      clutter risk called out at proposal time was real. The two-circle-intersection
+      approach lives in git history (`polish-v1`) if it's ever wanted again.
 
 **Flag combo for a full-flourish trial:**
-`http://localhost:5000/?standby=clock&boot=1&reflect=1&tonearm=1`
+`http://localhost:5000/?standby=clock&boot=1&reflect=1`
 
 ---
 
