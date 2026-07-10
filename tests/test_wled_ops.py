@@ -160,6 +160,7 @@ def test_service_templates_render_without_tokens_or_graphical_cycle():
         "@APP_GROUP@": "spotify-display",
         "@APP_HOME@": "/home/pi",
         "@PROJECT_DIR@": "/home/pi/My Display",
+        "@PROJECT_DIR_SYSTEMD@": "/home/pi/My\\x20Display",
         "@DISPLAY_PORT@": "5000",
     }
     for path in (ROOT / "services").glob("*.service"):
@@ -168,14 +169,18 @@ def test_service_templates_render_without_tokens_or_graphical_cycle():
             rendered = rendered.replace(old, new)
         assert "@APP_" not in rendered
         assert "@PROJECT_DIR@" not in rendered
+        assert "@PROJECT_DIR_SYSTEMD@" not in rendered
         assert "@DISPLAY_PORT@" not in rendered
         if path.name in {"spotify-kiosk.service", "spotify-pygame.service"}:
             assert "After=graphical-session.target" not in rendered
             assert 'ExecStart="/home/pi/My Display/' in rendered
     path_unit = (ROOT / "services" / "spotify-wled.path").read_text()
-    path_unit = path_unit.replace("@PROJECT_DIR@", "/home/pi/My Display")
+    path_unit = path_unit.replace(
+        "@PROJECT_DIR_SYSTEMD@", "/home/pi/My\\x20Display"
+    )
     assert "@PROJECT_DIR@" not in path_unit
-    assert 'PathChanged="/home/pi/My Display/config.json"' in path_unit
+    assert "@PROJECT_DIR_SYSTEMD@" not in path_unit
+    assert "PathChanged=/home/pi/My\\x20Display/config.json" in path_unit
 
 
 def test_wled_launcher_exits_before_python_when_disabled(tmp_path):
@@ -217,8 +222,35 @@ def test_setup_render_service_runs_under_nounset_with_space_in_path(tmp_path):
     subprocess.run(["bash", str(runner)], env=env, check=True)
     rendered = destination.read_text()
     assert "@PROJECT_DIR@" not in rendered
+    assert "@PROJECT_DIR_SYSTEMD@" not in rendered
+    assert "WorkingDirectory=/home/pi/My\\x20Display" in rendered
     assert 'ExecStart="/home/pi/My Display/serve.sh"' in rendered
     assert "Environment=PORT=5001" in rendered
+
+
+def test_renderer_escapes_single_path_directives_for_systemd(tmp_path):
+    rendered_dir = tmp_path / "rendered"
+    subprocess.run(
+        [
+            "python3",
+            str(ROOT / "scripts" / "render_service_templates.py"),
+            str(rendered_dir),
+            "--app-user",
+            "pi",
+            "--app-group",
+            "spotify-display",
+            "--app-home",
+            "/home/pi",
+            "--project-dir",
+            "/home/pi/My Display",
+        ],
+        check=True,
+    )
+    service = (rendered_dir / "spotify-display.service").read_text()
+    path_unit = (rendered_dir / "spotify-wled.path").read_text()
+    assert "WorkingDirectory=/home/pi/My\\x20Display" in service
+    assert 'ExecStart="/home/pi/My Display/serve.sh"' in service
+    assert "PathChanged=/home/pi/My\\x20Display/config.json" in path_unit
 
 
 def test_watchdog_initial_sample_does_not_restart_receiver():

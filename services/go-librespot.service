@@ -10,7 +10,7 @@ StartLimitBurst=5
 Type=simple
 User=@APP_USER@
 Group=@APP_GROUP@
-WorkingDirectory="@PROJECT_DIR@"
+WorkingDirectory=@PROJECT_DIR_SYSTEMD@
 Environment="HOME=@APP_HOME@"
 ExecStart=/usr/local/bin/go-librespot --config_dir "@PROJECT_DIR@/go-librespot"
 Restart=on-failure

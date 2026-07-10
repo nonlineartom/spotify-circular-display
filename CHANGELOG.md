@@ -31,6 +31,8 @@ numbers, so audit remediation is recorded under `Unreleased`.
 - Corrected WLED pause/idle/error state handling and smoothed spin transitions.
 - Corrected Pi 5 GPIO, runtime-state, watchdog, service identity and startup
   assumptions.
+- Corrected systemd single-path rendering so `WorkingDirectory` and path-unit
+  directives pass target parsing while paths containing spaces remain valid.
 - Prevented setup from stopping the running legacy receiver or deleting the
   running system-kiosk unit before the controlled cutover.
 - Added a staged installer mode that preserves boot service selection,

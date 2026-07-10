@@ -141,7 +141,7 @@ adversarial finding pass.
 
 | Check | Result |
 |---|---|
-| Python, backend, frontend contracts, WLED/ops, Pygame fallback and backlight tests | **155 passed** |
+| Python, backend, frontend contracts, WLED/ops, Pygame fallback and backlight tests | **156 passed** |
 | Python compilation, shell syntax and embedded JavaScript syntax | Passed |
 | Service/path template rendering | Passed on development host |
 | `git diff --check` | Passed |

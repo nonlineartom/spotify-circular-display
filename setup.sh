@@ -216,13 +216,20 @@ render_service() {
     local source="$1"
     local destination="$2"
     local rendered="$TEMP_ROOT/$(basename "$source").rendered"
-    local escaped_project escaped_home
+    local escaped_project escaped_project_systemd escaped_home project_systemd
     escaped_project="$(printf '%s' "$PROJECT_DIR" | sed 's/[&|\\]/\\&/g')"
+    project_systemd="$PROJECT_DIR"
+    project_systemd="${project_systemd//%/%%}"
+    project_systemd="${project_systemd//\\/\\x5c}"
+    project_systemd="${project_systemd// /\\x20}"
+    project_systemd="${project_systemd//$'\t'/\\x09}"
+    escaped_project_systemd="$(printf '%s' "$project_systemd" | sed 's/[&|\\]/\\&/g')"
     escaped_home="$(printf '%s' "$APP_HOME" | sed 's/[&|\\]/\\&/g')"
     sed \
         -e "s|@APP_USER@|$APP_USER|g" \
         -e "s|@APP_GROUP@|$APP_GROUP|g" \
         -e "s|@APP_HOME@|$escaped_home|g" \
+        -e "s|@PROJECT_DIR_SYSTEMD@|$escaped_project_systemd|g" \
         -e "s|@PROJECT_DIR@|$escaped_project|g" \
         -e "s|@DISPLAY_PORT@|$DISPLAY_PORT|g" \
         "$source" > "$rendered"

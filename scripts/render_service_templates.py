@@ -16,8 +16,21 @@ TOKENS = {
     "@APP_GROUP@": "app_group",
     "@APP_HOME@": "app_home",
     "@PROJECT_DIR@": "project_dir",
+    "@PROJECT_DIR_SYSTEMD@": "project_dir_systemd",
     "@DISPLAY_PORT@": "display_port",
 }
+
+
+def escape_systemd_single_path(value: str) -> str:
+    """Escape a single-path directive without wrapping it in literal quotes."""
+    if not os.path.isabs(value) or "\x00" in value or "\n" in value or "\r" in value:
+        raise ValueError(f"invalid absolute systemd path: {value!r}")
+    return (
+        value.replace("%", "%%")
+        .replace("\\", "\\x5c")
+        .replace(" ", "\\x20")
+        .replace("\t", "\\x09")
+    )
 
 
 def render(source: Path, destination: Path, values: dict[str, str]) -> None:
@@ -51,6 +64,7 @@ def main() -> None:
         "app_group": args.app_group,
         "app_home": args.app_home,
         "project_dir": args.project_dir,
+        "project_dir_systemd": escape_systemd_single_path(args.project_dir),
         "display_port": args.display_port,
     }
     for pattern in ("*.service", "*.path"):
