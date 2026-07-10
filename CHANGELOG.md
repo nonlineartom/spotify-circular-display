@@ -36,6 +36,11 @@ numbers, so audit remediation is recorded under `Unreleased`.
 - Enabled graphical user services from `default.target` because Raspberry Pi OS
   does not consistently activate `graphical-session.target`, preventing a
   post-reboot kiosk outage.
+- Rebuilds the locked virtual environment during setup so generated console
+  launchers cannot retain a stale absolute path after a versioned-directory
+  move and unpinned packages cannot survive an install.
+- Preserves go-librespot's authenticated `state.json` as well as its newer
+  optional `credentials.json` during a staged receiver upgrade.
 - Prevented setup from stopping the running legacy receiver or deleting the
   running system-kiosk unit before the controlled cutover.
 - Added a staged installer mode that preserves boot service selection,

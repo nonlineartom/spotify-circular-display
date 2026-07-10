@@ -271,6 +271,7 @@ def test_graphical_launcher_waits_for_web_readiness_not_receiver_health():
 
 def test_setup_requires_hashed_lockfile_for_dependencies():
     source = (ROOT / "setup.sh").read_text()
+    assert 'python3 -m venv --clear "$PROJECT_DIR/venv"' in source
     assert "requirements.lock is missing" in source
     assert "--require-hashes" in source
     assert '-r "$PROJECT_DIR/requirements.lock"' in source

@@ -150,7 +150,9 @@ step "Creating pinned Python environment"
     || die "requirements.lock is missing; refusing an unverified dependency install"
 python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' \
     || die "Python 3.10 or newer is required by the locked runtime"
-python3 -m venv "$PROJECT_DIR/venv"
+# Recreate instead of reusing: entry-point shebangs embed the absolute venv
+# path, and stale packages would otherwise survive a versioned-directory move.
+python3 -m venv --clear "$PROJECT_DIR/venv"
 PIP_WHEEL="pip-25.1.1-py3-none-any.whl"
 PIP_WHEEL_URL="https://files.pythonhosted.org/packages/29/a2/d40fb2460e883eca5199c62cfc2463fd261f760556ae6290f88488c362c0/${PIP_WHEEL}"
 PIP_WHEEL_SHA256="2913a38a2abf4ea6b64ab507bd9e967f3b53dc1ede74b01b0931e1ce548751af"

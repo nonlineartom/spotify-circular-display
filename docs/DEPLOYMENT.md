@@ -32,6 +32,9 @@ cp -a "$OLD_RELEASE/go-librespot/config.yml" "$BACKUP_DIR/go-librespot-config.ym
 [ ! -e "$OLD_RELEASE/go-librespot/credentials.json" ] || \
   cp -a "$OLD_RELEASE/go-librespot/credentials.json" \
     "$BACKUP_DIR/go-librespot-credentials.json"
+[ ! -e "$OLD_RELEASE/go-librespot/state.json" ] || \
+  cp -a "$OLD_RELEASE/go-librespot/state.json" \
+    "$BACKUP_DIR/go-librespot-state.json"
 for unit in go-librespot.service spotify-display.service \
   spotify-network-watchdog.service spotify-wled.service spotify-wled.path \
   spotify-buttons.service spotify-kiosk.service; do
@@ -103,6 +106,7 @@ Protect the backup; it contains Spotify application/refresh credentials:
 chmod 700 "$BACKUP_DIR"
 chmod 600 "$BACKUP_DIR/config.json" 2>/dev/null || true
 chmod 600 "$BACKUP_DIR/go-librespot-credentials.json" 2>/dev/null || true
+chmod 600 "$BACKUP_DIR/go-librespot-state.json" 2>/dev/null || true
 ```
 
 Also record the active Wi-Fi connection name, audio sink, display mode, USB HID
@@ -136,14 +140,18 @@ rm config.json.new
 [ ! -e "$BACKUP_DIR/go-librespot-credentials.json" ] || \
   install -m 0600 "$BACKUP_DIR/go-librespot-credentials.json" \
     go-librespot/credentials.json
+[ ! -e "$BACKUP_DIR/go-librespot-state.json" ] || \
+  install -m 0600 "$BACKUP_DIR/go-librespot-state.json" \
+    go-librespot/state.json
 cp -a "$BACKUP_DIR/go-librespot-config.yml" go-librespot/config.live.yml
 diff -u go-librespot/config.yml go-librespot/config.live.yml || true
 ```
 
 The recursive `jq` merge adds new defaults while live values win. Review the
 go-librespot diff and deliberately carry over any target-specific audio device
-or name; retain the candidate loopback status server on port 3678. At minimum
-also review:
+or name; retain the candidate loopback status server on port 3678. Releases may
+persist the authenticated receiver session in `state.json` or
+`credentials.json`, so preserve both when present. At minimum also review:
 
 - `public_base_url`, `redirect_uri`, `guest_session_hours` and
   `security.owner_token`;
