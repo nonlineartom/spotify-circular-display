@@ -7,6 +7,7 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFIG="$PROJECT_DIR/config.json"
+BACKLIGHT_GROUP="spotify-backlight"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -30,6 +31,18 @@ sudo apt-get install -y -qq \
     ca-certificates \
     avahi-daemon \
     alsa-utils
+
+step "Configuring Waveshare backlight access…"
+sudo groupadd --system "$BACKLIGHT_GROUP" 2>/dev/null || true
+sudo usermod -a -G "$BACKLIGHT_GROUP" "${SUDO_USER:-$USER}"
+sudo install -d -m 0755 /etc/udev/rules.d
+sudo install -m 0644 \
+    "$PROJECT_DIR/udev/70-spotify-display-backlight.rules" \
+    /etc/udev/rules.d/70-spotify-display-backlight.rules
+sudo udevadm control --reload-rules
+sudo udevadm trigger --action=change --subsystem-match=hidraw || \
+    warn "Could not retrigger hidraw devices; reconnect the panel's Touch USB cable."
+sudo udevadm settle
 
 # ── 2. Install Spotify Connect receiver ─────────────────────
 step "Installing Raspotify fallback…"

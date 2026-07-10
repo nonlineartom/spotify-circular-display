@@ -1,0 +1,3 @@
+# Waveshare 7inch 1080x1080 HDMI Round backlight/touch controller.
+# Raw HID access is limited to the display service's dedicated group.
+SUBSYSTEM=="hidraw", KERNEL=="hidraw*", ATTRS{idVendor}=="0712", ATTRS{idProduct}=="000a", GROUP:="spotify-backlight", MODE:="0660"

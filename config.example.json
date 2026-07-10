@@ -3,6 +3,14 @@
   "client_secret": "YOUR_SPOTIFY_CLIENT_SECRET",
   "public_base_url": "",
   "redirect_uri": "",
+  "backlight": {
+    "enabled": true,
+    "initial_percent": 100,
+    "idle_percent": 10,
+    "safe_max_percent": 80,
+    "ramp_interval_ms": 150,
+    "retry_interval_seconds": 2
+  },
   "wled": {
     "enabled": false,
     "devices": [],
