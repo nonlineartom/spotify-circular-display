@@ -1,41 +1,65 @@
 # Troubleshooting and QoL notes
 
-## Display brightness / backlight (this panel can't be dimmed in software)
+## Display brightness / hardware backlight
 
-The display is a **Waveshare "7inch 1080×1080 LCD" (HDMI Round)** — EDID model
-`WS070Round`, USB touch controller `0712:000A` ("Waveshare-079-HD"). We
-investigated software backlight control thoroughly and the answer is: **there
-is no software path on this model.** Findings, all verified on the device:
+The Waveshare **7inch 1080×1080 LCD (HDMI Round)**—EDID model `WS070Round`,
+USB touch controller `0712:000a` ("Waveshare-079-HD")—supports Linux
+backlight control through a vendor output report on the Touch USB HID device.
+An empty `/sys/class/backlight` and unavailable DDC/CI remain expected for this
+HDMI panel.
 
-- **Kernel backlight (`/sys/class/backlight`)** — empty. Only exists for
-  DSI/SPI panels the SoC drives directly; an HDMI panel's backlight is on its
-  own controller, invisible to Linux.
-- **DDC/CI over HDMI** (`ddcutil setvcp 10`) — panel reports it does **not**
-  support DDC/CI (I²C addr 0x37 unresponsive).
-- **USB-HID** — the mechanism Waveshare's HDMI displays normally use, BUT their
-  tools (`RPi-USB-Brightness`, `Brightness-HDMI`) target the eGalax controller
-  (`0EEF:*`) and **reject this panel's `0712:000A` as "no connectable device"**.
-  The sibling-model report (`04 AA 01 00 00 00 <0-100> …` to `/dev/hidraw0`)
-  was tested here and did nothing. No GitHub project drives this controller's
-  brightness (exhaustively searched). The panel exposes a vendor HID channel
-  (report ID 9, usage page 0xFF00) but no published command maps to backlight.
-- **Waveshare's own spec sheet** lists `Backlight Adjustment: "Button backlight
-  adjustment"` — i.e. brightness on this model is a **physical button on the
-  driver board**, not software, despite looser marketing copy.
+The Linux hidraw write is five bytes, including the report ID:
 
-So the idle "dimmer" is a CSS overlay only; it darkens the picture and pauses
-rendering (saves SoC/GPU heat) but the backlight stays at 100%. For a true
-power-down the only remaining lever is DPMS output-off via `wlopm`/`wlr-randr`
-(`wlopm --off HDMI-A-1`, restore with `--on`) — whether that actually cuts
-*this* panel's backlight is **unconfirmed** (left as a future test). `wlopm`,
-`wlr-randr` and `swayidle` are all installed on the Pi.
+```text
+09 08 F7 LL CC
+```
+
+- `09` is HID report ID 9.
+- `LL` is the physical level byte, normally `round(percent × 2.5)`.
+- `CC` is `LL XOR 0xFF`.
+
+The application accepts only logical percent or idle/active mode through its
+loopback API; callers cannot provide a device path or raw report. It discovers
+the current hidraw node by exact USB VID/PID and monitors the resolved sysfs
+contact identity so a reset is detected even if Linux reuses `hidraw0`. Do not
+send the demo controller's `5A A5 FF 00` boot/test packet, and do not flash
+firmware for a different Waveshare panel.
+
+`setup.sh` installs `/etc/udev/rules.d/70-spotify-display-backlight.rules`,
+granting mode `0660` to group `spotify-backlight`, and adds that group to the
+display service. There is intentionally no world-writable fallback.
+
+The current Pi 5 3 A supply has previously triggered USB over-current during a
+large brightness jump. The shipped controller therefore maps logical 0–100 to
+a hard maximum of 80% physical output, begins startup/reconnect at logical 10,
+and ramps in ten-point logical steps every 150 ms. Idle uses at most logical
+10; wake restores the remembered active level through the same ramp. Do not
+enable `usb_max_current_enable=1` with this supply.
+
+Three-finger vertical drag controls brightness on the left radial HUD;
+two-finger vertical drag remains volume on the right. If control is unavailable:
+
+```bash
+lsusb -d 0712:000a
+getent group spotify-backlight
+stat -c '%A %U %G %n' /dev/hidraw*
+sudo udevadm control --reload-rules
+sudo udevadm trigger --action=change --subsystem-match=hidraw
+sudo systemctl restart spotify-display
+curl -s http://127.0.0.1:5000/api/backlight | jq
+sudo journalctl -u spotify-display -n 100 --no-pager
+```
+
+If `dmesg` reports USB over-current or the touch device reconnects during a
+ramp, power the panel from its dedicated 5 V input or use a correctly detected
+Pi 5 5 A supply.
 
 ## Multi-touch gestures aren't recognized (single taps/swipes work)
 
-If two-finger gestures (twist-seek, pinch, two-finger tap) do nothing while
-single-finger taps and swipes work fine, the compositor is almost certainly
-converting touch into emulated mouse input — one pointer only, the second
-finger silently dropped.
+If multi-finger gestures (twist-seek, pinch, volume, three-finger brightness or
+two-finger tap) do nothing while single-finger taps and swipes work fine, the
+compositor is almost certainly converting touch into emulated mouse input—one
+pointer only, with the additional fingers silently dropped.
 
 On labwc (Raspberry Pi OS Wayland) check `~/.config/labwc/rc.xml` and
 `/etc/xdg/labwc/rc.xml` for your touch device:

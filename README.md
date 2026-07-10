@@ -22,7 +22,7 @@ A vinyl-inspired Spotify player for circular screens, built for the Raspberry Pi
 
 - **Zero-config playback** — No OAuth login needed. Anyone on the network selects "Pi Display" in Spotify and it just works
 - **Local touch controls** — Swipe/tap controls go through the on-device Spotify Connect receiver, not a personal Spotify Web API token
-- **Multi-touch gestures** — Two-finger twist scrubs through the track DJ-style (the platter follows your fingers, one turn = 60s); two-finger vertical drag rides the volume like a fader; two-finger tap toggles play/pause; pinch in shrinks the spinning record into its original square album cover parked at the top and brings up the crate (layers receding in z, iOS-style); pinch out sinks the spinning record back (shrink + blur) and raises this album's tracklist, pinch in again to return
+- **Multi-touch gestures** — Two-finger twist scrubs through the track DJ-style (the platter follows your fingers, one turn = 60s); two-finger vertical drag rides the volume like a fader; three-finger vertical drag changes the hardware backlight with a mirrored radial HUD; two-finger tap toggles play/pause; pinch in shrinks the spinning record into its original square album cover parked at the top and brings up the crate (layers receding in z, iOS-style); pinch out sinks the spinning record back (shrink + blur) and raises this album's tracklist, pinch in again to return
 - **Album tracklist** — Pinch out during playback to sink the still-spinning record back with a shrink + blur (iOS-style depth) and riffle a center-focused list of the album's tracks (scroll with momentum and snap, the centered track sitting in a soft selection slot). Tap a track to play the album from there — it keeps going through the rest of the record; pinch back in or tap aside to return to the player. Tracklists come from the app's own client-credentials token, so no user login is needed
 - **Spinning vinyl record** — Album art fills a rotating platter at 33&#8531; RPM with smooth CSS GPU-accelerated animation
 - **45 Mode** — Singles speed the platter up to 45 RPM with a 7" big-hole-adapter label; albums stay at 33&#8531;. The WLED gradient follows the same speed
@@ -35,7 +35,7 @@ A vinyl-inspired Spotify player for circular screens, built for the Raspberry Pi
 - **Synced scrolling lyrics** — Time-synced lyrics from LRCLIB scroll in the top half of the display, with the active line highlighted
 - **Track info** — Song title, artist name, and elapsed/remaining time
 - **Premium transitions** — Track skips flip the record, metadata crossfades, and the bottom time bar updates smoothly
-- **Screen dimmer** — Fades to near-black after extended idle (default 5 min, tunable via `?dim=<seconds>`). The first touch on a dimmed screen only wakes it — it never triggers a control underneath — and all rendering pauses while dimmed to idle the GPU. (Note: this is a software overlay; it does not dim the LCD backlight — see TROUBLESHOOTING.md)
+- **Hardware screen dimmer** — Fades the UI and ramps the Waveshare LCD backlight down after extended idle (default 5 min, tunable via `?dim=<seconds>`). The first touch only wakes it, the remembered active brightness returns gradually, and rendering pauses while dimmed to idle the GPU
 - **Spotify Connect** — Acts as a Spotify Connect speaker via go-librespot, with Raspotify kept as a fallback
 - **GPIO volume buttons** — Physical buttons for volume up/down via amixer (optional)
 - **Auto-start kiosk** — Boots straight into fullscreen Chromium displaying the player
@@ -176,6 +176,7 @@ The setup script will:
 - Create a Python virtual environment and install packages
 - Prompt for Spotify API credentials (if not already in config.json)
 - Install systemd services for auto-start
+- Install exact-device HID permissions for the Waveshare hardware backlight
 - Configure HDMI output for 1080x1080
 - Harden Wi-Fi for unattended operation (system-owned PSK, infinite autoconnect
   retries, powersave off) **and** install a network watchdog that re-connects the
@@ -223,6 +224,36 @@ hdmi_group=2
 hdmi_mode=87
 hdmi_cvt=1080 1080 60 1 0 0 0
 ```
+
+### Waveshare hardware backlight
+
+Three-finger vertical drag controls brightness and shows a radial fader on the
+left rim; two-finger vertical drag remains playback volume on the right. Keep
+the panel's **Touch USB** connection attached because it carries both touch and
+the vendor HID backlight command.
+
+For the existing Pi 5 3 A installation, the logical 0–100 HUD range maps to a
+hard maximum of 80% physical output. Startup, reconnect, idle and wake changes
+ramp in ten-point logical steps rather than making a large current jump. Keep
+`usb_max_current_enable` disabled with this supply.
+
+The policy can be lowered in `config.json`:
+
+```json
+"backlight": {
+  "enabled": true,
+  "initial_percent": 100,
+  "idle_percent": 10,
+  "safe_max_percent": 80,
+  "ramp_interval_ms": 150,
+  "retry_interval_seconds": 2
+}
+```
+
+`setup.sh` installs an exact `0712:000a` udev rule with mode `0660` for group
+`spotify-backlight`; the display service receives that supplementary group.
+The controller rediscovers the current hidraw node after USB re-enumeration.
+See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for protocol and power diagnostics.
 
 ## GPIO Pinout (optional)
 

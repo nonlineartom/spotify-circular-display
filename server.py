@@ -20,6 +20,8 @@ import urllib.parse
 import requests
 from flask import Flask, request, render_template, jsonify, redirect
 
+from backlight import BacklightController
+
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
@@ -72,6 +74,8 @@ _crate_building = False
 _enrich_inflight = set()  # track_ids with a background enrichment thread running
 _enrich_last_attempt = {}  # track_id -> wall time of last enrichment attempt
 _enrich_lock = threading.Lock()
+_backlight_lock = threading.Lock()
+_backlight_controller = None
 
 # WLED discovery cache: ip -> {"name": str, "ip": str, "port": int, "last_seen": float}
 _wled_devices = {}
@@ -85,6 +89,53 @@ def load_config():
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
+
+
+def _get_backlight_controller():
+    """Construct the HID controller lazily, without writing during import."""
+    global _backlight_controller
+    if _backlight_controller is not None:
+        return _backlight_controller
+    with _backlight_lock:
+        if _backlight_controller is None:
+            _backlight_controller = BacklightController.from_application_config(load_config())
+        return _backlight_controller
+
+
+def _backlight_request_is_loopback():
+    """Trust only a direct loopback peer for physical-panel mutations."""
+    try:
+        address = ipaddress.ip_address(request.remote_addr or "")
+    except ValueError:
+        return False
+    if address.is_loopback:
+        return True
+    mapped = getattr(address, "ipv4_mapped", None)
+    return bool(mapped and mapped.is_loopback)
+
+
+def _backlight_host_is_loopback():
+    """Require a literal local Host; a DNS name can be rebound to loopback."""
+    try:
+        parsed = urllib.parse.urlsplit(f"//{request.host}")
+        hostname = parsed.hostname or ""
+        parsed.port
+    except (TypeError, ValueError):
+        return False
+    if hostname.casefold() == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    if address.is_loopback:
+        return True
+    mapped = getattr(address, "ipv4_mapped", None)
+    return bool(mapped and mapped.is_loopback)
+
+
+def _backlight_request_is_trusted_local():
+    return _backlight_request_is_loopback() and _backlight_host_is_loopback()
 
 
 def resolve_uri_image(uri):
@@ -1287,6 +1338,36 @@ def control_volume():
     return jsonify({"error": f"Local player API error: {resp.status_code}"}), 502
 
 
+@app.route("/api/backlight", methods=["GET", "POST"])
+def backlight():
+    """Read or request safe HID backlight state for the local kiosk."""
+    if request.method == "GET":
+        return jsonify(_get_backlight_controller().status(refresh=True))
+
+    if not _backlight_request_is_trusted_local():
+        return jsonify({"error": "Backlight control is only available to the local kiosk"}), 403
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "JSON object required"}), 400
+    if set(data) - {"percent", "mode"} or ("percent" in data) == ("mode" in data):
+        return jsonify({"error": "Provide exactly one of percent or mode"}), 400
+
+    controller = _get_backlight_controller()
+    try:
+        if "percent" in data:
+            state = controller.set_percent(data["percent"])
+        elif data["mode"] == "idle":
+            state = controller.set_idle()
+        elif data["mode"] == "active":
+            state = controller.set_active()
+        else:
+            return jsonify({"error": "mode must be idle or active"}), 400
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    return jsonify(state)
+
+
 @app.route("/api/idle/playlists")
 def idle_playlists():
     """Return house playlists for the idle launcher."""
@@ -1608,6 +1689,7 @@ def lyrics():
 
 
 if __name__ == "__main__":
+    _get_backlight_controller().start()
     _start_wled_lan_scanner()
     _rebuild_crate_async()  # warm the crate so the kiosk's first fetch is instant
     port = int(os.environ.get("PORT", 5000))

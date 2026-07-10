@@ -808,8 +808,9 @@
     text-overflow: ellipsis;
   }
 
-  /* ── Volume HUD — arc fader on the right rim ── */
-  #volume-hud {
+  /* ── Hardware-control HUDs — arc faders on opposing rims ── */
+  #volume-hud,
+  #brightness-hud {
     position: absolute;
     inset: 0;
     z-index: 45;
@@ -818,11 +819,13 @@
     visibility: hidden;
     transition: opacity 0.35s ease, visibility 0.35s;
   }
-  #volume-hud.visible {
+  #volume-hud.visible,
+  #brightness-hud.visible {
     opacity: 1;
     visibility: visible;
   }
-  #volume-hud svg {
+  #volume-hud svg,
+  #brightness-hud svg {
     position: absolute;
     inset: 0;
     width: 100%; height: 100%;
@@ -833,15 +836,17 @@
   }
   /* Arc fill takes the record's accent; the knob stays a white thumb with an
      accent halo so it keeps contrast over any artwork. */
-  #vol-fill {
+  #vol-fill,
+  #bright-fill {
     stroke: var(--ui-accent);
   }
-  #vol-knob {
+  #vol-knob,
+  #bright-knob {
     filter: drop-shadow(0 0 10px rgba(var(--ui-accent-rgb), 0.55));
   }
-  #vol-label {
+  #vol-label,
+  #bright-label {
     position: absolute;
-    right: 152px;
     top: 50%;
     transform: translateY(-50%);
     padding: 7px 16px;
@@ -850,7 +855,10 @@
     font-variant-numeric: tabular-nums;
     text-shadow: 0 2px 12px rgba(0,0,0,0.7);
   }
-  #vol-label::after {
+  #vol-label { right: 152px; }
+  #bright-label { left: 152px; }
+  #vol-label::after,
+  #bright-label::after {
     content: "%";
     font-size: 15px;
     font-weight: 300;
@@ -1082,6 +1090,13 @@
     pointer-events: auto;
     /* dimming down stays slow and gentle */
     transition: opacity 3s ease-in-out;
+  }
+  /* Keep swallowing the whole multi-touch landing after the first contact
+     wakes the screen. JS removes this only when every wake contact is up. */
+  #dimmer.wake-drain {
+    opacity: 0;
+    pointer-events: auto;
+    transition: opacity 0.45s ease;
   }
 
   /* ── WLED setup affordance (idle only) ── */
@@ -1325,6 +1340,22 @@
     <div id="vol-label" class="chip">50</div>
   </div>
 
+  <!-- Backlight HUD — three-finger fader mirrored on the left rim -->
+  <div id="brightness-hud" role="status" aria-live="polite" aria-label="Display brightness">
+    <svg viewBox="0 0 1080 1080" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <filter id="bright-blur" x="-30%" y="-30%" width="160%" height="160%">
+          <feGaussianBlur stdDeviation="11"/>
+        </filter>
+      </defs>
+      <path id="bright-backing" fill="none" stroke="rgba(0,0,0,0.55)" stroke-width="60" stroke-linecap="round" filter="url(#bright-blur)"/>
+      <path id="bright-track" fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="12" stroke-linecap="round"/>
+      <path id="bright-fill" fill="none" stroke="rgba(255,255,255,0.92)" stroke-width="12" stroke-linecap="round"/>
+      <circle id="bright-knob" r="14" fill="#fff"/>
+    </svg>
+    <div id="bright-label" class="chip">100</div>
+  </div>
+
   <!-- Track list — pinch out during playback to riffle the album's tracks
        over the (defocused, still-spinning) record. -->
   <div id="tracklist">
@@ -1428,6 +1459,11 @@
   const volFill    = $("vol-fill");
   const volKnob    = $("vol-knob");
   const volLabel   = $("vol-label");
+  const brightnessHud = $("brightness-hud");
+  const brightTrack = $("bright-track");
+  const brightFill = $("bright-fill");
+  const brightKnob = $("bright-knob");
+  const brightLabel = $("bright-label");
   const gestureChip = $("gesture-chip");
   const standbyClock = $("standby-clock");
 
@@ -1454,6 +1490,8 @@
     albumId: "",
     artUrl: "",
     volume: 50,
+    brightness: 100,
+    activeBrightness: 100,
     isSingle: false,
     releaseDate: "",
     recordLabel: "",
@@ -2114,6 +2152,16 @@
     }, 190);
   }
 
+  function setScreenDimmed(dimmed) {
+    if (screenDimmed === dimmed) return;
+    screenDimmed = dimmed;
+    dimmer.classList.toggle("dim", dimmed);
+    viewport.classList.toggle("dimmed", dimmed);
+    standbyClock.classList.toggle("on", dimmed && FLAG_STANDBY_CLOCK);
+    if (dimmed && FLAG_STANDBY_CLOCK) lastClockMin = -1;
+    syncScreenBrightness();
+  }
+
   // ── Animation loop ──
   function animate(now) {
     requestAnimationFrame(animate);
@@ -2131,17 +2179,7 @@
       !!state.trackId && now - lastInteractionAt > CONTROLS_IDLE_MS);
     const timePaused = pausedSince > 0 ? now - pausedSince : 0;
     const shouldDim = !state.isPlaying && timePaused >= DIM_DELAY;
-    if (shouldDim && !screenDimmed) {
-      dimmer.classList.add("dim");
-      viewport.classList.add("dimmed");
-      screenDimmed = true;
-      if (FLAG_STANDBY_CLOCK) { standbyClock.classList.add("on"); lastClockMin = -1; }
-    } else if (!shouldDim && screenDimmed) {
-      dimmer.classList.remove("dim");
-      viewport.classList.remove("dimmed");
-      screenDimmed = false;
-      standbyClock.classList.remove("on");
-    }
+    if (shouldDim !== screenDimmed) setScreenDimmed(shouldDim);
     if (screenDimmed) {
       // Paused: render nothing while the screen is dim — except the flagged
       // standby clock, which redraws once per minute (GPU stays idle).
@@ -3014,6 +3052,7 @@
 
   function showVolumeHud(opts) {
     renderVolume(state.volume);
+    brightnessHud.classList.remove("visible");
     volumeHud.classList.add("visible");
     volumeHud.classList.toggle("pinned", !!(opts && opts.pinned));
     if (volHudTimer) clearTimeout(volHudTimer);
@@ -3043,6 +3082,189 @@
         } catch (e) { /* receiver offline — HUD still reflects intent */ }
       }, 150);
     }
+  }
+
+  // ── Backlight HUD + hardware control (three-finger vertical drag) ──
+  // Values here remain logical 0–100; the local API maps them onto the
+  // hardware-safe ceiling for the Pi's current 3A power supply.
+  const BRIGHT_ARC_R = 505;
+  const BRIGHT_A0 = 125, BRIGHT_A1 = 235; // bottom-left to top-left
+  const IDLE_BRIGHTNESS_PERCENT = 10;
+  const BRIGHTNESS_RETRY_DELAYS_MS = [250, 750, 1500];
+  let brightHudTimer = null;
+  let brightSendTimer = null;
+  let brightTimerKind = null;
+  let brightPendingIntent = null;
+  let brightSendInFlight = false;
+  let brightnessIntentRevision = 0;
+  let brightnessModeSyncPending = false;
+
+  function brightPoint(deg) {
+    const r = (deg * Math.PI) / 180;
+    return [540 + BRIGHT_ARC_R * Math.cos(r), 540 + BRIGHT_ARC_R * Math.sin(r)];
+  }
+
+  function brightArcPath(a0, a1) {
+    const [x0, y0] = brightPoint(a0), [x1, y1] = brightPoint(a1);
+    return `M ${x0.toFixed(1)} ${y0.toFixed(1)} A ${BRIGHT_ARC_R} ${BRIGHT_ARC_R} 0 0 1 ${x1.toFixed(1)} ${y1.toFixed(1)}`;
+  }
+
+  function renderBrightness(pct) {
+    pct = Math.max(0, Math.min(100, Number(pct) || 0));
+    const a = BRIGHT_A0 + (pct / 100) * (BRIGHT_A1 - BRIGHT_A0);
+    brightFill.setAttribute("d", brightArcPath(BRIGHT_A0, a));
+    const [kx, ky] = brightPoint(a);
+    brightKnob.setAttribute("cx", kx.toFixed(1));
+    brightKnob.setAttribute("cy", ky.toFixed(1));
+    brightLabel.textContent = String(Math.round(pct));
+  }
+
+  function showBrightnessHud() {
+    renderBrightness(state.brightness);
+    volumeHud.classList.remove("visible", "pinned");
+    brightnessHud.classList.add("visible");
+    if (brightHudTimer) clearTimeout(brightHudTimer);
+    brightHudTimer = setTimeout(() => brightnessHud.classList.remove("visible"), 2600);
+  }
+
+  function logicalBrightnessFrom(data) {
+    if (!data || typeof data !== "object") return null;
+    for (const value of [data.desired_percent, data.percent, data.logical_percent, data.brightness]) {
+      if (value === null || value === undefined || value === "") continue;
+      const number = Number(value);
+      if (Number.isFinite(number)) return Math.max(0, Math.min(100, number));
+    }
+    return null;
+  }
+
+  function armBrightnessSend(delay, kind) {
+    brightTimerKind = kind;
+    brightSendTimer = setTimeout(flushBrightnessSend, delay);
+  }
+
+  function scheduleBrightnessCommand(command, immediate) {
+    brightPendingIntent = {
+      command,
+      revision: ++brightnessIntentRevision,
+      retryCount: 0,
+    };
+    if (brightSendInFlight) return;
+    if (brightSendTimer) {
+      if (!immediate && brightTimerKind !== "retry") return;
+      clearTimeout(brightSendTimer);
+      brightSendTimer = null;
+      brightTimerKind = null;
+    }
+    armBrightnessSend(immediate ? 0 : 150, "normal");
+  }
+
+  function scheduleBrightnessSend(pct, immediate) {
+    scheduleBrightnessCommand({
+      percent: Math.round(Math.max(0, Math.min(100, pct))),
+    }, immediate);
+  }
+
+  function scheduleBrightnessMode(mode, immediate) {
+    scheduleBrightnessCommand({ mode }, immediate);
+  }
+
+  async function flushBrightnessSend() {
+    brightSendTimer = null;
+    brightTimerKind = null;
+    if (brightSendInFlight || brightPendingIntent === null) return;
+    const intent = brightPendingIntent;
+    brightPendingIntent = null;
+    brightSendInFlight = true;
+    let retryDelay = null;
+    try {
+      const response = await fetch("/api/backlight", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(intent.command),
+      });
+      if (!response.ok) {
+        const error = new Error("backlight request failed: " + response.status);
+        error.retryable = response.status === 408 || response.status === 425 ||
+          response.status === 429 || response.status >= 500;
+        throw error;
+      }
+      let data = null;
+      try { data = await response.json(); } catch (e) { /* a 204 is valid */ }
+      const accepted = logicalBrightnessFrom(data);
+      if (accepted !== null && brightPendingIntent === null &&
+          intent.revision === brightnessIntentRevision) {
+        const command = intent.command;
+        const requestedPercent = Number(command.percent);
+        const modeMatchesScreen = !command.mode ||
+          command.mode === (screenDimmed ? "idle" : "active");
+        const responseMatches = modeMatchesScreen && (command.mode ||
+          (Number.isFinite(requestedPercent) && Math.abs(state.brightness - requestedPercent) < 0.51));
+        if (responseMatches) {
+          state.brightness = accepted;
+          if (!screenDimmed && command.mode !== "idle") state.activeBrightness = accepted;
+          renderBrightness(accepted);
+        }
+      }
+    } catch (error) {
+      console.warn("Backlight control unavailable:", error);
+      const stillCurrent = intent.revision === brightnessIntentRevision &&
+        brightPendingIntent === null;
+      if (error.retryable !== false && stillCurrent &&
+          intent.retryCount < BRIGHTNESS_RETRY_DELAYS_MS.length) {
+        retryDelay = BRIGHTNESS_RETRY_DELAYS_MS[intent.retryCount];
+        intent.retryCount++;
+        brightPendingIntent = intent;
+      }
+    } finally {
+      brightSendInFlight = false;
+      if (brightPendingIntent !== null) {
+        const retryingSameIntent = brightPendingIntent === intent && retryDelay !== null;
+        armBrightnessSend(retryingSameIntent ? retryDelay : 0,
+          retryingSameIntent ? "retry" : "normal");
+      }
+    }
+  }
+
+  function setBrightness(pct, { rememberActive = true, immediate = false } = {}) {
+    pct = Math.max(0, Math.min(100, pct));
+    state.brightness = pct;
+    if (rememberActive && !screenDimmed) state.activeBrightness = pct;
+    renderBrightness(pct);
+    scheduleBrightnessSend(pct, immediate);
+  }
+
+  function syncScreenBrightness() {
+    if (brightnessGesture) {
+      brightnessModeSyncPending = true;
+      return;
+    }
+    brightnessModeSyncPending = false;
+    state.brightness = screenDimmed ? IDLE_BRIGHTNESS_PERCENT : state.activeBrightness;
+    renderBrightness(state.brightness);
+    scheduleBrightnessMode(screenDimmed ? "idle" : "active", true);
+  }
+
+  async function fetchBrightnessState() {
+    if (brightSendInFlight || brightPendingIntent !== null || brightnessGesture) return;
+    const intentAtStart = brightnessIntentRevision;
+    try {
+      const response = await fetch("/api/backlight", { cache: "no-store" });
+      if (!response.ok) return;
+      const data = await response.json();
+      if (intentAtStart !== brightnessIntentRevision || brightSendInFlight ||
+          brightPendingIntent !== null || brightnessGesture) return;
+      const logical = logicalBrightnessFrom(data);
+      if (logical === null) return;
+      state.brightness = logical;
+      const reportedActive = Number(data.active_percent);
+      if (data.active_percent != null && Number.isFinite(reportedActive)) {
+        state.activeBrightness = Math.max(0, Math.min(100, reportedActive));
+      } else if (!screenDimmed) {
+        state.activeBrightness = logical;
+      }
+      renderBrightness(logical);
+      if (!screenDimmed && data.mode === "idle") syncScreenBrightness();
+    } catch (e) { /* helper may still be starting */ }
   }
 
   // Pinned HUD: drag anywhere along the right rim to set volume directly.
@@ -3274,6 +3496,12 @@
   const SWIPE_VERTICAL_RATIO = 0.55;
   const SWIPE_MIN_VELOCITY = 0.25;
 
+  viewport.addEventListener("click", e => {
+    if (performance.now() >= suppressTapUntil) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }, true);
+
   function swipeThreshold() {
     return Math.max(96, viewport.clientWidth * 0.1);
   }
@@ -3309,19 +3537,25 @@
   }
 
   // ── Multi-touch gesture engine ──
-  // The panel reports 10 touch points; we use two:
+  // Two fingers retain the player gestures; a third promotes the interaction
+  // exclusively to hardware backlight control.
   //   twist        → scrub (1 turn = 60s), the platter rotates under your fingers
   //   vertical drag→ volume fader
   //   two-finger tap → play/pause
   //   pinch in     → minimize to the shelf (browse mode)
   //   pinch out    → pin the volume HUD open
+  //   three-finger vertical drag → display backlight
   const activePointers = new Map(); // pointerId -> {x, y}
   let mtGesture = null;
+  let brightnessGesture = null;
+  let multiTouchDrain = false;
 
   const TWIST_SECONDS_PER_TURN = 60;
   const MT_TAP_MAX_MS = 300;
   const MT_TAP_MAX_MOVE = 18;
   const PINCH_COMMIT_PX = 90;
+  const BRIGHTNESS_START_PX = 32;
+  const BRIGHTNESS_FULL_SCALE_PX = 620;
 
   function currentProgressMs() {
     let p = state.progressMs;
@@ -3338,6 +3572,10 @@
       angle: (Math.atan2(dy, dx) * 180) / Math.PI,
       cy: (a.y + b.y) / 2,
     };
+  }
+
+  function pointerCentroidY(ids) {
+    return ids.reduce((sum, id) => sum + activePointers.get(id).y, 0) / ids.length;
   }
 
   function cancelSwipe() {
@@ -3367,6 +3605,7 @@
       seekBase: currentProgressMs(),
       seekPreview: null,
       volBase: state.volume,
+      angleBase: currentAngle,
       startPts: ids.map(id => ({ ...activePointers.get(id) })),
     };
   }
@@ -3457,9 +3696,101 @@
     mtGesture = null;
   }
 
+  function abortMtGesture() {
+    if (!mtGesture) return false;
+    if (mtGesture.mode === "twist") currentAngle = mtGesture.angleBase;
+    if (mtGesture.mode === "vdrag") setVolume(mtGesture.volBase);
+    hideGestureChip(0);
+    platter.classList.remove("no-transition");
+    platter.style.transform = "";
+    suppressTapUntil = performance.now() + 350;
+    mtGesture = null;
+    return true;
+  }
+
+  function startBrightnessGesture() {
+    const ids = [...activePointers.keys()].slice(0, 3);
+    if (ids.length !== 3) return;
+    abortMtGesture();
+    cancelSwipe();
+    if (volHudTimer) clearTimeout(volHudTimer);
+    volumeHud.classList.remove("visible", "pinned");
+
+    if (crateDrag) {
+      crateDrag = null;
+      const max = crateMaxScroll();
+      crateTarget = Math.min(max, Math.max(0,
+        Math.round(crateScroll / CRATE_SPACING) * CRATE_SPACING));
+    }
+    if (state.tracklisting) {
+      tlPts.clear();
+      tlScroll = null;
+      tlPinch = null;
+      tlDragMoved = true;
+      cancelAnimationFrame(tlSnapRaf);
+    }
+
+    brightnessGesture = {
+      ids,
+      cy0: pointerCentroidY(ids),
+      base: state.brightness,
+      started: false,
+      moved: new Set(),
+      startPts: ids.map(id => ({ ...activePointers.get(id) })),
+    };
+    suppressTapUntil = performance.now() + 700;
+  }
+
+  function processBrightnessGesture(e) {
+    const gesture = brightnessGesture;
+    for (let i = 0; i < gesture.ids.length; i++) {
+      const start = gesture.startPts[i];
+      const current = activePointers.get(gesture.ids[i]);
+      if (Math.hypot(current.x - start.x, current.y - start.y) > 4) {
+        gesture.moved.add(gesture.ids[i]);
+      }
+    }
+    const dCy = pointerCentroidY(gesture.ids) - gesture.cy0;
+    if (!gesture.started && gesture.moved.size === 3 &&
+        Math.abs(dCy) >= BRIGHTNESS_START_PX) {
+      gesture.started = true;
+    }
+    if (gesture.started) {
+      setBrightness(gesture.base + (-dCy / BRIGHTNESS_FULL_SCALE_PX) * 100);
+      showBrightnessHud();
+    }
+    e.preventDefault();
+  }
+
+  function finishBrightnessGesture(aborted) {
+    if (!brightnessGesture) return false;
+    const gesture = brightnessGesture;
+    const changed = gesture.started;
+    brightnessGesture = null;
+    if (changed && aborted) {
+      setBrightness(gesture.base, { rememberActive: true, immediate: true });
+    } else if (changed) {
+      scheduleBrightnessSend(state.brightness, true);
+    }
+    if (aborted) brightnessHud.classList.remove("visible");
+    suppressTapUntil = performance.now() + 700;
+    if (state.tracklisting) {
+      tlSnap();
+      setTimeout(() => { if (!tlScroll) tlDragMoved = false; }, 750);
+    }
+    if (brightnessModeSyncPending) syncScreenBrightness();
+    return true;
+  }
+
   viewport.addEventListener("pointerdown", e => {
     lastInteractionAt = performance.now(); // wakes the retired skip arrows
     activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (multiTouchDrain || brightnessGesture) return;
+    if (activePointers.size === 3) {
+      startBrightnessGesture();
+      e.preventDefault();
+      return;
+    }
     if (state.browsing) return; // browse mode: sleeve taps + mini-disc only
     if (state.tracklisting) return; // tracklist open: picker scroll + gutter taps only
 
@@ -3481,6 +3812,14 @@
   viewport.addEventListener("pointermove", e => {
     const p = activePointers.get(e.pointerId);
     if (p) { p.x = e.clientX; p.y = e.clientY; }
+
+    if (brightnessGesture) {
+      if (brightnessGesture.ids.includes(e.pointerId)
+          && brightnessGesture.ids.every(id => activePointers.has(id))) {
+        processBrightnessGesture(e);
+      }
+      return;
+    }
 
     if (mtGesture) {
       if (mtGesture.ids.includes(e.pointerId)
@@ -3512,10 +3851,17 @@
   function releasePointer(e) {
     activePointers.delete(e.pointerId);
 
-    if (mtGesture && mtGesture.ids.includes(e.pointerId)) {
-      finalizeMtGesture();
+    if (brightnessGesture && brightnessGesture.ids.includes(e.pointerId)) {
+      finishBrightnessGesture(false);
+      multiTouchDrain = activePointers.size > 0;
       return true;
     }
+    if (mtGesture && mtGesture.ids.includes(e.pointerId)) {
+      finalizeMtGesture();
+      multiTouchDrain = activePointers.size > 0;
+      return true;
+    }
+    if (activePointers.size === 0) multiTouchDrain = false;
     return false;
   }
 
@@ -3563,9 +3909,31 @@
   }, { passive: false });
 
   viewport.addEventListener("pointercancel", e => {
-    if (releasePointer(e)) return;
-    if (!swipeGesture || e.pointerId !== swipeGesture.pointerId) return;
-    cancelSwipe();
+    activePointers.delete(e.pointerId);
+    if (brightnessGesture && brightnessGesture.ids.includes(e.pointerId)) {
+      finishBrightnessGesture(true);
+      multiTouchDrain = activePointers.size > 0;
+      return;
+    }
+    if (mtGesture && mtGesture.ids.includes(e.pointerId)) {
+      abortMtGesture();
+      multiTouchDrain = activePointers.size > 0;
+      return;
+    }
+    if (swipeGesture && e.pointerId === swipeGesture.pointerId) cancelSwipe();
+    if (activePointers.size === 0) multiTouchDrain = false;
+  });
+  viewport.addEventListener("lostpointercapture", e => {
+    activePointers.delete(e.pointerId);
+    if (brightnessGesture && brightnessGesture.ids.includes(e.pointerId)) {
+      finishBrightnessGesture(true);
+      multiTouchDrain = activePointers.size > 0;
+    } else if (mtGesture && mtGesture.ids.includes(e.pointerId)) {
+      abortMtGesture();
+      multiTouchDrain = activePointers.size > 0;
+    }
+    if (swipeGesture && e.pointerId === swipeGesture.pointerId) cancelSwipe();
+    if (activePointers.size === 0) multiTouchDrain = false;
   });
 
   // ── Wake from screen dim ──
@@ -3574,15 +3942,46 @@
   // (animate() then drops .dim, restoring pointer-events:none) and stop the
   // event so nothing underneath is activated. Touch pointers implicitly
   // capture to the dimmer, so the matching pointerup/click can't leak either.
+  const wakeContactPointers = new Set();
+  let wakeDrainReleaseTimer = null;
+
   function wakeScreen(e) {
     e.stopPropagation();
     e.preventDefault();
+    if (wakeDrainReleaseTimer) clearTimeout(wakeDrainReleaseTimer);
+    wakeDrainReleaseTimer = null;
+    wakeContactPointers.add(e.pointerId);
+    dimmer.classList.add("wake-drain");
     pausedSince = performance.now();
+    setScreenDimmed(false);
     suppressTapUntil = performance.now() + 650; // belt & braces vs stray clicks
   }
+
+  function finishWakeContact(e) {
+    e.stopPropagation();
+    e.preventDefault();
+    wakeContactPointers.delete(e.pointerId);
+    if (wakeContactPointers.size) return;
+    if (wakeDrainReleaseTimer) clearTimeout(wakeDrainReleaseTimer);
+    wakeDrainReleaseTimer = setTimeout(() => {
+      wakeDrainReleaseTimer = null;
+      if (!wakeContactPointers.size) dimmer.classList.remove("wake-drain");
+    }, 0);
+  }
+
+  function clearWakeContactDrain() {
+    if (wakeDrainReleaseTimer) clearTimeout(wakeDrainReleaseTimer);
+    wakeDrainReleaseTimer = null;
+    wakeContactPointers.clear();
+    dimmer.classList.remove("wake-drain");
+  }
+
   dimmer.addEventListener("pointerdown", wakeScreen);
-  dimmer.addEventListener("pointerup", e => { e.stopPropagation(); e.preventDefault(); });
+  dimmer.addEventListener("pointerup", finishWakeContact);
+  dimmer.addEventListener("pointercancel", finishWakeContact);
+  dimmer.addEventListener("lostpointercapture", finishWakeContact);
   dimmer.addEventListener("click", e => { e.stopPropagation(); e.preventDefault(); });
+  window.addEventListener("blur", clearWakeContactDrain);
 
   // ── Prevent all image/element dragging ──
   document.addEventListener("dragstart", e => e.preventDefault());
@@ -3822,6 +4221,10 @@
   volTrack.setAttribute("d", volArcPath(VOL_A0, VOL_A1));
   $("vol-backing").setAttribute("d", volArcPath(VOL_A0, VOL_A1));
   renderVolume(state.volume);
+  brightTrack.setAttribute("d", brightArcPath(BRIGHT_A0, BRIGHT_A1));
+  $("bright-backing").setAttribute("d", brightArcPath(BRIGHT_A0, BRIGHT_A1));
+  renderBrightness(state.brightness);
+  fetchBrightnessState();
   // Warm the crate so the first pinch-in shows records instantly.
   fetch("/api/crate").then(r => (r.ok ? r.json() : null)).then(d => {
     if (d && d.sections && d.sections.length && !crateData) {
