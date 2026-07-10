@@ -41,6 +41,8 @@ numbers, so audit remediation is recorded under `Unreleased`.
   move and unpinned packages cannot survive an install.
 - Preserves go-librespot's authenticated `state.json` as well as its newer
   optional `credentials.json` during a staged receiver upgrade.
+- Treats both the legacy single-device `wled.host` shape and the newer device
+  list as configured when selecting boot/cutover activation.
 - Prevented setup from stopping the running legacy receiver or deleting the
   running system-kiosk unit before the controlled cutover.
 - Added a staged installer mode that preserves boot service selection,

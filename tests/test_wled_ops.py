@@ -291,6 +291,9 @@ def test_setup_staged_install_preserves_service_and_host_policy_state():
     source = (ROOT / "setup.sh").read_text()
     assert 'STAGED_INSTALL="${STAGED_INSTALL:-0}"' in source
     assert 'case "$STAGED_INSTALL" in 0|1)' in source
+    assert "WLED_CONFIGURED_QUERY=" in source
+    assert '.wled.devices // []' in source
+    assert '.wled.host // ""' in source
 
     service_start = source.index(
         'if [ "$STAGED_INSTALL" = "1" ]; then\n'
@@ -301,6 +304,7 @@ def test_setup_staged_install_preserves_service_and_host_policy_state():
         "sudo systemctl disable spotify-kiosk.service",
         "sudo systemctl disable raspotify.service",
         "sudo systemctl enable go-librespot",
+        "sudo systemctl enable spotify-wled",
         "sudo systemctl enable spotify-buttons",
         "sudo systemctl disable spotify-buttons",
     ):

@@ -249,7 +249,11 @@ render_service "$PROJECT_DIR/tmpfiles.d/spotify-display.conf" \
     "/etc/tmpfiles.d/spotify-display.conf"
 sudo systemd-tmpfiles --create /etc/tmpfiles.d/spotify-display.conf
 sudo systemctl daemon-reload
-if ! jq -e '.wled.enabled == true' "$CONFIG" >/dev/null; then
+WLED_CONFIGURED_QUERY='.wled.enabled == true and (
+    (((.wled.devices // []) | type) == "array" and ((.wled.devices // []) | length) > 0)
+    or (((.wled.host // "") | type) == "string" and ((.wled.host // "") | length) > 0)
+)'
+if ! jq -e "$WLED_CONFIGURED_QUERY" "$CONFIG" >/dev/null; then
     warn "WLED renderer is dormant; the config path unit activates it after kiosk setup."
 fi
 if [ "$STAGED_INSTALL" = "1" ]; then
@@ -268,7 +272,12 @@ else
         sudo systemctl disable raspotify.service || true
     fi
     sudo systemctl enable go-librespot spotify-display spotify-network-watchdog \
-        spotify-wled spotify-wled.path
+        spotify-wled.path
+    if jq -e "$WLED_CONFIGURED_QUERY" "$CONFIG" >/dev/null; then
+        sudo systemctl enable spotify-wled
+    else
+        sudo systemctl disable spotify-wled >/dev/null 2>&1 || true
+    fi
     if [ "$ENABLE_GPIO_BUTTONS" = "1" ]; then
         sudo systemctl enable spotify-buttons
     else

@@ -298,7 +298,10 @@ curl --retry 15 --retry-delay 1 --retry-connrefused \
   -fsS http://127.0.0.1:5000/api/health | jq
 
 sudo systemctl start spotify-wled.path
-if jq -e '.wled.enabled == true' config.json >/dev/null; then
+if jq -e '.wled.enabled == true and (
+    ((.wled.devices // []) | length > 0) or
+    ((.wled.host // "") | length > 0)
+  )' config.json >/dev/null; then
   sudo systemctl enable --now spotify-wled
 else
   sudo systemctl disable spotify-wled 2>/dev/null || true
