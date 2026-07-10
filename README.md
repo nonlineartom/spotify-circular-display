@@ -198,6 +198,10 @@ operator to provide the expected installer checksum.
 Read [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) before upgrading a running Pi; it
 contains staged rollout and rollback instructions.
 
+The audited 2026-07-10 Pi 5 rollout, reboot evidence, rollback events and
+remaining hands-on checks are recorded in
+[docs/LIVE_RELEASE_2026-07-10.md](docs/LIVE_RELEASE_2026-07-10.md).
+
 ## Services
 
 | Unit | Role |

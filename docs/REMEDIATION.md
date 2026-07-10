@@ -153,9 +153,10 @@ adversarial finding pass.
 | Idle dim layering, hardware idle target and first-input wake drain | Passed in browser fixture |
 | Browser console errors during tested scenarios | None |
 | Mock 200 → 503/error → 200 recovery smoke | Passed |
-| Read-only live-Pi health probe | Reachable and receiver healthy, but still serving the pre-remediation Werkzeug build and legacy `/tmp/spotify-state.json`; no mutation performed |
-| Target `systemd-analyze verify` with installed dependencies | Pending on Pi |
-| Physical HID, GPIO, WLED, HDMI/DPMS, audio, network recovery and thermals | Pending on Pi |
+| Live-Pi staged release and reboot | Passed at runtime commit `a575359`; Waitress, receiver, watchdog, WLED and user kiosk returned cleanly |
+| Target `systemd-analyze verify` with installed dependencies | Passed for installed system and user units |
+| HID/backlight, WLED configuration, reboot network acquisition and thermals | Passed; `0712:000a`, controlled 8%↔80% physical ramp, one legacy strip, `0x0` throttling and no relevant warnings |
+| Physical touch/audio/GPIO, real playback/WLED transition, router outage and 30-minute soak | Operator acceptance remains; see `LIVE_RELEASE_2026-07-10.md` |
 
 ## File-by-file implementation inventory
 
@@ -193,9 +194,10 @@ adversarial finding pass.
 
 These are deliberately outside the completed repository remediation:
 
-- **Physical Pi acceptance and rollout.** SSH is now verified with the Pi's
-  dedicated identity. Production remains gated on the versioned backup,
-  candidate validation, controlled cutover and evidence in `DEPLOYMENT.md`.
+- **Hands-on acceptance.** The versioned live release, reboot and automated
+  hardware/service gates passed. Physical touch/audio, a real playback/WLED
+  transition, router outage and the long soak remain in
+  `LIVE_RELEASE_2026-07-10.md`.
 - **Backlight interface/power validation.** The `0712:000a` composite device may
   expose more than one hidraw interface. Confirm the selected interface and HID
   report on the actual panel, observe the 10% first-contact ramp, and measure

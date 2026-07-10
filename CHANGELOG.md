@@ -87,9 +87,10 @@ numbers, so audit remediation is recorded under `Unreleased`.
 ### Deployment note
 
 - Repository validation and deterministic 1080×1080 browser checks are complete.
-  SSH access to the Pi is verified with its dedicated identity. Physical Pi 5
-  HID/GPIO/WLED, systemd, GPU/thermal, HDMI/DPMS, network recovery and audio
-  acceptance remain required during the staged live rollout.
+  The staged Pi release and reboot passed service, HID backlight, WLED,
+  security, visual and thermal gates. Physical touch/audio, real playback,
+  GPIO, router-outage and long-soak checks remain explicitly recorded in
+  `docs/LIVE_RELEASE_2026-07-10.md`.
 
 Detailed issue mapping and verification evidence are in
 [`docs/REMEDIATION.md`](docs/REMEDIATION.md).
