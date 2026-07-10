@@ -33,6 +33,9 @@ numbers, so audit remediation is recorded under `Unreleased`.
   assumptions.
 - Corrected systemd single-path rendering so `WorkingDirectory` and path-unit
   directives pass target parsing while paths containing spaces remain valid.
+- Enabled graphical user services from `default.target` because Raspberry Pi OS
+  does not consistently activate `graphical-session.target`, preventing a
+  post-reboot kiosk outage.
 - Prevented setup from stopping the running legacy receiver or deleting the
   running system-kiosk unit before the controlled cutover.
 - Added a staged installer mode that preserves boot service selection,

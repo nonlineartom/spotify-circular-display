@@ -284,18 +284,21 @@ for service in spotify-kiosk spotify-pygame; do
     sudo install -o "$APP_USER" -g "$APP_PRIMARY_GROUP" -m 0644 \
         "$rendered" "$USER_SYSTEMD_DIR/${service}.service"
 done
+USER_WANTS_DIR="$USER_SYSTEMD_DIR/default.target.wants"
 sudo install -d -o "$APP_USER" -g "$APP_PRIMARY_GROUP" -m 0755 \
-    "$USER_SYSTEMD_DIR/graphical-session.target.wants"
+    "$USER_WANTS_DIR"
 if [ "$STAGED_INSTALL" = "1" ]; then
     warn "Staged install: graphical-session service links were preserved."
 else
     sudo -u "$APP_USER" rm -f \
+        "$USER_WANTS_DIR/spotify-kiosk.service" \
+        "$USER_WANTS_DIR/spotify-pygame.service" \
         "$USER_SYSTEMD_DIR/graphical-session.target.wants/spotify-kiosk.service" \
         "$USER_SYSTEMD_DIR/graphical-session.target.wants/spotify-pygame.service"
     USER_DISPLAY_SERVICE="spotify-kiosk.service"
     [ "$DISPLAY_BACKEND" = "pygame" ] && USER_DISPLAY_SERVICE="spotify-pygame.service"
     sudo -u "$APP_USER" ln -s "../$USER_DISPLAY_SERVICE" \
-        "$USER_SYSTEMD_DIR/graphical-session.target.wants/$USER_DISPLAY_SERVICE"
+        "$USER_WANTS_DIR/$USER_DISPLAY_SERVICE"
 fi
 APP_UID="$(id -u "$APP_USER")"
 sudo -u "$APP_USER" XDG_RUNTIME_DIR="/run/user/$APP_UID" \

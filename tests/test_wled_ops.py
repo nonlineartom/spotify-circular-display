@@ -173,6 +173,8 @@ def test_service_templates_render_without_tokens_or_graphical_cycle():
         assert "@DISPLAY_PORT@" not in rendered
         if path.name in {"spotify-kiosk.service", "spotify-pygame.service"}:
             assert "After=graphical-session.target" not in rendered
+            assert "PartOf=graphical-session.target" not in rendered
+            assert "WantedBy=default.target" in rendered
             assert 'ExecStart="/home/pi/My Display/' in rendered
     path_unit = (ROOT / "services" / "spotify-wled.path").read_text()
     path_unit = path_unit.replace(
@@ -313,8 +315,15 @@ def test_setup_staged_install_preserves_service_and_host_policy_state():
         "else\n"
         in graphical
     )
-    assert 'rm -f \\\n        "$USER_SYSTEMD_DIR/graphical-session.target.wants/' in graphical
+    assert 'USER_WANTS_DIR="$USER_SYSTEMD_DIR/default.target.wants"' in graphical
+    assert 'rm -f \\\n        "$USER_WANTS_DIR/spotify-kiosk.service"' in graphical
+    assert (
+        '"$USER_SYSTEMD_DIR/graphical-session.target.wants/'
+        'spotify-kiosk.service"'
+        in graphical
+    )
     assert 'ln -s "../$USER_DISPLAY_SERVICE"' in graphical
+    assert '"$USER_WANTS_DIR/$USER_DISPLAY_SERVICE"' in graphical
 
     wifi = source.split('step "Hardening Wi-Fi for unattended recovery"', 1)[1].split(
         'step "Applying display power policy"', 1

@@ -1,6 +1,5 @@
 [Unit]
 Description=Spotify Pi Display — lightweight pygame fallback
-PartOf=graphical-session.target
 Conflicts=spotify-kiosk.service
 StartLimitIntervalSec=120
 StartLimitBurst=5
@@ -18,4 +17,4 @@ Environment=SPOTIFY_DISPLAY_PAUSED_FPS=5
 Environment=SPOTIFY_DISPLAY_DIM_SECONDS=300
 
 [Install]
-WantedBy=graphical-session.target
+WantedBy=default.target

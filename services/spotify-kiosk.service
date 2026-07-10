@@ -1,6 +1,5 @@
 [Unit]
 Description=Spotify Pi Display — Chromium kiosk
-PartOf=graphical-session.target
 Conflicts=spotify-pygame.service
 StartLimitIntervalSec=120
 StartLimitBurst=5
@@ -15,4 +14,4 @@ Environment=DISPLAY_PORT=@DISPLAY_PORT@
 Environment=XDG_RUNTIME_DIR=%t
 
 [Install]
-WantedBy=graphical-session.target
+WantedBy=default.target

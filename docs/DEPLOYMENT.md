@@ -51,9 +51,10 @@ done
 [ ! -e /etc/udev/rules.d/70-spotify-display-backlight.rules ] || \
   sudo cp -a /etc/udev/rules.d/70-spotify-display-backlight.rules \
     "$BACKUP_DIR/host/"
-[ ! -d "$HOME/.config/systemd/user/graphical-session.target.wants" ] || \
-  cp -a "$HOME/.config/systemd/user/graphical-session.target.wants" \
-    "$BACKUP_DIR/user/"
+for wants_dir in default.target.wants graphical-session.target.wants; do
+  [ ! -d "$HOME/.config/systemd/user/$wants_dir" ] || \
+    cp -a "$HOME/.config/systemd/user/$wants_dir" "$BACKUP_DIR/user/"
+done
 for desktop_path in "$HOME/.config/labwc" "$HOME/.config/wayfire.ini" \
   "$HOME/.config/lxsession"; do
   [ ! -e "$desktop_path" ] || cp -a "$desktop_path" "$BACKUP_DIR/host/"
@@ -373,7 +374,8 @@ for unit in spotify-kiosk spotify-pygame; do
     cp -a "$BACKUP_DIR/user/$unit.service" "$HOME/.config/systemd/user/"
   else
     rm -f "$HOME/.config/systemd/user/$unit.service"
-    rm -f "$HOME/.config/systemd/user/graphical-session.target.wants/$unit.service"
+    rm -f "$HOME/.config/systemd/user/default.target.wants/$unit.service" \
+      "$HOME/.config/systemd/user/graphical-session.target.wants/$unit.service"
   fi
 done
 [ ! -x "$BACKUP_DIR/bin/go-librespot" ] || \
@@ -392,10 +394,12 @@ for item in \
   fi
 done
 for unit in spotify-kiosk spotify-pygame; do
-  rm -f "$HOME/.config/systemd/user/graphical-session.target.wants/$unit.service"
-  [ ! -e "$BACKUP_DIR/user/graphical-session.target.wants/$unit.service" ] || \
-    cp -a "$BACKUP_DIR/user/graphical-session.target.wants/$unit.service" \
-      "$HOME/.config/systemd/user/graphical-session.target.wants/"
+  for wants_dir in default.target.wants graphical-session.target.wants; do
+    rm -f "$HOME/.config/systemd/user/$wants_dir/$unit.service"
+    [ ! -e "$BACKUP_DIR/user/$wants_dir/$unit.service" ] || \
+      cp -a "$BACKUP_DIR/user/$wants_dir/$unit.service" \
+        "$HOME/.config/systemd/user/$wants_dir/"
+  done
 done
 
 sudo systemctl daemon-reload
