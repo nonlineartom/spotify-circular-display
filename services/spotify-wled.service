@@ -2,16 +2,33 @@
 Description=Spotify Pi Display — WLED ambient sync
 After=network-online.target spotify-display.service
 Wants=network-online.target spotify-display.service
-StartLimitIntervalSec=0
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
-User=admin
-WorkingDirectory=/home/admin/circle-pi-display
-ExecStart=/home/admin/circle-pi-display/venv/bin/python wled_sync.py
-Restart=always
+User=@APP_USER@
+Group=@APP_GROUP@
+WorkingDirectory="@PROJECT_DIR@"
+ExecStart="@PROJECT_DIR@/wled-launch.sh"
+Restart=on-failure
 RestartSec=5
+TimeoutStopSec=10
 Environment=PYTHONUNBUFFERED=1
+Environment=WLED_NOW_PLAYING_URL=http://127.0.0.1:@DISPLAY_PORT@/api/now-playing
+Environment=WLED_STATUS_FILE=/run/spotify-display/wled-status.json
+UMask=0007
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/run/spotify-display
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]
 WantedBy=multi-user.target

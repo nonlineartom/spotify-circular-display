@@ -9,26 +9,55 @@ Controls: the Pi's touch controls call the local Spotify Connect receiver API.
 The legacy Spotify Web API OAuth path is retained only as a fallback.
 """
 
+import base64
 import concurrent.futures
+import hashlib
+import hmac
 import ipaddress
 import json
+import math
 import os
+import re
+import secrets
+import shutil
 import socket
+import stat
 import threading
 import time
 import urllib.parse
+from collections import OrderedDict, deque
+from functools import wraps
+from tempfile import NamedTemporaryFile
+
 import requests
-from flask import Flask, request, render_template, jsonify, redirect
+from flask import (
+    Flask,
+    Response,
+    g,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    session,
+    stream_with_context,
+)
+
+from backlight import BacklightController
 
 app = Flask(__name__)
-app.secret_key = os.urandom(24)
+app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_REQUEST_BYTES", 64 * 1024))
+app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
 
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
-IDLE_PLAYLISTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "idle_playlists.json")
-RECENT_SPINS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recently_spun.json")
-IDLE_PLAYLISTS_EXAMPLE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "idle_playlists.example.json")
-STATE_FILE = "/tmp/spotify-state.json"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.environ.get("SPOTIFY_DISPLAY_CONFIG", os.path.join(BASE_DIR, "config.json"))
+IDLE_PLAYLISTS_FILE = os.path.join(BASE_DIR, "idle_playlists.json")
+RECENT_SPINS_FILE = os.path.join(BASE_DIR, "recently_spun.json")
+IDLE_PLAYLISTS_EXAMPLE_FILE = os.path.join(BASE_DIR, "idle_playlists.example.json")
+STATE_FILE = os.environ.get("SPOTIFY_STATE_FILE", "/run/spotify-display/spotify-state.json")
+LEGACY_STATE_FILE = "/tmp/spotify-state.json"
+WLED_STATUS_FILE = os.environ.get("WLED_STATUS_FILE", "/run/spotify-display/wled-status.json")
 GO_LIBRESPOT_API_BASE = os.environ.get("GO_LIBRESPOT_API_BASE", "http://127.0.0.1:3678").rstrip("/")
+SERVER_PORT = int(os.environ.get("DISPLAY_PORT") or os.environ.get("PORT", "5000"))
 
 SPOTIFY_AUTH_URL = "https://accounts.spotify.com/authorize"
 SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
@@ -56,43 +85,382 @@ _client_token = None
 _client_token_expiry = 0
 _user_token = None
 _user_token_expiry = 0
-_track_cache = {}  # track_id -> {name, artists, album, images, duration_ms}
+_user_token_grant_id = None
+class BoundedTTLCache:
+    """Small thread-safe LRU+TTL cache used for remote metadata.
+
+    The display runs for months at a time, so plain dictionaries keyed by every
+    track/album ever seen are not safe.  This intentionally implements only the
+    mapping operations used in this module.
+    """
+
+    def __init__(self, maxsize, ttl):
+        self.maxsize = maxsize
+        self.ttl = ttl
+        self._items = OrderedDict()
+        self._lock = threading.RLock()
+
+    def _purge(self):
+        now = time.time()
+        expired = [key for key, (deadline, _) in self._items.items() if deadline <= now]
+        for key in expired:
+            self._items.pop(key, None)
+
+    def set(self, key, value, ttl=None):
+        with self._lock:
+            self._items.pop(key, None)
+            self._items[key] = (time.time() + (self.ttl if ttl is None else ttl), value)
+            if len(self._items) > self.maxsize:
+                self._purge()
+            while len(self._items) > self.maxsize:
+                self._items.popitem(last=False)
+
+    def get(self, key, default=None):
+        with self._lock:
+            item = self._items.pop(key, None)
+            if item is None:
+                return default
+            if item[0] <= time.time():
+                return default
+            self._items[key] = item
+            return item[1]
+
+    def __contains__(self, key):
+        marker = object()
+        return self.get(key, marker) is not marker
+
+    def __getitem__(self, key):
+        marker = object()
+        value = self.get(key, marker)
+        if value is marker:
+            raise KeyError(key)
+        return value
+
+    def __setitem__(self, key, value):
+        self.set(key, value)
+
+    def clear(self):
+        with self._lock:
+            self._items.clear()
+
+    def pop(self, key, default=None):
+        with self._lock:
+            item = self._items.pop(key, None)
+            return default if item is None or item[0] <= time.time() else item[1]
+
+    def __len__(self):
+        with self._lock:
+            self._purge()
+            return len(self._items)
+
+
+_track_cache = BoundedTTLCache(2048, 12 * 60 * 60)
 _playlist_cache = {"loaded_at": 0, "items": []}
-_album_cache = {}  # album_id -> {"label": str}
-_album_tracks_cache = {}  # album_id -> [{number, disc, name, duration_ms, uri}]
-_uri_image_cache = {}   # spotify uri -> resolved cover art url
-_uri_image_failed = {}  # spotify uri -> wall time of last failed resolve
-_artist_albums_cache = {}  # artist_id -> [crate item dicts]
+_album_cache = BoundedTTLCache(1024, 12 * 60 * 60)
+_album_tracks_cache = BoundedTTLCache(512, 12 * 60 * 60)
+_uri_image_cache = BoundedTTLCache(1024, 24 * 60 * 60)
+_uri_image_failed = BoundedTTLCache(1024, 10 * 60)
+_artist_albums_cache = BoundedTTLCache(512, 6 * 60 * 60)
 _recent_spins = {"loaded": False, "items": []}  # newest first
 _recent_spins_lock = threading.Lock()
 _last_spin_album = None
 _crate_cache = {"built_at": 0, "payload": None}
-_crate_build_lock = threading.Lock()
+_crate_build_lock = threading.RLock()
+_crate_build_condition = threading.Condition(_crate_build_lock)
 _crate_building = False
-_enrich_inflight = set()  # track_ids with a background enrichment thread running
-_enrich_last_attempt = {}  # track_id -> wall time of last enrichment attempt
+_account_generation = 0
+_enrich_inflight = set()
+_enrich_last_attempt = BoundedTTLCache(2048, 10 * 60)
 _enrich_lock = threading.Lock()
+
+_config_lock = threading.RLock()
+_client_token_lock = threading.Lock()
+_user_token_lock = threading.RLock()
+
+_lyrics_cache = BoundedTTLCache(512, 24 * 60 * 60)
+_lyrics_failure_times = deque(maxlen=10)
+_lyrics_breaker_until = 0.0
+_lyrics_lock = threading.Lock()
+_lyrics_inflight = set()
+_pairing_tokens = BoundedTTLCache(32, 10 * 60)
+_kiosk_pairing = {"url": None, "digest": None, "expires_at": 0}
+_pairing_lock = threading.Lock()
+
+_started_at = time.time()
+_background_lock = threading.Lock()
+_background_started = False
+_background_components_started = set()
+_backlight_lock = threading.Lock()
+_backlight_controller = None
+_event_condition = threading.Condition()
+_event_monitor_started = False
+_event_version = 0
+_event_signal = {"version": 0, "active": False, "track_id": None, "is_playing": False}
+_event_clients = 0
+MAX_SSE_CLIENTS = max(1, min(int(os.environ.get("MAX_SSE_CLIENTS", "2")), 8))
 
 # WLED discovery cache: ip -> {"name": str, "ip": str, "port": int, "last_seen": float}
 _wled_devices = {}
 _wled_devices_lock = threading.Lock()
-WLED_DEVICE_TTL_SECONDS = 60
+WLED_DEVICE_TTL_SECONDS = 120
+_wled_scan_condition = threading.Condition()
+_wled_scan_state = {
+    "demand_until": 0.0,
+    "last_started": float("-inf"),
+    "running": False,
+    "worker_started": False,
+}
+MAX_CONFIG_BYTES = 1024 * 1024
+MAX_RUNTIME_STATE_BYTES = 64 * 1024
+
+
+class ConfigWriteRefused(RuntimeError):
+    """Raised when a write would overwrite an existing unreadable config."""
+
+    def __init__(self, state):
+        self.state = state
+        super().__init__(f"Configuration is {state}; refusing to replace it")
+
+
+def _atomic_write_json(path, payload, mode=0o600):
+    """Durably replace a JSON file without exposing a partially-written file."""
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    temp_path = None
+    try:
+        with NamedTemporaryFile("w", dir=directory, prefix=".tmp-", delete=False) as tmp:
+            temp_path = tmp.name
+            json.dump(payload, tmp, indent=2)
+            tmp.write("\n")
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.chmod(temp_path, mode)
+        os.replace(temp_path, path)
+        temp_path = None
+        try:
+            directory_fd = os.open(directory, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:
+            # Some filesystems (notably network shares) cannot fsync directories.
+            pass
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
+
+
+def _read_config_file():
+    """Return (mapping, status) without ever modifying the source bytes."""
+    try:
+        with open(CONFIG_FILE, "rb") as f:
+            raw = f.read(MAX_CONFIG_BYTES + 1)
+    except FileNotFoundError:
+        return {}, {"ok": True, "state": "missing", "writable": True}
+    except OSError:
+        return None, {"ok": False, "state": "unreadable", "writable": False}
+    if len(raw) > MAX_CONFIG_BYTES:
+        return None, {"ok": False, "state": "too_large", "writable": False}
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None, {"ok": False, "state": "malformed", "writable": False}
+    if not isinstance(data, dict):
+        return None, {"ok": False, "state": "wrong_type", "writable": False}
+    return data, {"ok": True, "state": "valid", "writable": True}
+
+
+def config_status():
+    with _config_lock:
+        _config, status = _read_config_file()
+        return dict(status)
+
+
+def _normalize_config(config):
+    """Return a type-safe copy while preserving unknown forward-compatible keys."""
+    normalized = dict(config) if isinstance(config, dict) else {}
+
+    for section_name in ("security", "spotify_session", "wled", "backlight"):
+        if section_name not in normalized:
+            continue
+        section = normalized[section_name]
+        normalized[section_name] = dict(section) if isinstance(section, dict) else {}
+
+    for key in (
+        "client_id",
+        "client_secret",
+        "refresh_token",
+        "public_base_url",
+        "redirect_uri",
+        "owner_token",
+        "legacy_web_api_device_id",
+    ):
+        if key in normalized and not isinstance(normalized[key], str):
+            normalized[key] = ""
+
+    security = normalized.get("security", {})
+    for key in ("session_secret", "owner_token"):
+        if key in security and not isinstance(security[key], str):
+            security[key] = ""
+
+    wled = normalized.get("wled", {})
+    if "devices" in wled and not isinstance(wled["devices"], list):
+        wled["devices"] = []
+    for key in ("host", "name"):
+        if key in wled and not isinstance(wled[key], str):
+            wled[key] = ""
+    if "enabled" in wled and not isinstance(wled["enabled"], bool):
+        wled["enabled"] = False
+
+    spotify_session = normalized.get("spotify_session", {})
+    if "kind" in spotify_session and spotify_session["kind"] not in ("guest", "owner"):
+        spotify_session["kind"] = "invalid"
+    for key in ("connected_at", "expires_at"):
+        value = spotify_session.get(key)
+        if value is not None and (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+        ):
+            spotify_session[key] = None
+
+    if (
+        "allow_web_api_control_fallback" in normalized
+        and not isinstance(normalized["allow_web_api_control_fallback"], bool)
+    ):
+        normalized["allow_web_api_control_fallback"] = False
+    guest_hours = normalized.get("guest_session_hours")
+    if guest_hours is not None and (
+        isinstance(guest_hours, bool)
+        or not isinstance(guest_hours, (int, float))
+        or not math.isfinite(float(guest_hours))
+    ):
+        normalized["guest_session_hours"] = 12
+    return normalized
 
 
 def load_config():
-    try:
-        with open(CONFIG_FILE, "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+    with _config_lock:
+        config, _status = _read_config_file()
+        return _normalize_config(config) if config is not None else {}
+
+
+def save_config(config):
+    if not isinstance(config, dict):
+        raise TypeError("config must be a dictionary")
+    with _config_lock:
+        _current, status = _read_config_file()
+        if not status["writable"]:
+            raise ConfigWriteRefused(status["state"])
+        _atomic_write_json(CONFIG_FILE, _normalize_config(config), mode=0o600)
+
+
+def update_config(mutator):
+    """Locked read-modify-write transaction; returns the mutator's result."""
+    with _config_lock:
+        config, status = _read_config_file()
+        if not status["writable"]:
+            raise ConfigWriteRefused(status["state"])
+        config = _normalize_config(config)
+        result = mutator(config)
+        _atomic_write_json(CONFIG_FILE, config, mode=0o600)
+        return result
+
+
+def _get_backlight_controller():
+    """Construct the HID controller lazily, without writing during import/tests."""
+    global _backlight_controller
+    if _backlight_controller is not None:
+        return _backlight_controller
+    with _backlight_lock:
+        if _backlight_controller is None:
+            config = load_config()
+            section = config.get("backlight") if isinstance(config.get("backlight"), dict) else {}
+
+            def number(name, default, whole=False):
+                try:
+                    value = float(section.get(name, default))
+                    if not math.isfinite(value):
+                        raise ValueError
+                except (TypeError, ValueError, OverflowError):
+                    value = float(default)
+                return int(round(value)) if whole else value
+
+            enabled = section.get("enabled", True)
+            if not isinstance(enabled, bool):
+                enabled = str(enabled).strip().lower() in ("1", "true", "yes", "on")
+            safe_section = {
+                "enabled": enabled,
+                "safe_max_percent": number("safe_max_percent", 80),
+                "initial_percent": number("initial_percent", 100, whole=True),
+                "idle_percent": number("idle_percent", 10, whole=True),
+                "ramp_interval_ms": number("ramp_interval_ms", 150),
+                "retry_interval_seconds": number("retry_interval_seconds", 2),
+            }
+            _backlight_controller = BacklightController.from_application_config({"backlight": safe_section})
+        return _backlight_controller
+
+
+def _configure_session_secret():
+    configured = os.environ.get("FLASK_SECRET_KEY")
+    if configured:
+        app.secret_key = configured
+        return
+
+    with _config_lock:
+        config, status = _read_config_file()
+    if not status["writable"]:
+        # Keep serving enough diagnostics to repair the file, but never turn
+        # malformed credentials into a fresh partial config on import.
+        app.secret_key = secrets.token_urlsafe(48)
+        print(f"Configuration is {status['state']}; using an ephemeral session secret")
+        return
+    config = _normalize_config(config)
+    security = config.get("security") if isinstance(config.get("security"), dict) else {}
+    configured = security.get("session_secret")
+    if not configured:
+        configured = secrets.token_urlsafe(48)
+
+        def store_secret(latest):
+            latest_security = latest.get("security")
+            if not isinstance(latest_security, dict):
+                latest_security = {}
+            # Another thread/process may have populated it since the first read.
+            latest_security.setdefault("session_secret", configured)
+            latest["security"] = latest_security
+
+        update_config(store_secret)
+        configured = (load_config().get("security") or {}).get("session_secret", configured)
+    app.secret_key = configured
+
+
+def _configure_cookie_security():
+    explicit = os.environ.get("SESSION_COOKIE_SECURE")
+    if explicit is not None:
+        app.config["SESSION_COOKIE_SECURE"] = explicit.lower() in ("1", "true", "yes", "on")
+        return
+    config = load_config()
+    public_url = os.environ.get("PUBLIC_BASE_URL") or config.get("public_base_url") or ""
+    # A redirect URI alone says nothing about the origin serving the session
+    # cookie. Only the canonical public base (or an explicit override) may
+    # enable Secure cookies.
+    app.config["SESSION_COOKIE_SECURE"] = str(public_url).lower().startswith("https://")
+
+
+_configure_session_secret()
+_configure_cookie_security()
 
 
 def resolve_uri_image(uri):
     """Best-effort cover art for a spotify:{type}:{id} URI via client credentials.
 
     Lets idle_playlists.json entries omit the manual "image" field — the kiosk
-    shelf still gets real sleeves. Successes cache forever; failures back off
-    for 10 minutes.
+    shelf still gets real sleeves. Successes cache for 24 hours; failures back
+    off for 10 minutes.
     """
     if uri in _uri_image_cache:
         return _uri_image_cache[uri]
@@ -149,21 +517,31 @@ def load_idle_playlists():
     try:
         with open(source, "r") as f:
             data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
         data = {"playlists": []}
+    if not isinstance(data, dict):
+        data = {"playlists": []}
+    raw_playlists = data.get("playlists")
+    if not isinstance(raw_playlists, list):
+        raw_playlists = []
 
     playlists = []
-    for idx, item in enumerate(data.get("playlists", [])):
-        uri = item.get("uri", "")
-        if not uri.startswith("spotify:"):
+    for idx, item in enumerate(raw_playlists):
+        if not isinstance(item, dict):
             continue
+        uri = item.get("uri", "")
+        if not isinstance(uri, str) or not uri.startswith("spotify:"):
+            continue
+        image = item.get("image", "")
+        if not isinstance(image, str):
+            image = ""
         playlists.append({
             "id": f"house-{idx}",
-            "title": item.get("title", "Playlist"),
-            "subtitle": item.get("subtitle", "House pick"),
+            "title": item.get("title") if isinstance(item.get("title"), str) else "Playlist",
+            "subtitle": item.get("subtitle") if isinstance(item.get("subtitle"), str) else "House pick",
             "uri": uri,
-            "image": item.get("image", "") or resolve_uri_image(uri),
-            "accent": item.get("accent", "#ffffff"),
+            "image": image or resolve_uri_image(uri),
+            "accent": item.get("accent") if isinstance(item.get("accent"), str) else "#ffffff",
         })
 
     _playlist_cache = {"loaded_at": time.time(), "items": playlists}
@@ -178,33 +556,35 @@ def get_client_token():
     """
     global _client_token, _client_token_expiry
 
-    if _client_token and _client_token_expiry > time.time() + 60:
-        return _client_token
+    with _client_token_lock:
+        if _client_token and _client_token_expiry > time.time() + 60:
+            return _client_token
 
-    config = load_config()
-    client_id = config.get("client_id", "")
-    client_secret = config.get("client_secret", "")
-
-    if not client_id or not client_secret:
-        return None
-
-    try:
-        resp = requests.post(SPOTIFY_TOKEN_URL, data={
-            "grant_type": "client_credentials",
-        }, auth=(client_id, client_secret), timeout=5)
-
-        if resp.status_code != 200:
-            print(f"Client credentials error: {resp.status_code} {resp.text}")
+        config = load_config()
+        client_id = config.get("client_id", "")
+        client_secret = config.get("client_secret", "")
+        if not client_id or not client_secret:
             return None
 
-        data = resp.json()
-        _client_token = data["access_token"]
-        _client_token_expiry = time.time() + data.get("expires_in", 3600)
-        return _client_token
-
-    except Exception as e:
-        print(f"Client credentials request failed: {e}")
-        return None
+        try:
+            resp = requests.post(SPOTIFY_TOKEN_URL, data={
+                "grant_type": "client_credentials",
+            }, auth=(client_id, client_secret), timeout=5)
+            if resp.status_code != 200:
+                print(f"Client credentials error: {resp.status_code}")
+                return None
+            data = resp.json()
+            if not isinstance(data, dict):
+                return None
+            access_token = data.get("access_token")
+            if not isinstance(access_token, str) or not access_token:
+                return None
+            _client_token = access_token
+            _client_token_expiry = time.time() + _token_lifetime(data.get("expires_in"))
+            return _client_token
+        except (requests.RequestException, KeyError, TypeError, ValueError) as e:
+            print(f"Client credentials request failed: {e}")
+            return None
 
 
 def lookup_track(track_id):
@@ -246,6 +626,7 @@ def lookup_track(track_id):
                 # the procedural record label.
                 "album_type": data.get("album", {}).get("album_type", ""),
                 "release_date": data.get("album", {}).get("release_date", ""),
+                "total_tracks": data.get("album", {}).get("total_tracks", 0),
             },
         }
         _track_cache[track_id] = track_info
@@ -259,8 +640,7 @@ def lookup_track(track_id):
 def lookup_album(album_id):
     """Look up album-level metadata (record label) via client credentials.
 
-    Cached forever by album_id; failures cache an empty dict so we don't
-    hammer the API for albums it can't serve.
+    Successful results use a bounded 12-hour cache; failures retry after 90s.
     """
     if not album_id:
         return None
@@ -279,7 +659,7 @@ def lookup_album(album_id):
         )
         if resp.status_code != 200:
             print(f"Album lookup error for {album_id}: {resp.status_code}")
-            _album_cache[album_id] = {}
+            _album_cache.set(album_id, {}, ttl=90)
             return None
         info = {"label": resp.json().get("label", "")}
         _album_cache[album_id] = info
@@ -293,8 +673,8 @@ def lookup_album_tracks(album_id):
     """Full tracklist for an album via client credentials (no user login).
 
     Returns a list of {number, disc, name, duration_ms, uri}, ordered as on the
-    record. Cached forever by album_id; a transient failure returns [] without
-    caching so a later request can retry.
+    record. Successful results use a bounded 12-hour cache; transient failures
+    return [] without caching so a later request can retry.
     """
     if not album_id:
         return []
@@ -307,13 +687,15 @@ def lookup_album_tracks(album_id):
 
     tracks = []
     url = f"{SPOTIFY_API_BASE}/albums/{album_id}/tracks"
-    params = {"limit": 50}
+    offset = 0
     try:
-        # Spotify paginates at 50; walk `next` so long box sets are complete.
-        while url:
+        # Use our own fixed-origin offsets rather than following the upstream
+        # `next` URL with an Authorization header. This keeps the bearer token
+        # on api.spotify.com and bounds even a malformed pagination loop.
+        for _page in range(10):
             resp = requests.get(
                 url,
-                params=params,
+                params={"limit": 50, "offset": offset},
                 headers={"Authorization": f"Bearer {token}"},
                 timeout=5,
             )
@@ -321,9 +703,14 @@ def lookup_album_tracks(album_id):
                 print(f"Album tracks error for {album_id}: {resp.status_code}")
                 return []
             data = resp.json()
-            for t in data.get("items", []):
-                uri = t.get("uri", "")
-                if not uri:
+            if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+                return []
+            page_items = data["items"]
+            for t in page_items:
+                if not isinstance(t, dict):
+                    continue
+                uri = t.get("uri") if isinstance(t.get("uri"), str) else ""
+                if not uri.startswith("spotify:track:"):
                     continue
                 tracks.append({
                     "number": t.get("track_number", len(tracks) + 1),
@@ -332,9 +719,11 @@ def lookup_album_tracks(album_id):
                     "duration_ms": t.get("duration_ms", 0),
                     "uri": uri,
                 })
-            url = data.get("next")
-            params = None  # `next` already carries offset/limit
-    except requests.RequestException as e:
+            next_url = data.get("next")
+            if not isinstance(next_url, str) or not next_url or len(page_items) < 50:
+                break
+            offset += len(page_items)
+    except (requests.RequestException, TypeError, ValueError) as e:
         print(f"Album tracks fetch failed for {album_id}: {e}")
         return []
 
@@ -349,7 +738,11 @@ def current_album_id():
     tracklist + play-track endpoints to the record actually on the platter.
     """
     state = read_playback_state()
-    track_id = ((state or {}).get("item") or {}).get("id")
+    item = (state or {}).get("item") or {}
+    direct = (item.get("album") or {}).get("id")
+    if direct:
+        return direct
+    track_id = item.get("id")
     cached = _track_cache.get(track_id) if track_id else None
     return ((cached or {}).get("album") or {}).get("id")
 
@@ -389,9 +782,28 @@ def _load_recent_spins():
             return
         try:
             with open(RECENT_SPINS_FILE, "r") as f:
-                _recent_spins["items"] = json.load(f).get("items", [])
-        except (FileNotFoundError, json.JSONDecodeError):
-            _recent_spins["items"] = []
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            data = {}
+        raw_items = data.get("items") if isinstance(data, dict) else []
+        if not isinstance(raw_items, list):
+            raw_items = []
+        items = []
+        for entry in raw_items:
+            if not isinstance(entry, dict):
+                continue
+            uri = entry.get("uri")
+            if not isinstance(uri, str) or not uri.startswith("spotify:"):
+                continue
+            safe = dict(entry)
+            safe["uri"] = uri
+            artist_ids = safe.get("artist_ids")
+            safe["artist_ids"] = (
+                [artist_id for artist_id in artist_ids if isinstance(artist_id, str) and artist_id]
+                if isinstance(artist_ids, list) else []
+            )
+            items.append(safe)
+        _recent_spins["items"] = items[:40]
         _recent_spins["loaded"] = True
 
 
@@ -428,8 +840,7 @@ def record_spin(item, cached_album):
         items.insert(0, entry)
         _recent_spins["items"] = items[:40]
         try:
-            with open(RECENT_SPINS_FILE, "w") as f:
-                json.dump({"items": _recent_spins["items"]}, f)
+            _atomic_write_json(RECENT_SPINS_FILE, {"items": _recent_spins["items"]})
         except OSError as e:
             print(f"Could not persist recent spins: {e}")
 
@@ -440,9 +851,37 @@ def recent_spin_items():
         return [dict(e) for e in _recent_spins["items"]]
 
 
+def _response_object_items(response):
+    """Return only object entries from an upstream `{items: [...]}` payload."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return []
+    if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+        return []
+    return [entry for entry in payload["items"] if isinstance(entry, dict)]
+
+
+def _first_image_url(images):
+    if not isinstance(images, list) or not images or not isinstance(images[0], dict):
+        return ""
+    url = images[0].get("url")
+    return url if isinstance(url, str) else ""
+
+
+def _token_lifetime(value):
+    try:
+        if isinstance(value, bool):
+            raise ValueError
+        seconds = int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        seconds = 3600
+    return max(60, min(86400, seconds))
+
+
 def fetch_artist_albums(artist_id, fallback_artist_name=""):
     """Albums by an artist via client credentials — fuels the 'Deeper cuts'
-    crate. Cached forever per artist."""
+    crate. Stored in a bounded six-hour cache per artist."""
     if not artist_id:
         return []
     if artist_id in _artist_albums_cache:
@@ -460,18 +899,25 @@ def fetch_artist_albums(artist_id, fallback_artist_name=""):
             timeout=5,
         )
         if resp.status_code != 200:
-            _artist_albums_cache[artist_id] = []
+            _artist_albums_cache.set(artist_id, [], ttl=90)
             return []
         items = []
-        for a in resp.json().get("items", []):
-            images = a.get("images") or []
-            artist = ", ".join(x.get("name", "") for x in (a.get("artists") or [])) or fallback_artist_name
+        for a in _response_object_items(resp):
+            images = a.get("images") if isinstance(a.get("images"), list) else []
+            artists = a.get("artists") if isinstance(a.get("artists"), list) else []
+            artist = ", ".join(
+                x.get("name", "") for x in artists
+                if isinstance(x, dict) and isinstance(x.get("name"), str)
+            ) or fallback_artist_name
+            uri = a.get("uri") if isinstance(a.get("uri"), str) else ""
+            if not uri.startswith("spotify:album:"):
+                continue
             items.append({
                 "id": f"deep-{a.get('id', '')}",
-                "uri": a.get("uri", ""),
-                "title": a.get("name", ""),
+                "uri": uri,
+                "title": a.get("name") if isinstance(a.get("name"), str) else "Album",
                 "subtitle": artist,
-                "image": images[0].get("url", "") if images else "",
+                "image": _first_image_url(images),
                 "accent": "#8a6fd1",
                 "type": "album",
             })
@@ -566,17 +1012,24 @@ def _rebuild_crate_async():
         if _crate_building:
             return
         _crate_building = True
+        build_generation = _account_generation
 
     def job():
         global _crate_building
+        payload = None
         try:
             payload = _build_crate_payload()
-            if payload["sections"]:
-                _crate_cache["payload"] = payload
-                _crate_cache["built_at"] = time.time()
         finally:
-            with _crate_build_lock:
+            with _crate_build_condition:
+                if (
+                    payload
+                    and payload.get("sections")
+                    and build_generation == _account_generation
+                ):
+                    _crate_cache["payload"] = payload
+                    _crate_cache["built_at"] = time.time()
                 _crate_building = False
+                _crate_build_condition.notify_all()
 
     threading.Thread(target=job, daemon=True).start()
 
@@ -589,18 +1042,46 @@ def crate_payload():
     request. Only a completely cold cache builds synchronously.
     """
     now = time.time()
-    cached = _crate_cache["payload"]
-    if cached and now - _crate_cache["built_at"] < 120:
+    with _crate_build_lock:
+        cached = _crate_cache["payload"]
+        cached_at = _crate_cache["built_at"]
+    if cached and now - cached_at < 120:
         return cached
     if cached:
         _rebuild_crate_async()
         return cached
 
-    payload = _build_crate_payload()
-    if payload["sections"]:
-        _crate_cache["payload"] = payload
-        _crate_cache["built_at"] = now
-    return payload
+    global _crate_building
+    # Do not launch a second cold build while the startup warmer is already
+    # fetching the same four Spotify sections.  Wait briefly, then return a
+    # valid "building" payload rather than blocking a Flask worker for 12s.
+    with _crate_build_condition:
+        if _crate_building:
+            _crate_build_condition.wait(timeout=3.0)
+            if _crate_cache["payload"]:
+                return _crate_cache["payload"]
+            return {"sections": [], "building": True}
+        _crate_building = True
+        build_generation = _account_generation
+
+    result = None
+    try:
+        payload = _build_crate_payload()
+        with _crate_build_lock:
+            if build_generation == _account_generation:
+                if payload["sections"]:
+                    _crate_cache["payload"] = payload
+                    _crate_cache["built_at"] = time.time()
+                result = payload
+            else:
+                # Never return or cache library data from the disconnected or
+                # replaced account after its generation has been invalidated.
+                result = _crate_cache["payload"] or {"sections": [], "building": True}
+    finally:
+        with _crate_build_condition:
+            _crate_building = False
+            _crate_build_condition.notify_all()
+    return result
 
 
 def attach_album_extras(state):
@@ -623,7 +1104,7 @@ def attach_album_extras(state):
 
     album = item.setdefault("album", {})
     cached_album = cached.get("album") or {}
-    for key in ("album_type", "release_date"):
+    for key in ("album_type", "release_date", "total_tracks"):
         if cached_album.get(key) and not album.get(key):
             album[key] = cached_album[key]
 
@@ -664,18 +1145,19 @@ def fetch_user_playlists(limit=6):
         return []
 
     playlists = []
-    for idx, item in enumerate(resp.json().get("items", [])):
-        uri = item.get("uri", "")
-        if not uri.startswith("spotify:"):
+    for idx, item in enumerate(_response_object_items(resp)):
+        uri = item.get("uri") if isinstance(item.get("uri"), str) else ""
+        if not uri.startswith("spotify:playlist:"):
             continue
-        owner = item.get("owner", {}).get("display_name") or "Your playlist"
-        images = item.get("images") or []
+        owner_data = item.get("owner") if isinstance(item.get("owner"), dict) else {}
+        owner = owner_data.get("display_name") if isinstance(owner_data.get("display_name"), str) else ""
+        images = item.get("images") if isinstance(item.get("images"), list) else []
         playlists.append({
             "id": f"user-{idx}",
-            "title": item.get("name", "Playlist"),
-            "subtitle": owner,
+            "title": item.get("name") if isinstance(item.get("name"), str) else "Playlist",
+            "subtitle": owner or "Your playlist",
             "uri": uri,
-            "image": images[0].get("url", "") if images else "",
+            "image": _first_image_url(images),
             "accent": "#1db954",
             "source": "user",
         })
@@ -709,27 +1191,31 @@ def fetch_saved_albums(limit=50):
         return []
 
     albums = []
-    for idx, entry in enumerate(resp.json().get("items", [])):
-        album = entry.get("album") or {}
-        uri = album.get("uri", "")
-        if not uri.startswith("spotify:"):
+    for idx, entry in enumerate(_response_object_items(resp)):
+        album = entry.get("album") if isinstance(entry.get("album"), dict) else {}
+        uri = album.get("uri") if isinstance(album.get("uri"), str) else ""
+        if not uri.startswith("spotify:album:"):
             continue
-        images = album.get("images") or []
-        artist = ", ".join(a.get("name", "") for a in (album.get("artists") or []))
+        images = album.get("images") if isinstance(album.get("images"), list) else []
+        artists = album.get("artists") if isinstance(album.get("artists"), list) else []
+        artist = ", ".join(
+            a.get("name", "") for a in artists
+            if isinstance(a, dict) and isinstance(a.get("name"), str)
+        )
         albums.append({
             "id": f"saved-{idx}",
-            "title": album.get("name", "Album"),
+            "title": album.get("name") if isinstance(album.get("name"), str) else "Album",
             "subtitle": artist,
             "uri": uri,
-            "image": images[0].get("url", "") if images else "",
+            "image": _first_image_url(images),
             "accent": "#4cb8a4",
             "type": "album",
         })
     return albums
 
 
-def idle_launcher_payload():
-    user_playlists = fetch_user_playlists()
+def idle_launcher_payload(include_private=True):
+    user_playlists = fetch_user_playlists() if include_private else []
     house_playlists = load_idle_playlists()
     if user_playlists:
         playlists = (user_playlists + house_playlists)[:6]
@@ -747,6 +1233,43 @@ def spotify_uri_id(uri):
     if len(parts) == 3 and parts[0] == "spotify":
         return parts[2]
     return uri
+
+
+def _read_legacy_state_file():
+    """Read the runtime state, falling back to the old /tmp path for upgrades."""
+    candidates = [STATE_FILE]
+    if STATE_FILE != LEGACY_STATE_FILE:
+        candidates.append(LEGACY_STATE_FILE)
+    last_error = "state_file_missing"
+    for path in candidates:
+        try:
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(path, flags)
+            try:
+                file_stat = os.fstat(fd)
+                if (
+                    not stat.S_ISREG(file_stat.st_mode)
+                    or file_stat.st_size <= 0
+                    or file_stat.st_size > MAX_RUNTIME_STATE_BYTES
+                ):
+                    raise ValueError("runtime state has an invalid size/type")
+                with os.fdopen(fd, "rb") as state_file:
+                    fd = None
+                    raw = state_file.read(MAX_RUNTIME_STATE_BYTES + 1)
+                if len(raw) > MAX_RUNTIME_STATE_BYTES:
+                    raise ValueError("runtime state is too large")
+                data = json.loads(raw.decode("utf-8"))
+            finally:
+                if fd is not None:
+                    os.close(fd)
+            if isinstance(data, dict):
+                return data, path, None
+            last_error = "state_file_invalid"
+        except FileNotFoundError:
+            continue
+        except (UnicodeDecodeError, json.JSONDecodeError, OSError, ValueError):
+            last_error = "state_file_invalid"
+    return None, STATE_FILE, last_error
 
 
 def read_go_librespot_state():
@@ -771,25 +1294,58 @@ def read_go_librespot_state():
         status = resp.json()
     except ValueError:
         return False, None
+    if not isinstance(status, dict):
+        return False, None
 
-    track = status.get("track")
-    if status.get("stopped") or not track:
+    for flag in ("stopped", "paused", "buffering"):
+        if flag in status and not isinstance(status[flag], bool):
+            return False, None
+    if status.get("stopped") is True:
         return True, None
 
+    track = status.get("track")
+    if not isinstance(track, dict) or not track:
+        return False, None
+
+    def nonnegative_number(value, default=0):
+        if value is None:
+            return default
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError
+        number = float(value)
+        if not math.isfinite(number) or number < 0:
+            raise ValueError
+        return int(number)
+
     uri = track.get("uri", "")
+    if not isinstance(uri, str):
+        return False, None
     track_id = spotify_uri_id(uri)
-    artists = [{"name": name} for name in track.get("artist_names", [])]
+    artist_names = track.get("artist_names", [])
+    if not isinstance(artist_names, list) or any(not isinstance(name, str) for name in artist_names):
+        return False, None
+    artists = [{"name": name} for name in artist_names]
     cover_url = track.get("album_cover_url")
+    if cover_url is not None and not isinstance(cover_url, str):
+        return False, None
     images = [{"url": cover_url}] if cover_url else []
-    duration = track.get("duration") or 0
-    position = track.get("position") or 0
-    volume_steps = status.get("volume_steps") or 100
-    volume = status.get("volume") or 0
+    for text_field in ("name", "album_name"):
+        if text_field in track and not isinstance(track[text_field], str):
+            return False, None
+    for text_field in ("device_id", "device_name", "play_origin"):
+        if text_field in status and status[text_field] is not None and not isinstance(status[text_field], str):
+            return False, None
 
     try:
+        duration = nonnegative_number(track.get("duration"))
+        position = nonnegative_number(track.get("position"))
+        volume_steps = nonnegative_number(status.get("volume_steps"), 100)
+        volume = nonnegative_number(status.get("volume"), 0)
+        if volume_steps <= 0:
+            raise ValueError
         volume_percent = int(round((volume / max(volume_steps, 1)) * 100))
-    except TypeError:
-        volume_percent = 50
+    except (TypeError, ValueError, OverflowError):
+        return False, None
 
     return True, {
         "is_playing": not bool(status.get("paused")) and not bool(status.get("buffering")),
@@ -823,10 +1379,8 @@ def read_raspotify_playback_state():
     Returns a dict matching the Spotify /me/player response shape that the
     frontend already expects.
     """
-    try:
-        with open(STATE_FILE, "r") as f:
-            state = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+    state, _, _ = _read_legacy_state_file()
+    if state is None:
         return None
 
     track_id = state.get("track_id")
@@ -905,66 +1459,124 @@ def read_raspotify_playback_state():
 
 
 def read_playback_state():
+    state, _available = read_playback_state_with_availability()
+    return state
+
+
+def read_playback_state_with_availability():
+    """Return (state, source_available), distinguishing outage from true idle."""
     go_available, go_state = read_go_librespot_state()
     if go_available:
-        return go_state
-    return read_raspotify_playback_state()
+        return go_state, True
+    _raw, _path, state_error = _read_legacy_state_file()
+    if state_error:
+        return None, False
+    return read_raspotify_playback_state(), True
 
 
 def get_user_token():
     """Get a user-level Spotify token using stored refresh_token."""
-    global _user_token, _user_token_expiry
+    global _user_token, _user_token_expiry, _user_token_grant_id
 
-    if _user_token and _user_token_expiry > time.time() + 60:
-        return _user_token
-
-    config = load_config()
-    refresh_token = config.get("refresh_token")
-    if not refresh_token:
-        return None
-
-    client_id = config.get("client_id", "")
-    client_secret = config.get("client_secret", "")
-
-    try:
-        resp = requests.post(SPOTIFY_TOKEN_URL, data={
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-        }, auth=(client_id, client_secret), timeout=5)
-
-        if resp.status_code != 200:
-            print(f"User token refresh error: {resp.status_code}")
+    # Singleflight: one thread performs a refresh while all other request
+    # workers wait on the same lock and reuse the resulting access token.
+    with _user_token_lock:
+        config = load_config()
+        spotify_session = config.get("spotify_session") or {}
+        expires_at = spotify_session.get("expires_at")
+        try:
+            if spotify_session.get("kind") == "guest":
+                session_expired = expires_at is None or time.time() >= float(expires_at)
+            else:
+                session_expired = bool(expires_at) and time.time() >= float(expires_at)
+        except (TypeError, ValueError):
+            session_expired = True
+        if session_expired:
+            _disconnect_user_account()
             return None
 
-        data = resp.json()
-        _user_token = data["access_token"]
-        _user_token_expiry = time.time() + data.get("expires_in", 3600)
+        refresh_token = config.get("refresh_token")
+        if not refresh_token:
+            if _user_token is not None:
+                _user_token = None
+                _user_token_expiry = 0
+                _user_token_grant_id = None
+                _clear_user_caches()
+            return None
+        grant_id = hashlib.sha256(str(refresh_token).encode()).hexdigest()
+        if (
+            _user_token
+            and _user_token_grant_id == grant_id
+            and _user_token_expiry > time.time() + 60
+        ):
+            return _user_token
+        client_id = config.get("client_id", "")
+        client_secret = config.get("client_secret", "")
+        if not client_id or not client_secret:
+            return None
 
-        # Store new refresh token if rotated
-        if "refresh_token" in data and data["refresh_token"] != refresh_token:
-            config["refresh_token"] = data["refresh_token"]
-            save_config(config)
+        try:
+            resp = requests.post(SPOTIFY_TOKEN_URL, data={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+            }, auth=(client_id, client_secret), timeout=5)
+            if resp.status_code != 200:
+                print(f"User token refresh error: {resp.status_code}")
+                return None
+            data = resp.json()
+            if not isinstance(data, dict):
+                return None
+            access_token = data.get("access_token")
+            if not isinstance(access_token, str) or not access_token:
+                return None
+            _user_token = access_token
+            _user_token_expiry = time.time() + _token_lifetime(data.get("expires_in"))
 
-        return _user_token
-    except Exception as e:
-        print(f"User token refresh failed: {e}")
-        return None
+            rotated = data.get("refresh_token")
+            if isinstance(rotated, str) and rotated and rotated != refresh_token:
+                update_config(lambda latest: latest.__setitem__("refresh_token", rotated))
+                grant_id = hashlib.sha256(str(rotated).encode()).hexdigest()
+            _user_token_grant_id = grant_id
+            return _user_token
+        except (requests.RequestException, KeyError, TypeError, ValueError) as e:
+            print(f"User token refresh failed: {e}")
+            return None
 
 
-def save_config(config):
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(config, f, indent=2)
+def _clear_user_caches():
+    global _playlist_cache, _account_generation
+    with _crate_build_lock:
+        _account_generation += 1
+        _crate_cache["payload"] = None
+        _crate_cache["built_at"] = 0
+    _playlist_cache = {"loaded_at": 0, "items": []}
+
+
+def _disconnect_user_account():
+    """Forget the global user grant and every account-derived cache."""
+    global _user_token, _user_token_expiry, _user_token_grant_id
+    with _user_token_lock:
+        # Bump the generation before changing credentials so in-flight crate
+        # work becomes unpublishable at the account transition boundary.
+        _clear_user_caches()
+        _user_token = None
+        _user_token_expiry = 0
+        _user_token_grant_id = None
+
+        def clear(latest):
+            latest.pop("refresh_token", None)
+            latest.pop("spotify_session", None)
+
+        update_config(clear)
 
 
 def get_local_ip():
     """Return the LAN IP reachable by phones on the same network."""
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            return sock.getsockname()[0]
+    except OSError:
         return "127.0.0.1"
 
 
@@ -973,16 +1585,100 @@ def get_public_base_url():
     configured = os.environ.get("PUBLIC_BASE_URL") or config.get("public_base_url")
     if configured:
         return configured.rstrip("/")
-    return f"http://{get_local_ip()}:5000"
+    return f"http://{get_local_ip()}:{SERVER_PORT}"
+
+
+class OAuthOriginError(RuntimeError):
+    def __init__(self, message, expected_url=None, status_code=503):
+        self.expected_url = expected_url
+        self.status_code = status_code
+        super().__init__(message)
+
+
+def _url_origin(url):
+    try:
+        parsed = urllib.parse.urlsplit(str(url))
+        if (
+            parsed.scheme not in ("http", "https")
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            return None
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        return parsed.scheme.lower(), parsed.hostname.lower(), port
+    except (TypeError, ValueError):
+        return None
+
+
+def get_oauth_public_base_url(config=None):
+    """Canonical externally-visible origin used by pairing and OAuth."""
+    config = config or load_config()
+    configured = os.environ.get("PUBLIC_BASE_URL") or config.get("public_base_url")
+    if not configured:
+        raise OAuthOriginError(
+            "OAuth pairing requires PUBLIC_BASE_URL (or config public_base_url)"
+        )
+    parsed = urllib.parse.urlsplit(str(configured))
+    if (
+        _url_origin(configured) is None
+        or parsed.path not in ("", "/")
+        or "?" in str(configured)
+        or "#" in str(configured)
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise OAuthOriginError("public_base_url must be a bare http(s) origin")
+    return str(configured).rstrip("/")
 
 
 def get_oauth_redirect_uri(config=None):
     """Return the exact Spotify OAuth redirect URI used for login and token exchange."""
     config = config or load_config()
+    public_base = get_oauth_public_base_url(config)
     configured = os.environ.get("SPOTIFY_REDIRECT_URI") or config.get("redirect_uri")
-    if configured:
-        return configured
-    return f"{get_public_base_url()}/callback"
+    redirect_uri = configured or f"{public_base}/callback"
+    if _url_origin(redirect_uri) != _url_origin(public_base):
+        raise OAuthOriginError("redirect_uri must share the public_base_url origin")
+    parsed = urllib.parse.urlsplit(str(redirect_uri))
+    if (
+        parsed.path != "/callback"
+        or "?" in str(redirect_uri)
+        or "#" in str(redirect_uri)
+        or parsed.query
+        or parsed.fragment
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise OAuthOriginError("redirect_uri must be exactly public_base_url/callback")
+    return str(redirect_uri)
+
+
+def _request_uses_public_origin(public_base):
+    expected = _url_origin(public_base)
+    if expected is None:
+        return False
+    if _url_origin(request.host_url) == expected:
+        return True
+    # Explicit PUBLIC_BASE_URL is the trust anchor for TLS-terminating reverse
+    # proxies. Do not consume X-Forwarded-*; require their preserved Host to
+    # match the configured public host/port instead.
+    try:
+        host = urllib.parse.urlsplit(f"//{request.host}")
+        expected_host = urllib.parse.urlsplit(public_base)
+        supplied_port = host.port
+        expected_port = expected_host.port or (443 if expected_host.scheme == "https" else 80)
+        default_port = 443 if expected_host.scheme == "https" else 80
+        return (
+            host.hostname
+            and host.hostname.lower() == expected_host.hostname.lower()
+            and (
+                supplied_port == expected_port
+                or (supplied_port is None and expected_port == default_port)
+            )
+        )
+    except (TypeError, ValueError, AttributeError):
+        return False
 
 
 def control_playback_local(action):
@@ -1039,28 +1735,34 @@ def play_uri_local(uri, skip_to_uri=None):
 
 
 def control_playback_web_api(action):
-    """Legacy Spotify Web API fallback (requires a stored user token)."""
+    """Opt-in legacy fallback, strictly targeted to a configured Pi device."""
     token = get_user_token()
     if not token:
         return False, "No Spotify Web API token configured"
 
     headers = {"Authorization": f"Bearer {token}"}
+    expected_device_id = (load_config().get("legacy_web_api_device_id") or "").strip()
+    if not expected_device_id:
+        return False, "Legacy fallback requires legacy_web_api_device_id"
     try:
+        state_resp = requests.get(f"{SPOTIFY_API_BASE}/me/player", headers=headers, timeout=5)
+        if state_resp.status_code != 200:
+            return False, f"Could not verify active player: {state_resp.status_code}"
+        state = state_resp.json()
+        active_device_id = ((state.get("device") or {}).get("id") or "").strip()
+        if not active_device_id or active_device_id != expected_device_id:
+            return False, "Refusing to control a different Spotify device"
+        params = {"device_id": expected_device_id}
+
         if action == "next":
-            r = requests.post(f"{SPOTIFY_API_BASE}/me/player/next", headers=headers, timeout=5)
+            r = requests.post(f"{SPOTIFY_API_BASE}/me/player/next", headers=headers, params=params, timeout=5)
         elif action == "previous":
-            r = requests.post(f"{SPOTIFY_API_BASE}/me/player/previous", headers=headers, timeout=5)
+            r = requests.post(f"{SPOTIFY_API_BASE}/me/player/previous", headers=headers, params=params, timeout=5)
         elif action == "play-pause":
-            # Check current state to toggle
-            state_resp = requests.get(f"{SPOTIFY_API_BASE}/me/player", headers=headers, timeout=5)
-            if state_resp.status_code == 200:
-                is_playing = state_resp.json().get("is_playing", False)
-                if is_playing:
-                    r = requests.put(f"{SPOTIFY_API_BASE}/me/player/pause", headers=headers, timeout=5)
-                else:
-                    r = requests.put(f"{SPOTIFY_API_BASE}/me/player/play", headers=headers, timeout=5)
+            if state.get("is_playing", False):
+                r = requests.put(f"{SPOTIFY_API_BASE}/me/player/pause", headers=headers, params=params, timeout=5)
             else:
-                return False, f"Could not read player state: {state_resp.status_code}"
+                r = requests.put(f"{SPOTIFY_API_BASE}/me/player/play", headers=headers, params=params, timeout=5)
         else:
             return False, "Unknown action"
 
@@ -1072,16 +1774,252 @@ def control_playback_web_api(action):
 
 
 def control_playback(action):
-    """Control playback using the local receiver, with Web API fallback."""
+    """Control playback locally; remote-device fallback is explicit opt-in."""
     ok, msg = control_playback_local(action)
     if ok:
         return True, msg
 
-    # If an owner has already configured OAuth, keep supporting it as a fallback.
-    if get_user_token():
+    if bool(load_config().get("allow_web_api_control_fallback", False)):
         return control_playback_web_api(action)
 
     return False, msg
+
+
+# ── HTTP trust boundary ─────────────────────────────────────
+
+_rate_lock = threading.Lock()
+_rate_buckets = OrderedDict()
+
+
+def _remote_is_loopback():
+    try:
+        address = ipaddress.ip_address(request.remote_addr or "")
+        if address.is_loopback:
+            return True
+        mapped = getattr(address, "ipv4_mapped", None)
+        return bool(mapped and mapped.is_loopback)
+    except ValueError:
+        return False
+
+
+def _request_host_is_loopback():
+    """Require a literal local Host; a DNS name can be rebound to loopback."""
+    try:
+        parsed = urllib.parse.urlsplit(f"//{request.host}")
+        hostname = parsed.hostname or ""
+        # Accessing port validates malformed/out-of-range values.
+        parsed.port
+    except (TypeError, ValueError):
+        return False
+    if hostname.casefold() == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    if address.is_loopback:
+        return True
+    mapped = getattr(address, "ipv4_mapped", None)
+    return bool(mapped and mapped.is_loopback)
+
+
+def _backlight_request_is_trusted_local():
+    return _remote_is_loopback() and _request_host_is_loopback()
+
+
+def _owner_token():
+    config = load_config()
+    security = config.get("security") if isinstance(config.get("security"), dict) else {}
+    return os.environ.get("OWNER_TOKEN") or security.get("owner_token") or config.get("owner_token") or ""
+
+
+def _is_owner_request():
+    if _backlight_request_is_trusted_local() or session.get("owner") is True:
+        return True
+    expected = _owner_token()
+    if not expected:
+        return False
+    supplied = request.headers.get("X-Owner-Token", "")
+    authorization = request.headers.get("Authorization", "")
+    if authorization.lower().startswith("bearer "):
+        supplied = authorization[7:].strip()
+    return bool(supplied) and hmac.compare_digest(str(supplied), str(expected))
+
+
+def owner_required(fn):
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        if not _is_owner_request():
+            return jsonify({
+                "error": "Owner authorization required",
+                "hint": "Use the local kiosk or configure an OWNER_TOKEN",
+            }), 401
+        return fn(*args, **kwargs)
+    return wrapped
+
+
+def oauth_initiation_required(fn):
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        try:
+            permitted_until = float(session.get("oauth_pairing_until") or 0)
+        except (TypeError, ValueError):
+            permitted_until = 0
+        if time.time() < permitted_until:
+            # A consumed pairing nonce can only initiate an expiring guest
+            # grant. Query parameters must never promote it to owner scope.
+            session.pop("oauth_pairing_until", None)
+            g.oauth_paired_guest = True
+            return fn(*args, **kwargs)
+        session.pop("oauth_pairing_until", None)
+        if _is_owner_request():
+            return fn(*args, **kwargs)
+        return jsonify({"error": "An owner-approved pairing link is required"}), 401
+    return wrapped
+
+
+def _new_pairing_url(reuse=False):
+    with _pairing_lock:
+        public_base = get_oauth_public_base_url()
+        if (
+            reuse
+            and _kiosk_pairing["url"]
+            and _kiosk_pairing["expires_at"] > time.time() + 60
+            and _pairing_tokens.get(_kiosk_pairing["digest"]) is not None
+        ):
+            return _kiosk_pairing["url"]
+        token = secrets.token_urlsafe(32)
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        _pairing_tokens.set(digest, True, ttl=10 * 60)
+        url = f"{public_base}/join?pair={urllib.parse.quote(token)}"
+        _kiosk_pairing.update({"url": url, "digest": digest, "expires_at": time.time() + 10 * 60})
+        return url
+
+
+def _same_origin(url):
+    supplied = _url_origin(url)
+    if supplied is None:
+        return False
+    if supplied == _url_origin(request.host_url):
+        return True
+    # A configured public origin permits a TLS reverse proxy to forward to
+    # loopback HTTP without trusting spoofable X-Forwarded-* headers.
+    config = load_config()
+    public_base = os.environ.get("PUBLIC_BASE_URL") or config.get("public_base_url")
+    return bool(public_base) and supplied == _url_origin(public_base)
+
+
+def _rate_limit(max_requests, window_seconds):
+    now = time.monotonic()
+    key = (request.remote_addr or "unknown", request.endpoint or request.path)
+    with _rate_lock:
+        bucket = _rate_buckets.setdefault(key, deque())
+        while bucket and bucket[0] <= now - window_seconds:
+            bucket.popleft()
+        if len(bucket) >= max_requests:
+            return False
+        bucket.append(now)
+        _rate_buckets.move_to_end(key)
+        while len(_rate_buckets) > 1024:
+            _rate_buckets.popitem(last=False)
+    return True
+
+
+def _mutation_rate_policy(path):
+    """Return a bounded route-specific (requests, seconds) allowance."""
+    if path in ("/api/control/volume", "/api/backlight"):
+        # The kiosk coalesces these gestures at roughly 150ms. Leave margin
+        # for retries/final-value delivery while retaining a finite ceiling.
+        return 120, 10
+    if path.startswith("/api/wled/") or path.startswith("/api/auth/"):
+        return 10, 60
+    if path.startswith("/api/control/"):
+        return 40, 10
+    return 40, 10
+
+
+def _request_json_object():
+    """Return a JSON object, never a truthy wrong-shaped JSON value."""
+    data = request.get_json(silent=True)
+    return data if isinstance(data, dict) else None
+
+
+@app.before_request
+def secure_request_boundary():
+    # Waitress imports the app rather than running __main__, so start daemon
+    # workers lazily on the first real request. Tests explicitly skip this.
+    if not app.testing and os.environ.get("SPOTIFY_DISPLAY_DISABLE_BACKGROUND") != "1":
+        _start_background_services()
+
+    if request.method == "GET" and request.path == "/api/lyrics":
+        if not _rate_limit(10, 60):
+            response = jsonify({"error": "Too many lyrics requests"})
+            response.status_code = 429
+            response.headers["Retry-After"] = "60"
+            return response
+
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        # Browsers provide at least one of these signals. CLI/system clients
+        # without browser headers remain backwards compatible on the LAN.
+        if request.headers.get("Sec-Fetch-Site", "").lower() == "cross-site":
+            return jsonify({"error": "Cross-site request rejected"}), 403
+        origin = request.headers.get("Origin")
+        referer = request.headers.get("Referer")
+        if origin and not _same_origin(origin):
+            return jsonify({"error": "Origin mismatch"}), 403
+        if not origin and referer and not _same_origin(referer):
+            return jsonify({"error": "Referer mismatch"}), 403
+
+        limit, window = _mutation_rate_policy(request.path)
+        if not _rate_limit(limit, window):
+            return jsonify({"error": "Too many requests"}), 429
+
+
+@app.after_request
+def security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; "
+        "script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+        "font-src 'self' data:; img-src 'self' https: data: blob:; connect-src 'self'",
+    )
+    if request.path.startswith((
+        "/api/auth/",
+        "/api/backlight",
+        "/api/crate",
+        "/api/wled",
+        "/api/diagnostics",
+        "/callback",
+        "/login",
+        "/join",
+    )):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.errorhandler(413)
+def request_too_large(_error):
+    return jsonify({"error": "Request body too large"}), 413
+
+
+@app.errorhandler(ConfigWriteRefused)
+def config_write_refused(error):
+    return jsonify({
+        "error": "Configuration repair required; write refused",
+        "config": {"ok": False, "state": error.state, "writable": False},
+    }), 503
+
+
+@app.errorhandler(OAuthOriginError)
+def oauth_origin_error(error):
+    payload = {"error": str(error)}
+    if error.expected_url:
+        payload["expected_url"] = error.expected_url
+    return jsonify(payload), error.status_code
 
 
 # ── UI routes ────────────────────────────────────────────────
@@ -1099,37 +2037,90 @@ def connect():
 
 @app.route("/join")
 def join():
-    """Phone-friendly entry point for future guest personalization."""
+    """Consume a one-use owner-approved pairing link, then show guest OAuth."""
+    token = request.args.get("pair", "")
+    if token:
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        if _pairing_tokens.pop(digest, None) is None:
+            return jsonify({"error": "Pairing link is invalid, expired, or already used"}), 400
+        with _pairing_lock:
+            if _kiosk_pairing["digest"] == digest:
+                _kiosk_pairing.update({"url": None, "digest": None, "expires_at": 0})
+        session["oauth_pairing_until"] = time.time() + 5 * 60
+        return redirect("/join")
     return render_template("join.html")
 
 
 @app.route("/login")
+@oauth_initiation_required
 def login():
-    """Legacy one-time OAuth fallback for Spotify Web API controls."""
+    """Start a state-bound OAuth flow using PKCE S256."""
     config = load_config()
     client_id = config.get("client_id", "")
     if not client_id:
         return "Spotify client_id is missing from config.json", 500
-    scope = PLAYLIST_SCOPES if request.args.get("playlist") else SCOPES
+    guest = bool(getattr(g, "oauth_paired_guest", False) or request.args.get("playlist"))
+    # Both owner and guest crate views need playlist/library read scopes. The
+    # guest bit controls expiry only; it must not control the requested data.
+    scope = PLAYLIST_SCOPES
+    public_base = get_oauth_public_base_url(config)
+    if not _request_uses_public_origin(public_base):
+        raise OAuthOriginError(
+            "Open OAuth from the configured public origin",
+            expected_url=f"{public_base}/login",
+            status_code=409,
+        )
     redirect_uri = get_oauth_redirect_uri(config)
+    state = secrets.token_urlsafe(32)
+    verifier = secrets.token_urlsafe(64)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    session["spotify_oauth"] = {
+        "state": state,
+        "verifier": verifier,
+        "created_at": time.time(),
+        "guest": guest,
+    }
     params = urllib.parse.urlencode({
         "client_id": client_id,
         "response_type": "code",
         "redirect_uri": redirect_uri,
         "scope": scope,
+        "state": state,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
     })
     return redirect(f"{SPOTIFY_AUTH_URL}?{params}")
 
 
 @app.route("/callback")
 def callback():
-    """Legacy OAuth callback — stores refresh token for Web API fallback."""
+    """Complete a state-bound OAuth grant and replace account caches safely."""
+    config = load_config()
+    public_base = get_oauth_public_base_url(config)
+    if not _request_uses_public_origin(public_base):
+        raise OAuthOriginError(
+            "OAuth callback arrived on a different origin",
+            expected_url=get_oauth_redirect_uri(config),
+            status_code=400,
+        )
     code = request.args.get("code")
     error = request.args.get("error")
     if error or not code:
-        return f"Authorization failed: {error or 'no code'}", 400
+        reason = "access_denied" if error == "access_denied" else "provider_error" if error else "no_code"
+        return jsonify({"error": "Authorization failed", "reason": reason}), 400
 
-    config = load_config()
+    flow = session.pop("spotify_oauth", None)
+    supplied_state = request.args.get("state", "")
+    if not isinstance(flow, dict) or not supplied_state:
+        return jsonify({"error": "OAuth session is missing or expired"}), 400
+    expected_state = str(flow.get("state") or "")
+    try:
+        flow_age = time.time() - float(flow.get("created_at") or 0)
+    except (TypeError, ValueError):
+        flow_age = float("inf")
+    if flow_age < 0 or flow_age > 10 * 60 or not hmac.compare_digest(supplied_state, expected_state):
+        return jsonify({"error": "Invalid or expired OAuth state"}), 400
+
     redirect_uri = get_oauth_redirect_uri(config)
 
     try:
@@ -1137,22 +2128,100 @@ def callback():
             "grant_type": "authorization_code",
             "code": code,
             "redirect_uri": redirect_uri,
+            "code_verifier": flow.get("verifier", ""),
         }, auth=(config["client_id"], config["client_secret"]), timeout=10)
 
         if resp.status_code != 200:
-            return f"Token exchange failed: {resp.status_code}", 500
+            return jsonify({"error": "Token exchange failed", "status": resp.status_code}), 502
 
         data = resp.json()
-        config["refresh_token"] = data["refresh_token"]
-        save_config(config)
+        if not isinstance(data, dict):
+            return jsonify({"error": "Spotify returned an invalid token response"}), 502
+        refresh_token = data.get("refresh_token")
+        access_token = data.get("access_token")
+        if (
+            not isinstance(refresh_token, str)
+            or not refresh_token
+            or not isinstance(access_token, str)
+            or not access_token
+        ):
+            return jsonify({"error": "Spotify returned an incomplete token response"}), 502
 
-        global _user_token, _user_token_expiry
-        _user_token = data["access_token"]
-        _user_token_expiry = time.time() + data.get("expires_in", 3600)
+        connected_at = time.time()
+        guest = bool(flow.get("guest"))
+        if guest:
+            try:
+                hours = float(config.get("guest_session_hours", 12))
+            except (TypeError, ValueError):
+                hours = 12
+            expires_at = connected_at + max(1, min(hours, 168)) * 60 * 60
+        else:
+            expires_at = None
+
+        def store_grant(latest):
+            latest["refresh_token"] = refresh_token
+            latest["spotify_session"] = {
+                "kind": "guest" if guest else "owner",
+                "connected_at": connected_at,
+                "expires_at": expires_at,
+            }
+
+        global _user_token, _user_token_expiry, _user_token_grant_id
+        with _user_token_lock:
+            _clear_user_caches()
+            update_config(store_grant)
+            _user_token = access_token
+            _user_token_expiry = time.time() + _token_lifetime(data.get("expires_in"))
+            _user_token_grant_id = hashlib.sha256(refresh_token.encode()).hexdigest()
 
         return redirect("/connect?auth=ok")
-    except Exception as e:
-        return f"Error: {e}", 500
+    except (requests.RequestException, KeyError, ValueError) as e:
+        print(f"OAuth callback failed: {e}")
+        return jsonify({"error": "OAuth token exchange failed"}), 502
+
+
+@app.route("/api/auth/owner", methods=["POST"])
+def owner_login():
+    """Exchange the configured owner token for a signed, HttpOnly session."""
+    data = _request_json_object()
+    if data is None:
+        return jsonify({"error": "JSON object required"}), 400
+    expected = _owner_token()
+    supplied = data.get("token", "")
+    if not expected:
+        return jsonify({"error": "Remote owner access is not configured"}), 503
+    if not supplied or not hmac.compare_digest(str(supplied), str(expected)):
+        return jsonify({"error": "Invalid owner token"}), 401
+    session["owner"] = True
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/auth/pairing", methods=["POST"])
+@owner_required
+def create_pairing_link():
+    """Create a one-use guest OAuth link valid for ten minutes."""
+    return jsonify({"join_url": _new_pairing_url(), "expires_in": 10 * 60})
+
+
+@app.route("/api/auth/status")
+@owner_required
+def auth_status():
+    config = load_config()
+    grant = config.get("spotify_session") or {}
+    return jsonify({
+        "owner": True,
+        "spotify_connected": bool(config.get("refresh_token")),
+        "session_kind": grant.get("kind"),
+        "expires_at": grant.get("expires_at"),
+    })
+
+
+@app.route("/api/auth/disconnect", methods=["POST"])
+@owner_required
+def auth_disconnect():
+    _disconnect_user_account()
+    session.pop("spotify_oauth", None)
+    return "", 204
 
 
 # ── API routes ───────────────────────────────────────────────
@@ -1160,8 +2229,10 @@ def callback():
 @app.route("/api/now-playing")
 def now_playing():
     """Return current playback state from the local Spotify Connect receiver."""
-    state = read_playback_state()
+    state, available = read_playback_state_with_availability()
     if state is None:
+        if not available:
+            return jsonify({"error": "Playback receiver unavailable"}), 503
         return "", 204  # No content — nothing playing
     attach_album_extras(state)
     return jsonify(state)
@@ -1171,55 +2242,77 @@ def now_playing():
 def health():
     """Return local receiver and fallback event health for troubleshooting."""
     go_available, go_state = read_go_librespot_state()
-
-    try:
-        with open(STATE_FILE, "r") as f:
-            state = json.load(f)
-    except FileNotFoundError:
-        state = None
-        state_error = "state_file_missing"
-    except json.JSONDecodeError:
-        state = None
-        state_error = "state_file_invalid"
-    else:
-        state_error = None
+    state, state_path, state_error = _read_legacy_state_file()
+    configuration = config_status()
 
     if state is None:
-        return jsonify({
-            "ok": go_available,
+        healthy = go_available and configuration["ok"]
+        payload = {
+            "ok": healthy,
+            "status": "config_error" if not configuration["ok"] else "healthy" if go_available else "unavailable",
+            "config": configuration,
             "go_librespot": {
                 "available": go_available,
                 "active": go_state is not None,
-                "api_base": GO_LIBRESPOT_API_BASE,
             },
             "raspotify_state": {
                 "ok": False,
                 "reason": state_error,
-                "path": STATE_FILE,
+                "path": state_path,
             },
-        }), 200 if go_available else 503
+        }
+        return jsonify(payload), 200 if healthy else 503
 
     timestamp = state.get("timestamp") or 0
     age = max(0, time.time() - timestamp) if timestamp else None
-    return jsonify({
-        "ok": go_available or bool(state.get("track_id")),
+    event = state.get("event", "")
+    is_playing = bool(state.get("is_playing", False))
+    usable = bool(state.get("track_id")) and event not in STOPPED_IDLE_EVENTS
+    stale_reason = None
+    if age is None:
+        usable = False
+        stale_reason = "missing_timestamp"
+    elif not is_playing and age > PAUSED_IDLE_AFTER_SECONDS:
+        usable = False
+        stale_reason = "paused_state_too_old"
+    elif is_playing:
+        try:
+            duration = max(0, int(state.get("duration_ms") or 0))
+            position = max(0, int(state.get("position_ms") or 0))
+        except (TypeError, ValueError):
+            duration = position = 0
+        if duration and age * 1000 > max(0, duration - position) + END_OF_TRACK_GRACE_SECONDS * 1000:
+            usable = False
+            stale_reason = "past_expected_track_end"
+        elif not duration and age > PLAYING_UNKNOWN_DURATION_STALE_SECONDS:
+            usable = False
+            stale_reason = "playing_state_too_old"
+
+    playback_healthy = go_available or usable
+    healthy = playback_healthy and configuration["ok"]
+    payload = {
+        "ok": healthy,
+        "status": "config_error" if not configuration["ok"] else "healthy" if healthy else "stale",
+        "config": configuration,
         "go_librespot": {
             "available": go_available,
             "active": go_state is not None,
-            "api_base": GO_LIBRESPOT_API_BASE,
         },
         "raspotify_state": {
-            "ok": True,
-            "path": STATE_FILE,
-            "event": state.get("event", ""),
+            "ok": usable,
+            "present": True,
+            "path": state_path,
+            "event": event,
             "track_id": state.get("track_id"),
-            "is_playing": bool(state.get("is_playing", False)),
+            "is_playing": is_playing,
             "position_ms": state.get("position_ms"),
             "duration_ms": state.get("duration_ms"),
             "volume_percent": state.get("volume_percent"),
             "age_seconds": None if age is None else round(age, 1),
+            "stale_reason": stale_reason,
         },
-    })
+    }
+    return jsonify(payload), 200 if healthy else 503
 
 
 @app.route("/api/control/<action>", methods=["POST"])
@@ -1237,8 +2330,12 @@ def control(action):
 @app.route("/api/control/seek", methods=["POST"])
 def control_seek():
     """Seek within the current track (kiosk twist gesture)."""
-    data = request.get_json(silent=True) or {}
+    data = _request_json_object()
+    if data is None:
+        return jsonify({"error": "JSON object required"}), 400
     try:
+        if isinstance(data.get("position_ms"), bool):
+            raise ValueError
         position_ms = max(0, int(data.get("position_ms")))
     except (TypeError, ValueError):
         return jsonify({"error": "position_ms required"}), 400
@@ -1259,8 +2356,12 @@ def control_seek():
 @app.route("/api/control/volume", methods=["POST"])
 def control_volume():
     """Set playback volume by percent (kiosk fader/pinch gestures)."""
-    data = request.get_json(silent=True) or {}
+    data = _request_json_object()
+    if data is None:
+        return jsonify({"error": "JSON object required"}), 400
     try:
+        if isinstance(data.get("percent"), bool):
+            raise ValueError
         percent = max(0, min(100, int(data.get("percent"))))
     except (TypeError, ValueError):
         return jsonify({"error": "percent required"}), 400
@@ -1270,8 +2371,10 @@ def control_volume():
     try:
         status = requests.get(f"{GO_LIBRESPOT_API_BASE}/status", timeout=1.5)
         if status.status_code == 200:
-            steps_max = int(status.json().get("volume_steps") or 100)
-    except (requests.RequestException, ValueError):
+            status_payload = status.json()
+            if isinstance(status_payload, dict):
+                steps_max = max(1, min(65535, int(status_payload.get("volume_steps") or 100)))
+    except (requests.RequestException, TypeError, ValueError, OverflowError):
         pass
 
     try:
@@ -1287,18 +2390,66 @@ def control_volume():
     return jsonify({"error": f"Local player API error: {resp.status_code}"}), 502
 
 
+@app.route("/api/backlight", methods=["GET", "POST"])
+def backlight():
+    """Read or request safe HID backlight state for the local kiosk.
+
+    POST is deliberately loopback-only: unlike playback controls, changing the
+    physical panel is not a LAN/API feature.  Accepted bodies are exactly one
+    of ``{"percent": 0..100}`` or ``{"mode": "idle"|"active"}``; raw HID
+    fields and device paths never cross this boundary.
+    """
+    if request.method == "GET":
+        return jsonify(_get_backlight_controller().status(refresh=True))
+
+    if not _backlight_request_is_trusted_local():
+        return jsonify({"error": "Backlight control is only available to the local kiosk"}), 403
+
+    data = _request_json_object()
+    if not isinstance(data, dict):
+        return jsonify({"error": "JSON object required"}), 400
+    allowed_keys = {"percent", "mode"}
+    if set(data) - allowed_keys or ("percent" in data) == ("mode" in data):
+        return jsonify({"error": "Provide exactly one of percent or mode"}), 400
+
+    controller = _get_backlight_controller()
+    try:
+        if "percent" in data:
+            state = controller.set_percent(data["percent"])
+        elif data["mode"] == "idle":
+            state = controller.set_idle()
+        elif data["mode"] == "active":
+            state = controller.set_active()
+        else:
+            return jsonify({"error": "mode must be idle or active"}), 400
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    return jsonify(state)
+
+
 @app.route("/api/idle/playlists")
 def idle_playlists():
     """Return house playlists for the idle launcher."""
-    payload = idle_launcher_payload()
+    payload = idle_launcher_payload(include_private=_is_owner_request())
+    pairing_error = None
+    try:
+        public_join = f"{get_oauth_public_base_url()}/join"
+        join_url = _new_pairing_url(reuse=True) if _backlight_request_is_trusted_local() else public_join
+    except OAuthOriginError as error:
+        join_url = None
+        pairing_error = str(error)
     return jsonify({
         "playlists": payload["playlists"],
         "title": payload["title"],
-        "join_url": f"{get_public_base_url()}/join",
+        # Only the kiosk itself can mint the one-use guest authorization URL.
+        # A remote unauthenticated caller sees the informational join page.
+        "join_url": join_url,
+        "pairing_error": pairing_error,
     })
 
 
 @app.route("/api/crate")
+@owner_required
 def crate():
     """Sections of browsable music for the kiosk crate UI."""
     return jsonify(crate_payload())
@@ -1307,11 +2458,17 @@ def crate():
 @app.route("/api/idle/play", methods=["POST"])
 def idle_play():
     """Start playback from a crate / idle launcher card."""
-    data = request.get_json(silent=True) or {}
+    data = _request_json_object()
+    if data is None:
+        return jsonify({"error": "JSON object required"}), 400
     uri = data.get("uri", "")
-    allowed = {item["uri"] for item in idle_launcher_payload()["playlists"]}
-    for section in crate_payload()["sections"]:
-        allowed.update(item["uri"] for item in section["items"])
+    if not isinstance(uri, str):
+        return jsonify({"error": "uri must be a string"}), 400
+    owner = _is_owner_request()
+    allowed = {item["uri"] for item in idle_launcher_payload(include_private=owner)["playlists"]}
+    if owner:
+        for section in crate_payload()["sections"]:
+            allowed.update(item["uri"] for item in section["items"])
     if uri not in allowed:
         return jsonify({"error": "Playlist is not configured for this display"}), 400
 
@@ -1334,7 +2491,7 @@ def album_tracks():
     album_id = requested or playing
     if not album_id:
         return jsonify({"album_id": None, "tracks": []})  # not enriched yet
-    if requested and playing and requested != playing:
+    if requested and requested != playing:
         return jsonify({"error": "Album is not currently playing"}), 409
 
     tracks = lookup_album_tracks(album_id)
@@ -1348,9 +2505,11 @@ def album_play_track():
     Only tracks that belong to the record on the platter are accepted, so the
     endpoint can't start arbitrary playback.
     """
-    data = request.get_json(silent=True) or {}
+    data = _request_json_object()
+    if data is None:
+        return jsonify({"error": "JSON object required"}), 400
     track_uri = data.get("uri", "")
-    if not track_uri.startswith("spotify:track:"):
+    if not isinstance(track_uri, str) or not track_uri.startswith("spotify:track:"):
         return jsonify({"error": "Invalid track URI"}), 400
 
     album_id = current_album_id()
@@ -1372,7 +2531,111 @@ def album_play_track():
 def info():
     """Return server info including the LAN URL."""
     ip = get_local_ip()
-    return jsonify({"ip": ip, "port": 5000, "url": f"http://{ip}:5000"})
+    return jsonify({"ip": ip, "port": SERVER_PORT, "url": f"http://{ip}:{SERVER_PORT}"})
+
+
+def _playback_event_signal(state):
+    item = (state or {}).get("item") or {}
+    progress = int((state or {}).get("progress_ms") or 0)
+    identity = item.get("id") or item.get("uri")
+    if not identity and item.get("name"):
+        artists = ",".join(str(a.get("name") or "") for a in (item.get("artists") or []))
+        identity = f"local:{item.get('name')}:{artists}:{item.get('duration_ms') or 0}"
+    return {
+        "active": bool(identity),
+        "track_id": identity,
+        "is_playing": bool((state or {}).get("is_playing", False)),
+        # The UI interpolates progress locally; a 10s bucket detects lost
+        # handoffs/seeks without recreating the old two-second poll load.
+        "progress_bucket": progress // 10000,
+    }
+
+
+def _ensure_event_monitor():
+    global _event_monitor_started
+    with _event_condition:
+        if _event_monitor_started:
+            return
+        _event_monitor_started = True
+
+    def monitor():
+        global _event_version, _event_signal
+        previous = object()
+        while True:
+            try:
+                state, available = read_playback_state_with_availability()
+                if not available:
+                    time.sleep(1)
+                    continue
+                signal = _playback_event_signal(state)
+            except Exception as e:
+                print(f"Playback event monitor error: {e}")
+                time.sleep(1)
+                continue
+            signature = tuple(sorted(signal.items()))
+            if signature != previous:
+                previous = signature
+                with _event_condition:
+                    _event_version += 1
+                    _event_signal = {"version": _event_version, **signal}
+                    _event_condition.notify_all()
+            time.sleep(1)
+
+    threading.Thread(target=monitor, name="playback-events", daemon=True).start()
+
+
+@app.route("/api/events")
+def events():
+    """SSE playback-change signals; clients refetch /api/now-playing."""
+    global _event_clients
+    with _event_condition:
+        if _event_clients >= MAX_SSE_CLIENTS:
+            response = jsonify({"error": "Too many event-stream clients"})
+            response.status_code = 503
+            response.headers["Retry-After"] = "10"
+            return response
+        _event_clients += 1
+
+    released = False
+
+    def release_slot():
+        nonlocal released
+        global _event_clients
+        with _event_condition:
+            if released:
+                return
+            released = True
+            _event_clients = max(0, _event_clients - 1)
+
+    try:
+        _ensure_event_monitor()
+    except Exception:
+        release_slot()
+        raise
+
+    @stream_with_context
+    def generate():
+        seen = -1
+        try:
+            while True:
+                with _event_condition:
+                    if seen == _event_version:
+                        _event_condition.wait(timeout=15)
+                    signal = dict(_event_signal)
+                    version = _event_version
+                if version != seen:
+                    seen = version
+                    yield f"event: playback\ndata: {json.dumps(signal, separators=(',', ':'))}\n\n"
+                else:
+                    yield ": keepalive\n\n"
+        finally:
+            release_slot()
+
+    response = Response(generate(), mimetype="text/event-stream")
+    response.headers["Cache-Control"] = "no-cache"
+    response.headers["X-Accel-Buffering"] = "no"
+    response.call_on_close(release_slot)
+    return response
 
 
 # ── WLED discovery + setup ───────────────────────────────────
@@ -1415,8 +2678,10 @@ def _wled_active_devices():
 
 
 WLED_SCAN_INTERVAL_SECONDS = 30
+WLED_SCAN_DEMAND_SECONDS = 10
 WLED_PROBE_TIMEOUT = 0.4
 WLED_PROBE_CONCURRENCY = 32
+WLED_SCAN_BATCH_SIZE = 512
 
 
 def _is_wled_info(info):
@@ -1433,9 +2698,9 @@ def _is_wled_info(info):
     )
 
 
-def _probe_wled(ip):
+def _probe_wled(host):
     try:
-        resp = requests.get(f"http://{ip}/json/info", timeout=WLED_PROBE_TIMEOUT)
+        resp = requests.get(f"http://{host}/json/info", timeout=WLED_PROBE_TIMEOUT)
     except requests.RequestException:
         return None
     if resp.status_code != 200:
@@ -1447,12 +2712,150 @@ def _probe_wled(ip):
     if not _is_wled_info(info):
         return None
     leds = info.get("leds") or {}
-    pixel_count = int(leds.get("count") or 0) or None
-    return (info.get("name") or ip, ip, 80, pixel_count)
+    try:
+        pixel_count = int(leds.get("count") or 0) or None
+    except (TypeError, ValueError, OverflowError):
+        pixel_count = None
+    if pixel_count is not None:
+        pixel_count = max(1, min(pixel_count, MAX_WLED_PIXELS))
+    try:
+        parsed = urllib.parse.urlsplit(f"//{host}")
+        port = parsed.port or 80
+    except ValueError:
+        port = 80
+    return (info.get("name") or host, host, port, pixel_count)
+
+
+def _local_scan_network():
+    override = os.environ.get("WLED_SCAN_CIDR")
+    if override:
+        try:
+            network = ipaddress.ip_network(override, strict=False)
+            return network if isinstance(network, ipaddress.IPv4Network) else None
+        except ValueError:
+            return None
+
+    local = get_local_ip()
+    prefix = 24
+    try:
+        # Linux exposes the active route's real netmask here. This correctly
+        # discovers /22 and similar LANs without adding a platform dependency.
+        with open("/proc/net/route", "r") as routes:
+            for line in routes.read().splitlines()[1:]:
+                fields = line.split()
+                if len(fields) >= 8 and fields[1] == "00000000":
+                    mask = socket.inet_ntoa(bytes.fromhex(fields[7])[::-1])
+                    prefix = ipaddress.ip_network(f"0.0.0.0/{mask}").prefixlen
+                    break
+    except (OSError, ValueError):
+        pass
+    # Avoid accidentally probing an enterprise /16; /22 still covers the
+    # deployed LAN while bounding work to 1,022 hosts.
+    prefix = max(prefix, 22)
+    try:
+        return ipaddress.ip_network(f"{local}/{prefix}", strict=False)
+    except ValueError:
+        return None
+
+
+def _request_wled_scan(now=None):
+    """Wake the scanner for a short, coalesced discovery-demand window.
+
+    The kiosk calls the discovery endpoint only while its setup UI is useful
+    (idle or explicitly open). Keeping demand shorter than the frontend's
+    refresh interval means one abandoned request cannot leave a permanent LAN
+    sweep behind. Repeated requests extend the window but the scan interval
+    and single-flight state still bound work.
+    """
+    now = time.monotonic() if now is None else now
+    with _wled_scan_condition:
+        _wled_scan_state["demand_until"] = max(
+            _wled_scan_state["demand_until"],
+            now + WLED_SCAN_DEMAND_SECONDS,
+        )
+        _wled_scan_condition.notify_all()
+
+
+def _claim_wled_scan(now=None):
+    """Atomically claim a due scan; exposed separately for deterministic tests."""
+    now = time.monotonic() if now is None else now
+    with _wled_scan_condition:
+        if _wled_scan_state["running"]:
+            return False
+        if now >= _wled_scan_state["demand_until"]:
+            return False
+        if now < _wled_scan_state["last_started"] + WLED_SCAN_INTERVAL_SECONDS:
+            return False
+        _wled_scan_state["running"] = True
+        _wled_scan_state["last_started"] = now
+        return True
+
+
+def _finish_wled_scan():
+    with _wled_scan_condition:
+        _wled_scan_state["running"] = False
+        _wled_scan_condition.notify_all()
+
+
+def _wled_scan_wait_timeout(now):
+    """Return None while dormant, otherwise seconds until due/expiry."""
+    with _wled_scan_condition:
+        demand_remaining = _wled_scan_state["demand_until"] - now
+        if demand_remaining <= 0:
+            return None
+        interval_remaining = (
+            _wled_scan_state["last_started"]
+            + WLED_SCAN_INTERVAL_SECONDS
+            - now
+        )
+        return max(0.0, min(demand_remaining, interval_remaining))
+
+
+def _scan_wled_lan_batch(previous_network, scan_cursor):
+    """Probe one bounded subnet batch and return updated network/cursor state."""
+    local = get_local_ip()
+    network = _local_scan_network()
+    if network is None:
+        return previous_network, scan_cursor
+    if network != previous_network:
+        print(f"WLED scan: demand-driven discovery on {network}")
+        previous_network = network
+        scan_cursor = 0
+
+    # Reserve part of the fixed request budget for configured mDNS names so a
+    # large subnet never turns the "bounded batch" into 512 plus N requests.
+    configured = _wled_config_devices(load_config().get("wled") or {})
+    configured_hosts = list(dict.fromkeys(device["host"] for device in configured))[
+        :MAX_WLED_DEVICES
+    ]
+    subnet_batch_size = max(0, WLED_SCAN_BATCH_SIZE - len(configured_hosts))
+
+    all_hosts = [str(h) for h in network.hosts() if str(h) != local]
+    if subnet_batch_size == 0:
+        targets = []
+    elif len(all_hosts) > subnet_batch_size:
+        targets = all_hosts[scan_cursor:scan_cursor + subnet_batch_size]
+        if len(targets) < subnet_batch_size:
+            targets += all_hosts[:subnet_batch_size - len(targets)]
+        scan_cursor = (scan_cursor + subnet_batch_size) % len(all_hosts)
+    else:
+        targets = all_hosts
+
+    # Probe configured mDNS names as well as port 80 across the subnet. Put
+    # those first so known strips are refreshed promptly even on a /22 batch.
+    targets = list(dict.fromkeys(configured_hosts + targets))
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=WLED_PROBE_CONCURRENCY
+    ) as executor:
+        for result in executor.map(_probe_wled, targets):
+            if result:
+                name, ip, port, pixel_count = result
+                _wled_record_device(name, ip, port, pixel_count)
+    return previous_network, scan_cursor
 
 
 def _start_wled_lan_scanner():
-    """Periodically probe the local /24 for WLED devices.
+    """Start a dormant worker that scans only after recent discovery demand.
 
     Replaces an earlier mDNS-based browser that bound to UDP 5353 and
     conflicted with avahi-daemon. go-librespot uses avahi for Spotify
@@ -1462,39 +2865,48 @@ def _start_wled_lan_scanner():
     catches every WLED that's reachable on the LAN.
     """
 
+    with _wled_scan_condition:
+        if _wled_scan_state["worker_started"]:
+            return False
+        _wled_scan_state["worker_started"] = True
+
     def _run():
-        # Discover the local /24 from this host's LAN IP. Assumes a typical
-        # home subnet — fine for the kind of LAN this kiosk lives on.
-        local = get_local_ip()
-        try:
-            network = ipaddress.ip_network(f"{local}/24", strict=False)
-            hosts = [str(h) for h in network.hosts() if str(h) != local]
-        except ValueError:
-            print(f"WLED scan: could not derive /24 from local IP {local}")
-            return
-
-        print(f"WLED scan: watching {network} every {WLED_SCAN_INTERVAL_SECONDS}s")
-
+        previous_network = None
+        scan_cursor = 0
         while True:
+            # Keep the scheduling decision and condition wait under the same
+            # lock so a request cannot be lost between checking and sleeping.
+            with _wled_scan_condition:
+                now = time.monotonic()
+                if not _claim_wled_scan(now):
+                    timeout = _wled_scan_wait_timeout(now)
+                    _wled_scan_condition.wait(timeout=timeout)
+                    continue
             try:
-                with concurrent.futures.ThreadPoolExecutor(
-                    max_workers=WLED_PROBE_CONCURRENCY
-                ) as ex:
-                    for result in ex.map(_probe_wled, hosts):
-                        if result:
-                            name, ip, port, pixel_count = result
-                            _wled_record_device(name, ip, port, pixel_count)
+                previous_network, scan_cursor = _scan_wled_lan_batch(
+                    previous_network,
+                    scan_cursor,
+                )
             except Exception as e:
                 print(f"WLED scan error: {e}")
-            time.sleep(WLED_SCAN_INTERVAL_SECONDS)
+            finally:
+                _finish_wled_scan()
 
-    t = threading.Thread(target=_run, name="wled-lan-scan", daemon=True)
-    t.start()
+    try:
+        t = threading.Thread(target=_run, name="wled-lan-scan", daemon=True)
+        t.start()
+    except Exception:
+        with _wled_scan_condition:
+            _wled_scan_state["worker_started"] = False
+        raise
+    return True
 
 
 @app.route("/api/wled/discovered")
+@owner_required
 def wled_discovered():
     """Return WLED devices currently visible on the LAN."""
+    _request_wled_scan()
     return jsonify({"devices": _wled_active_devices()})
 
 
@@ -1504,29 +2916,100 @@ def _wled_config_devices(wled):
     raw = wled.get("devices")
     out = []
     if isinstance(raw, list) and raw:
-        for entry in raw:
+        for entry in raw[:MAX_WLED_DEVICES]:
             if not isinstance(entry, dict):
                 continue
-            host = (entry.get("host") or "").strip()
-            if not host:
+            try:
+                out.append(_validate_wled_device(entry))
+            except ValueError:
                 continue
-            out.append({
-                "host": host,
-                "name": (entry.get("name") or host).strip(),
-                "pixel_count": max(1, int(entry.get("pixel_count") or 46)),
-            })
         return out
     legacy_host = (wled.get("host") or "").strip()
     if legacy_host:
-        out.append({
-            "host": legacy_host,
-            "name": (wled.get("name") or legacy_host).strip(),
-            "pixel_count": max(1, int(wled.get("pixel_count") or 46)),
-        })
+        try:
+            out.append(_validate_wled_device({
+                "host": legacy_host,
+                "name": wled.get("name") or legacy_host,
+                "pixel_count": wled.get("pixel_count") or 46,
+            }))
+        except ValueError:
+            pass
     return out
 
 
+MAX_WLED_DEVICES = 16
+MAX_WLED_PIXELS = 2048
+MAX_WLED_NAME_LENGTH = 64
+MAX_WLED_HOST_LENGTH = 253
+
+
+def _bounded_float(value, default, minimum, maximum, field):
+    try:
+        result = float(default if value is None else value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field} must be numeric")
+    if not math.isfinite(result) or not minimum <= result <= maximum:
+        raise ValueError(f"{field} must be between {minimum} and {maximum}")
+    return result
+
+
+def _validate_wled_host(value):
+    if not isinstance(value, str):
+        raise ValueError("host must be a string")
+    host = value.strip()
+    if not host or len(host) > MAX_WLED_HOST_LENGTH or any(c.isspace() for c in host):
+        raise ValueError("host is missing or too long")
+    # wled_sync sends UDP to this value, so an HTTP URL or :port suffix is not
+    # meaningful here. Discovery keeps its HTTP port as separate metadata.
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", host):
+        raise ValueError("host must be a bare LAN IPv4 address or DNS/mDNS name")
+    hostname = host
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        if hostname.startswith((".", "-")) or hostname.endswith((".", "-")) or ".." in hostname:
+            raise ValueError("host is not a valid hostname")
+    else:
+        if not (address.is_private or address.is_link_local or address.is_loopback):
+            raise ValueError("WLED IP must be on the local network")
+    return host
+
+
+def _validate_wled_device(entry):
+    if not isinstance(entry, dict):
+        raise ValueError("each device must be an object")
+    host = _validate_wled_host(entry.get("host"))
+    name_value = entry.get("name") or host
+    if not isinstance(name_value, str):
+        raise ValueError("name must be a string")
+    name = name_value.strip()
+    if not name or len(name) > MAX_WLED_NAME_LENGTH:
+        raise ValueError(f"name must be 1-{MAX_WLED_NAME_LENGTH} characters")
+    pixels = entry.get("pixel_count", 46)
+    if isinstance(pixels, bool):
+        raise ValueError("pixel_count must be an integer")
+    try:
+        pixels = int(pixels)
+    except (TypeError, ValueError):
+        raise ValueError("pixel_count must be an integer")
+    if not 1 <= pixels <= MAX_WLED_PIXELS:
+        raise ValueError(f"pixel_count must be between 1 and {MAX_WLED_PIXELS}")
+    reverse = entry.get("reverse", False)
+    if not isinstance(reverse, bool):
+        raise ValueError("reverse must be true or false")
+    return {
+        "host": host,
+        "name": name,
+        "pixel_count": pixels,
+        "reverse": reverse,
+        "phase_offset": _bounded_float(entry.get("phase_offset"), 0, -1, 1, "phase_offset"),
+        "brightness": _bounded_float(entry.get("brightness"), 1, 0.05, 1, "brightness"),
+        "gamma": _bounded_float(entry.get("gamma"), 1, 0.5, 3, "gamma"),
+    }
+
+
 @app.route("/api/wled/status")
+@owner_required
 def wled_status():
     """Return the kiosk-facing WLED configuration state."""
     config = load_config()
@@ -1540,6 +3023,7 @@ def wled_status():
 
 
 @app.route("/api/wled/devices", methods=["POST"])
+@owner_required
 def wled_devices_update():
     """Atomically replace the configured WLED device list.
 
@@ -1548,67 +3032,303 @@ def wled_devices_update():
     the next wled_sync tick); `enabled` is optional and defaults to True when
     devices is non-empty.
     """
-    data = request.get_json(silent=True) or {}
+    data = _request_json_object()
+    if data is None:
+        return jsonify({"error": "JSON object required"}), 400
     incoming = data.get("devices")
     if not isinstance(incoming, list):
         return jsonify({"error": "devices must be a list"}), 400
 
-    devices = []
-    for entry in incoming:
-        if not isinstance(entry, dict):
-            continue
-        host = (entry.get("host") or "").strip()
-        if not host:
-            continue
-        devices.append({
-            "host": host,
-            "name": (entry.get("name") or host).strip(),
-            "pixel_count": max(1, int(entry.get("pixel_count") or 46)),
-        })
+    if len(incoming) > MAX_WLED_DEVICES:
+        return jsonify({"error": f"at most {MAX_WLED_DEVICES} devices are supported"}), 400
+    try:
+        devices = [_validate_wled_device(entry) for entry in incoming]
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    if "enabled" in data and not isinstance(data["enabled"], bool):
+        return jsonify({"error": "enabled must be true or false"}), 400
 
+    def store(latest):
+        wled = latest.get("wled") if isinstance(latest.get("wled"), dict) else {}
+        wled["devices"] = devices
+        for legacy_key in ("host", "name", "pixel_count"):
+            wled.pop(legacy_key, None)
+        if "enabled" in data:
+            wled["enabled"] = data["enabled"]
+        elif devices and not wled.get("enabled"):
+            wled["enabled"] = True
+        latest["wled"] = wled
+
+    update_config(store)
+    return "", 204
+
+
+def _cpu_temperature_c():
+    for path in ("/sys/class/thermal/thermal_zone0/temp", "/sys/class/hwmon/hwmon0/temp1_input"):
+        try:
+            with open(path, "r") as f:
+                return round(float(f.read().strip()) / 1000, 1)
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def _read_wled_runtime_status():
+    """Read the service-owned status file with strict size/schema/type bounds."""
+    def safe_int(value, maximum=1_000_000_000):
+        try:
+            return max(0, min(int(value or 0), maximum))
+        except (TypeError, ValueError, OverflowError):
+            return 0
+
+    def safe_number(value):
+        try:
+            value = float(value)
+            return value if math.isfinite(value) and 0 <= value <= 86400 else None
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(WLED_STATUS_FILE, flags)
+        try:
+            file_stat = os.fstat(fd)
+            if (
+                not stat.S_ISREG(file_stat.st_mode)
+                or file_stat.st_size <= 0
+                or file_stat.st_size > MAX_RUNTIME_STATE_BYTES
+            ):
+                return {"ok": False, "reason": "invalid_size"}
+            with os.fdopen(fd, "rb") as status_file:
+                fd = None
+                raw = status_file.read(MAX_RUNTIME_STATE_BYTES + 1)
+        finally:
+            if fd is not None:
+                os.close(fd)
+        if len(raw) > MAX_RUNTIME_STATE_BYTES:
+            return {"ok": False, "reason": "invalid_size"}
+        data = json.loads(raw)
+    except FileNotFoundError:
+        return {"ok": False, "reason": "status_file_missing"}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {"ok": False, "reason": "status_file_invalid"}
+    if not isinstance(data, dict) or data.get("schema_version") != 1:
+        return {"ok": False, "reason": "unsupported_schema"}
+    try:
+        updated = float(data.get("updated_unix"))
+    except (TypeError, ValueError):
+        return {"ok": False, "reason": "missing_timestamp"}
+    age = time.time() - updated
+    if age < -60:
+        return {"ok": False, "reason": "future_timestamp"}
+
+    playback = data.get("playback") if isinstance(data.get("playback"), dict) else {}
+    safe_playback = {
+        "state": str(playback.get("state") or "unknown")[:32],
+        "thread_alive": bool(playback.get("thread_alive", False)),
+        "consecutive_failures": safe_int(playback.get("consecutive_failures"), 1_000_000),
+        "last_error": str(playback.get("last_error") or "")[:256] or None,
+        "last_poll_age_seconds": safe_number(playback.get("last_poll_age_seconds")),
+        "last_success_age_seconds": safe_number(playback.get("last_success_age_seconds")),
+        "failure_grace_seconds": safe_number(playback.get("failure_grace_seconds")),
+    }
+    hosts = data.get("hosts_seen") if isinstance(data.get("hosts_seen"), list) else []
+    stale = age > 30
+    return {
+        "ok": not stale,
+        "stale": stale,
+        "reason": "stale" if stale else None,
+        "age_seconds": round(max(0, age), 1),
+        "enabled": bool(data.get("enabled", False)),
+        "configured_devices": safe_int(data.get("configured_devices"), MAX_WLED_DEVICES),
+        "rendering": bool(data.get("rendering", False)),
+        "spin_speed": safe_number(data.get("spin_speed")),
+        "udp_datagrams_queued": safe_int(data.get("udp_datagrams_queued")),
+        "udp_local_send_errors": safe_int(data.get("udp_local_send_errors")),
+        "hosts_seen": [str(host)[:MAX_WLED_HOST_LENGTH] for host in hosts[:MAX_WLED_DEVICES]],
+        "playback": safe_playback,
+    }
+
+
+@app.route("/api/diagnostics")
+@owner_required
+def diagnostics():
+    """Bounded component health for the hidden owner diagnostics panel."""
+    go_available, go_state = read_go_librespot_state()
+    disk = shutil.disk_usage(BASE_DIR)
+    try:
+        load_average = [round(value, 2) for value in os.getloadavg()]
+    except (AttributeError, OSError):
+        load_average = None
     config = load_config()
     wled = config.get("wled") or {}
-    wled["devices"] = devices
-    # Clean up legacy single-device keys once we've written the new shape.
-    for legacy_key in ("host", "name", "pixel_count"):
-        wled.pop(legacy_key, None)
-    if "enabled" in data:
-        wled["enabled"] = bool(data["enabled"])
-    elif devices and not wled.get("enabled"):
-        wled["enabled"] = True
-    config["wled"] = wled
-    save_config(config)
-    return "", 204
+    caches = {
+        "tracks": len(_track_cache),
+        "albums": len(_album_cache),
+        "album_tracks": len(_album_tracks_cache),
+        "artists": len(_artist_albums_cache),
+        "artwork": len(_uri_image_cache),
+        "lyrics": len(_lyrics_cache),
+    }
+    return jsonify({
+        "uptime_seconds": round(time.time() - _started_at, 1),
+        "server": {"port": SERVER_PORT, "pid": os.getpid()},
+        "config": config_status(),
+        "receiver": {"available": go_available, "active": go_state is not None},
+        "events": {"version": _event_version, "clients": _event_clients, "max_clients": MAX_SSE_CLIENTS},
+        "crate": {
+            "building": _crate_building,
+            "account_generation": _account_generation,
+            "age_seconds": round(max(0, time.time() - _crate_cache["built_at"]), 1)
+            if _crate_cache["built_at"] else None,
+        },
+        "wled": {
+            "enabled": bool(wled.get("enabled", False)),
+            "configured_devices": len(_wled_config_devices(wled)),
+            "discovered_devices": len(_wled_active_devices()),
+            "runtime": _read_wled_runtime_status(),
+        },
+        "lyrics": {
+            "circuit_open": time.time() < _lyrics_breaker_until,
+            "retry_after": max(0, round(_lyrics_breaker_until - time.time(), 1)),
+        },
+        "system": {
+            "cpu_temperature_c": _cpu_temperature_c(),
+            "load_average": load_average,
+            "disk_free_bytes": disk.free,
+            "disk_total_bytes": disk.total,
+        },
+        "caches": caches,
+    })
 
 
 @app.route("/api/lyrics")
 def lyrics():
-    """Fetch synced lyrics from LRCLIB for a given track."""
-    track_name = request.args.get("track", "")
-    artist_name = request.args.get("artist", "")
-    album_name = request.args.get("album", "")
-    duration = request.args.get("duration", "0")
+    """Fetch/cache LRCLIB lyrics, scoped to the record currently displayed."""
+    track_name = request.args.get("track", "").strip()
+    artist_name = request.args.get("artist", "").strip()
+    album_name = request.args.get("album", "").strip()
+    duration_raw = request.args.get("duration", "0")
     if not track_name or not artist_name:
         return jsonify({"error": "Missing track/artist"}), 400
+    if any(len(value) > 200 for value in (track_name, artist_name, album_name)):
+        return jsonify({"error": "Lyrics query is too long"}), 400
     try:
-        resp = requests.get("https://lrclib.net/api/get", params={
-            "track_name": track_name,
-            "artist_name": artist_name,
-            "album_name": album_name,
-            "duration": duration,
-        }, headers={"User-Agent": "SpotifyPiDisplay/2.0"}, timeout=5)
-        if resp.status_code == 200:
-            data = resp.json()
-            synced = data.get("syncedLyrics") or ""
-            plain = data.get("plainLyrics") or ""
-            return jsonify({"syncedLyrics": synced, "plainLyrics": plain})
-        return jsonify({"syncedLyrics": "", "plainLyrics": ""}), 200
-    except Exception:
-        return jsonify({"syncedLyrics": "", "plainLyrics": ""}), 200
+        duration = max(0, min(24 * 60 * 60, int(float(duration_raw or 0))))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid duration"}), 400
+
+    state = read_playback_state()
+    item = (state or {}).get("item") or {}
+    current_track = str(item.get("name") or "").strip()
+    current_artists = [str(a.get("name") or "").strip() for a in (item.get("artists") or [])]
+    current_album = str((item.get("album") or {}).get("name") or "").strip()
+    normalized_artists = {name.casefold() for name in current_artists if name}
+    if current_artists:
+        normalized_artists.add(", ".join(current_artists).casefold())
+    if (
+        not (item.get("id") or item.get("uri"))
+        or track_name.casefold() != current_track.casefold()
+        or artist_name.casefold() not in normalized_artists
+        or (album_name and current_album and album_name.casefold() != current_album.casefold())
+    ):
+        return jsonify({"error": "Lyrics are only available for the current track"}), 409
+
+    cache_key = str(item.get("id") or item.get("uri"))
+    cached = _lyrics_cache.get(cache_key)
+    if cached is not None:
+        return jsonify({**cached, "cached": True})
+
+    global _lyrics_breaker_until
+    with _lyrics_lock:
+        if time.time() < _lyrics_breaker_until:
+            return jsonify({
+                "syncedLyrics": "",
+                "plainLyrics": "",
+                "status": "temporarily_unavailable",
+                "retry_after": max(1, int(_lyrics_breaker_until - time.time())),
+            })
+        if cache_key in _lyrics_inflight:
+            response = jsonify({
+                "syncedLyrics": "",
+                "plainLyrics": "",
+                "status": "pending",
+            })
+            response.status_code = 202
+            response.headers["Retry-After"] = "1"
+            return response
+        _lyrics_inflight.add(cache_key)
+    try:
+        try:
+            resp = requests.get("https://lrclib.net/api/get", params={
+                "track_name": track_name,
+                "artist_name": artist_name,
+                "album_name": album_name,
+                "duration": duration,
+            }, headers={"User-Agent": "SpotifyPiDisplay/2.0"}, timeout=3.5)
+            if resp.status_code == 200:
+                data = resp.json()
+                if not isinstance(data, dict):
+                    raise ValueError("LRCLIB returned invalid JSON")
+                payload = {
+                    "syncedLyrics": data.get("syncedLyrics") or "",
+                    "plainLyrics": data.get("plainLyrics") or "",
+                    "status": "ok",
+                }
+                _lyrics_cache.set(cache_key, payload, ttl=24 * 60 * 60)
+                return jsonify({**payload, "cached": False})
+            if resp.status_code in (404, 400):
+                payload = {"syncedLyrics": "", "plainLyrics": "", "status": "not_found"}
+                _lyrics_cache.set(cache_key, payload, ttl=10 * 60)
+                return jsonify({**payload, "cached": False})
+            raise requests.RequestException(f"LRCLIB returned {resp.status_code}")
+        except (requests.RequestException, ValueError) as e:
+            print(f"Lyrics lookup failed: {e}")
+            now = time.time()
+            with _lyrics_lock:
+                while _lyrics_failure_times and _lyrics_failure_times[0] < now - 60:
+                    _lyrics_failure_times.popleft()
+                _lyrics_failure_times.append(now)
+                if len(_lyrics_failure_times) >= 3:
+                    _lyrics_breaker_until = now + 60
+            payload = {
+                "syncedLyrics": "",
+                "plainLyrics": "",
+                "status": "upstream_error",
+            }
+            return jsonify(payload)
+    finally:
+        with _lyrics_lock:
+            _lyrics_inflight.discard(cache_key)
+
+
+def _start_background_services():
+    global _background_started
+    with _background_lock:
+        if _background_started:
+            return
+        components = (
+            ("backlight", lambda: _get_backlight_controller().start()),
+            ("wled_scanner", _start_wled_lan_scanner),
+            ("crate", _rebuild_crate_async),
+            ("events", _ensure_event_monitor),
+        )
+        for name, starter in components:
+            if name in _background_components_started:
+                continue
+            try:
+                starter()
+            except Exception as error:
+                # Keep unrelated components alive and retry only the failed
+                # starter on the next request.
+                print(f"Background component {name} failed to start: {error}")
+                continue
+            _background_components_started.add(name)
+        _background_started = len(_background_components_started) == len(components)
 
 
 if __name__ == "__main__":
-    _start_wled_lan_scanner()
-    _rebuild_crate_async()  # warm the crate so the kiosk's first fetch is instant
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    _start_background_services()
+    # Production listens on the LAN through the hardened waitress service.
+    # The development server is loopback-only unless explicitly overridden.
+    app.run(host=os.environ.get("BIND_HOST", "127.0.0.1"), port=SERVER_PORT, debug=False)

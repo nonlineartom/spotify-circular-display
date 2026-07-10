@@ -3,6 +3,9 @@ config.json
 
 # Python
 __pycache__/
+.pytest_cache/
+.coverage
+htmlcov/
 *.py[cod]
 *.egg-info/
 dist/
@@ -34,5 +37,5 @@ backups/
 go-librespot/lockfile
 go-librespot/state.json
 go-librespot/credentials.json
-index.html
+/index.html
 recently_spun.json

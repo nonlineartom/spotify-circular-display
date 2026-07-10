@@ -62,6 +62,30 @@
     user-select: none;
   }
 
+  button {
+    font: inherit;
+  }
+
+  .skip-btn,
+  .crate-chip,
+  .tl-row,
+  #wled-chip,
+  #wled-modal li > button {
+    appearance: none;
+    -webkit-appearance: none;
+    border: 0;
+    outline: 0;
+    padding: 0;
+    background: transparent;
+    color: inherit;
+  }
+
+  button:focus-visible,
+  [tabindex]:focus-visible {
+    outline: 3px solid var(--ui-accent);
+    outline-offset: 4px;
+  }
+
   #viewport {
     position: relative;
     width: var(--size); height: var(--size);
@@ -544,6 +568,12 @@
     border-radius: 50%;
     z-index: 26;
     pointer-events: auto;
+    appearance: none;
+    -webkit-appearance: none;
+    border: 0;
+    background: transparent;
+    color: transparent;
+    padding: 0;
     -webkit-tap-highlight-color: transparent;
   }
 
@@ -694,6 +724,7 @@
      during playback, and none once dimmed (rendering is paused then). */
   #shelf:not(.visible) #lava .blob,
   #viewport.dimmed #lava .blob { animation-play-state: paused; }
+  #viewport.dimmed * { animation-play-state: paused !important; }
   @keyframes lava1 { 0%{transform:translate(0,0) scale(1)}    50%{transform:translate(16%,20%) scale(1.22)}  100%{transform:translate(0,0) scale(1)} }
   @keyframes lava2 { 0%{transform:translate(0,0) scale(1.1)}  50%{transform:translate(-18%,16%) scale(0.92)} 100%{transform:translate(0,0) scale(1.1)} }
   @keyframes lava3 { 0%{transform:translate(0,0) scale(0.95)} 50%{transform:translate(22%,-14%) scale(1.2)}  100%{transform:translate(0,0) scale(0.95)} }
@@ -808,8 +839,9 @@
     text-overflow: ellipsis;
   }
 
-  /* ── Volume HUD — arc fader on the right rim ── */
-  #volume-hud {
+  /* ── Hardware-control HUDs — arc faders on opposing rims ── */
+  #volume-hud,
+  #brightness-hud {
     position: absolute;
     inset: 0;
     z-index: 45;
@@ -818,30 +850,30 @@
     visibility: hidden;
     transition: opacity 0.35s ease, visibility 0.35s;
   }
-  #volume-hud.visible {
+  #volume-hud.visible,
+  #brightness-hud.visible {
     opacity: 1;
     visibility: visible;
   }
-  #volume-hud svg {
+  #volume-hud svg,
+  #brightness-hud svg {
     position: absolute;
     inset: 0;
     width: 100%; height: 100%;
   }
-  #volume-hud.pinned svg {
-    pointer-events: auto;
-    touch-action: none;
-  }
   /* Arc fill takes the record's accent; the knob stays a white thumb with an
      accent halo so it keeps contrast over any artwork. */
-  #vol-fill {
+  #vol-fill,
+  #bright-fill {
     stroke: var(--ui-accent);
   }
-  #vol-knob {
+  #vol-knob,
+  #bright-knob {
     filter: drop-shadow(0 0 10px rgba(var(--ui-accent-rgb), 0.55));
   }
-  #vol-label {
+  #vol-label,
+  #bright-label {
     position: absolute;
-    right: 152px;
     top: 50%;
     transform: translateY(-50%);
     padding: 7px 16px;
@@ -850,7 +882,10 @@
     font-variant-numeric: tabular-nums;
     text-shadow: 0 2px 12px rgba(0,0,0,0.7);
   }
-  #vol-label::after {
+  #vol-label { right: 152px; }
+  #bright-label { left: 152px; }
+  #vol-label::after,
+  #bright-label::after {
     content: "%";
     font-size: 15px;
     font-weight: 300;
@@ -958,6 +993,20 @@
     z-index: 3;
     touch-action: none;
   }
+  #tl-status {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 620px;
+    transform: translate(-50%, -50%);
+    z-index: 4;
+    color: rgba(255,255,255,0.62);
+    font-size: 18px;
+    letter-spacing: 0.03em;
+    text-align: center;
+    pointer-events: none;
+  }
+  #tl-status:empty { display: none; }
   .tl-row {
     position: absolute;
     left: 0; right: 0;
@@ -1036,7 +1085,7 @@
     top: 50%; left: 50%;
     transform: translate(-50%, -50%);
     width: 440px; height: 440px;
-    z-index: 51;               /* above the dimmer */
+    z-index: 101;              /* the only content above the wake shield */
     pointer-events: none;
     opacity: 0;
     transition: opacity 2s ease;
@@ -1069,7 +1118,7 @@
     position: absolute;
     inset: 0;
     background: #000;
-    z-index: 50;
+    z-index: 100;
     pointer-events: none;
     opacity: 0;
     /* base transition = the WAKE fade: quick */
@@ -1082,6 +1131,11 @@
     pointer-events: auto;
     /* dimming down stays slow and gentle */
     transition: opacity 3s ease-in-out;
+  }
+  #dimmer.wake-drain {
+    opacity: 0;
+    pointer-events: auto;
+    transition: opacity 0.45s ease;
   }
 
   /* ── WLED setup affordance (idle only) ── */
@@ -1159,11 +1213,22 @@
     border-radius: 12px;
     background: rgba(255, 255, 255, 0.04);
     margin-bottom: 8px;
-    cursor: pointer;
+    cursor: default;
     display: flex;
     align-items: center;
     justify-content: space-between;
     transition: background 0.15s ease;
+  }
+  #wled-modal li > button {
+    width: 100%;
+    padding: 0;
+    background: transparent;
+    color: inherit;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    text-align: left;
+    cursor: pointer;
   }
   #wled-modal li:hover, #wled-modal li:active {
     background: rgba(255, 255, 255, 0.08);
@@ -1207,6 +1272,8 @@
   #wled-modal .empty {
     padding: 24px;
     text-align: center;
+    justify-content: center;
+    background: transparent;
     color: rgba(255, 255, 255, 0.4);
     font-size: 13px;
   }
@@ -1226,6 +1293,74 @@
   #wled-toast.visible {
     opacity: 1;
     transform: translateX(-50%) translateY(0);
+  }
+
+  #connection-status {
+    position: absolute;
+    left: 50%;
+    bottom: 28px;
+    z-index: 46;
+    transform: translateX(-50%) translateY(12px);
+    max-width: 620px;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    color: rgba(255,255,255,0.82);
+    font-size: 13px;
+    text-align: center;
+    transition: opacity var(--dur-med) ease, transform var(--dur-med) ease, visibility var(--dur-med);
+  }
+  #connection-status.visible {
+    opacity: 1;
+    visibility: visible;
+    transform: translateX(-50%) translateY(0);
+  }
+
+  #lyrics-status {
+    position: absolute;
+    top: 70px;
+    left: 50%;
+    z-index: 31;
+    transform: translateX(-50%) translateY(-8px);
+    color: rgba(255,255,255,0.52);
+    font-size: 13px;
+    letter-spacing: 0.04em;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--dur-med) ease, transform var(--dur-med) ease;
+  }
+  #lyrics-status.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  #diagnostics {
+    position: absolute;
+    top: 42px;
+    right: 42px;
+    z-index: 90;
+    width: 360px;
+    padding: 18px 20px;
+    border: 1px solid var(--hairline);
+    border-radius: 18px;
+    background: rgba(4,5,7,0.9);
+    color: rgba(255,255,255,0.82);
+    font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: pre-wrap;
+    pointer-events: none;
+  }
+
+  #viewport.quality-low #sheen,
+  #viewport.quality-low #crate-reflection { display: none !important; }
+  #viewport.quality-low #lava .blob { mix-blend-mode: normal; }
+  #viewport.quality-low.tracklisting #platter { filter: none; opacity: 0.34; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+      scroll-behavior: auto !important;
+    }
+    #vinyl { will-change: auto; }
+    #lava .blob { animation: none !important; }
   }
 </style>
 </head>
@@ -1263,9 +1398,10 @@
     <div id="lyrics-wrap">
       <div id="lyrics-inner"></div>
     </div>
+    <div id="lyrics-status" role="status" aria-live="polite"></div>
 
     <!-- Player pill -->
-    <div id="pill">
+    <div id="pill" role="status" aria-live="polite" aria-atomic="true">
       <div id="pill-track"></div>
       <div id="pill-artist"></div>
       <div id="time-row">
@@ -1276,15 +1412,15 @@
     </div>
 
     <!-- Skip buttons — semi-transparent triangles at outer edges -->
-    <div id="skip-prev" class="skip-btn">
+    <button type="button" id="skip-prev" class="skip-btn" aria-label="Previous track" disabled>
       <svg viewBox="0 0 24 24"><polygon points="19,20 9,12 19,4"/><rect x="5" y="4" width="3" height="16"/></svg>
-    </div>
-    <div id="skip-next" class="skip-btn">
+    </button>
+    <button type="button" id="skip-next" class="skip-btn" aria-label="Next track" disabled>
       <svg viewBox="0 0 24 24"><polygon points="5,4 15,12 5,20"/><rect x="16" y="4" width="3" height="16"/></svg>
-    </div>
+    </button>
 
 	    <!-- Tap-to-pause zone over center label -->
-	    <div id="pause-btn"></div>
+	    <button type="button" id="pause-btn" aria-label="Play" disabled></button>
 	  </div>
 
 	  <!-- Outer rim depth shadow — creates 3D recessed look -->
@@ -1299,8 +1435,8 @@
       <div class="blob b3"></div>
       <div class="blob b4"></div>
     </div>
-    <div id="crate-chips"></div>
-    <div id="crate"><div id="crate-belt"></div></div>
+    <div id="crate-chips" role="tablist" aria-label="Record shelf sections"></div>
+    <div id="crate" role="listbox" aria-label="Record shelf" tabindex="0"><div id="crate-belt"></div></div>
     <div id="crate-reflection"></div>
     <div id="crate-caption">
       <div class="cap-title"></div>
@@ -1309,7 +1445,7 @@
   </div>
 
   <!-- Volume HUD — arc fader hugging the right rim -->
-  <div id="volume-hud">
+  <div id="volume-hud" role="status" aria-live="polite" aria-label="Volume">
     <svg viewBox="0 0 1080 1080" xmlns="http://www.w3.org/2000/svg">
       <defs>
         <filter id="vol-blur" x="-30%" y="-30%" width="160%" height="160%">
@@ -1325,18 +1461,35 @@
     <div id="vol-label" class="chip">50</div>
   </div>
 
+  <!-- Backlight HUD — three-finger fader mirrored on the left rim -->
+  <div id="brightness-hud" role="status" aria-live="polite" aria-label="Display brightness">
+    <svg viewBox="0 0 1080 1080" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <filter id="bright-blur" x="-30%" y="-30%" width="160%" height="160%">
+          <feGaussianBlur stdDeviation="11"/>
+        </filter>
+      </defs>
+      <path id="bright-backing" fill="none" stroke="rgba(0,0,0,0.55)" stroke-width="60" stroke-linecap="round" filter="url(#bright-blur)"/>
+      <path id="bright-track" fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="12" stroke-linecap="round"/>
+      <path id="bright-fill" fill="none" stroke="rgba(255,255,255,0.92)" stroke-width="12" stroke-linecap="round"/>
+      <circle id="bright-knob" r="14" fill="#fff"/>
+    </svg>
+    <div id="bright-label" class="chip">100</div>
+  </div>
+
   <!-- Track list — pinch out during playback to riffle the album's tracks
        over the (defocused, still-spinning) record. -->
-  <div id="tracklist">
+  <div id="tracklist" role="dialog" aria-modal="true" aria-labelledby="tl-album-title" aria-describedby="tl-status" aria-hidden="true" tabindex="-1">
     <div id="tl-scrim"></div>
     <div id="tl-head">
-      <div class="tl-album"></div>
+      <div class="tl-album" id="tl-album-title"></div>
       <div class="tl-artist"></div>
     </div>
     <div id="tl-gutter-l" class="tl-gutter"></div>
     <div id="tl-gutter-r" class="tl-gutter"></div>
     <div id="tl-focus"></div>
-    <div id="tl-picker"></div>
+    <div id="tl-picker" role="listbox" aria-label="Album tracks"></div>
+    <div id="tl-status" role="status" aria-live="polite"></div>
     <svg id="tl-hint" viewBox="0 0 1080 1080" xmlns="http://www.w3.org/2000/svg">
       <defs><path id="tl-hint-arc" d="M 238 900 A 470 470 0 0 0 842 900"/></defs>
       <text font-size="15" letter-spacing="1.5" fill="rgba(255,255,255,0.30)">
@@ -1346,22 +1499,22 @@
   </div>
 
   <!-- Gesture chip — transient readout for twist-seek -->
-  <div id="gesture-chip" class="chip"></div>
+  <div id="gesture-chip" class="chip" role="status" aria-live="polite"></div>
 
   <!-- Screen dimmer — fades to near-black after extended idle -->
-  <div id="dimmer"></div>
+  <div id="dimmer" aria-hidden="true"></div>
 
   <!-- Standby clock (flagged: ?standby=clock) — drawn only while dimmed -->
   <canvas id="standby-clock" width="440" height="440"></canvas>
 
   <!-- WLED setup affordance (only appears when idle and a new device is seen) -->
-  <div id="wled-chip" class="chip"><span class="dot"></span><span class="label">WLED device found — tap to set up</span></div>
+  <button type="button" id="wled-chip" class="chip" aria-hidden="true" tabindex="-1"><span class="dot" aria-hidden="true"></span><span class="label">WLED device found — tap to set up</span></button>
 
   <!-- WLED device picker modal -->
-  <div id="wled-modal" role="dialog" aria-modal="true">
-    <div class="panel">
-      <h2>WLED devices</h2>
-      <p class="sub">Tap to add or remove a device. All selected strips run the same album-art palette in sync.</p>
+  <div id="wled-modal" role="dialog" aria-modal="true" aria-labelledby="wled-title" aria-describedby="wled-description" aria-hidden="true">
+    <div class="panel" tabindex="-1">
+      <h2 id="wled-title">WLED devices</h2>
+      <p class="sub" id="wled-description">Tap to add or remove a device. All selected strips run the same album-art palette in sync.</p>
       <ul id="wled-list"></ul>
       <div class="controls">
         <button type="button" id="wled-disable" class="danger">Disable WLED</button>
@@ -1370,7 +1523,9 @@
     </div>
   </div>
 
-  <div id="wled-toast" class="chip"></div>
+  <div id="connection-status" class="chip" role="status" aria-live="polite"></div>
+  <div id="wled-toast" class="chip" role="status" aria-live="polite"></div>
+  <aside id="diagnostics" hidden aria-label="Display diagnostics"></aside>
 </div>
 
 <script>
@@ -1386,6 +1541,9 @@
   // 45 Mode: albums spin at 33⅓, singles at 45 — like the real shelf.
   const RPM_BASE = 33.333;
   const RPM_SINGLE = 45;
+  const NEUTRAL_ART_URL = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 1080"><defs><radialGradient id="g"><stop offset="0" stop-color="#252831"/><stop offset=".58" stop-color="#111318"/><stop offset="1" stop-color="#050506"/></radialGradient></defs><rect width="1080" height="1080" fill="url(#g)"/></svg>`
+  );
   const RPM_EASE_MS = 450;   // exponential approach time constant
   let rpmCurrent = RPM_BASE;
   let rpmTarget = RPM_BASE;
@@ -1414,6 +1572,7 @@
   const progressCtx = progressCanvas.getContext("2d");
   const lyricsWrap = $("lyrics-wrap");
   const lyricsInner = $("lyrics-inner");
+  const lyricsStatus = $("lyrics-status");
   const skipPrev   = $("skip-prev");
   const skipNext   = $("skip-next");
   const pauseBtn   = $("pause-btn");
@@ -1428,8 +1587,15 @@
   const volFill    = $("vol-fill");
   const volKnob    = $("vol-knob");
   const volLabel   = $("vol-label");
+  const brightnessHud = $("brightness-hud");
+  const brightTrack = $("bright-track");
+  const brightFill = $("bright-fill");
+  const brightKnob = $("bright-knob");
+  const brightLabel = $("bright-label");
   const gestureChip = $("gesture-chip");
   const standbyClock = $("standby-clock");
+  const connectionStatus = $("connection-status");
+  const diagnosticsEl = $("diagnostics");
 
   // Progress ring constants (canvas is 296x296 = 2x the CSS size for retina)
   const RING_CX = 148;
@@ -1448,21 +1614,25 @@
     progressMs: 0,
     durationMs: 1,
     trackId: null,
+    trackUri: "",
+    playbackKey: null,
     trackName: "",
     artistName: "",
     albumName: "",
     albumId: "",
     artUrl: "",
     volume: 50,
+    brightness: 100,
+    activeBrightness: 100,
     isSingle: false,
     releaseDate: "",
     recordLabel: "",
     browsing: false,
     tracklisting: false,
+    stale: false,
     lastUpdate: performance.now(),
   };
 
-  let pausedSince = 0;
   let screenDimmed = false;
   // Idle time before the screen dims. Overridable for testing/tuning via
   // URL param, e.g. /?dim=30 dims after 30 seconds.
@@ -1481,11 +1651,32 @@
   const FLAG_STANDBY_CLOCK = FLAGS.get("standby") !== "off";
   const FLAG_BOOT = FLAGS.get("boot") !== "0";
   const FLAG_REFLECT = FLAGS.get("reflect") !== "0";
+  const FLAG_DIAGNOSTICS = FLAGS.get("diag") === "1";
+  const REDUCED_MOTION = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // Local diagnostics deliberately contain no account or track metadata.
+  // Press D (or use ?diag=1) to toggle the overlay.
+  const diagnostics = {
+    transport: "starting",
+    pollMs: 0,
+    lastSuccessAt: 0,
+    failures: 0,
+    frameAvgMs: 0,
+    frameDrops: 0,
+    quality: "full",
+  };
+  let diagnosticsVisible = FLAG_DIAGNOSTICS;
+  let backendDiagnostics = null;
+  let backendDiagnosticsState = "local only";
+  let diagnosticsTimer = null;
+  diagnosticsEl.hidden = !diagnosticsVisible;
 
   // Lyrics state
   let lyricsLines = [];      // [{time: ms, text: ""}, ...]
   let lyricsTrackId = null;
   let currentLyricIdx = -1;
+  let lyricsStatusTimer = null;
+  let lyricsLoadingTimer = null;
 
   // Vinyl rotation state
   let currentAngle = 0;
@@ -1520,6 +1711,8 @@
   // If nothing arrives at all, the flip completes as a plain turn-over.
   let pendingArt = null;
   let pendingPalette = undefined;
+  let artworkEpoch = 0;
+  let artworkLoadFailedAt = -Infinity;
   let flipArtSwapped = false;
   let flipHoldDeadline = 0;
   let lastFlipStartedAt = -Infinity;
@@ -1600,12 +1793,134 @@
     return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
   }
 
-  async function api(method, path) {
+  function stableTrackKey(track) {
+    if (!track) return null;
+    if (track.id) return "id:" + track.id;
+    if (track.uri) return "uri:" + track.uri;
+    const artists = (track.artists || []).map(a => a && a.name || "").join("|");
+    const album = track.album || {};
+    // Some local files and receiver transitions have no Spotify id. This key
+    // remains stable across polls without merging unrelated null-id tracks.
+    return "meta:" + [track.name || "", artists, album.name || "", track.duration_ms || 0].join("\u001f");
+  }
+
+  function spotifyTrackId(track) {
+    if (track && track.id) return track.id;
+    const m = track && typeof track.uri === "string" && track.uri.match(/^spotify:track:([A-Za-z0-9]+)$/);
+    return m ? m[1] : null;
+  }
+
+  function setConnectionMessage(message, kind) {
+    connectionStatus.textContent = message || "";
+    connectionStatus.classList.toggle("visible", !!message);
+    connectionStatus.dataset.kind = kind || "";
+  }
+
+  function renderDiagnostics() {
+    if (!diagnosticsVisible) return;
+    const age = diagnostics.lastSuccessAt
+      ? ((performance.now() - diagnostics.lastSuccessAt) / 1000).toFixed(1) + "s"
+      : "never";
+    const lines = [
+      `transport  ${diagnostics.transport}`,
+      `last poll   ${diagnostics.pollMs.toFixed(0)} ms`,
+      `last good   ${age}`,
+      `failures    ${diagnostics.failures}`,
+      `frame avg   ${diagnostics.frameAvgMs.toFixed(1)} ms`,
+      `long frames ${diagnostics.frameDrops}`,
+      `quality     ${diagnostics.quality}`,
+      `motion      ${REDUCED_MOTION ? "reduced" : "full"}`,
+      `server      ${backendDiagnosticsState}`,
+    ];
+    if (backendDiagnostics) {
+      const system = backendDiagnostics.system || {};
+      const receiver = backendDiagnostics.receiver || {};
+      const events = backendDiagnostics.events || {};
+      const wled = backendDiagnostics.wled || {};
+      const lyrics = backendDiagnostics.lyrics || {};
+      const crate = backendDiagnostics.crate || {};
+      const load = Array.isArray(system.load_average) ? system.load_average.join(" / ") : "n/a";
+      const diskGiB = typeof system.disk_free_bytes === "number"
+        ? (system.disk_free_bytes / 1073741824).toFixed(1) + " GiB"
+        : "n/a";
+      lines.push(
+        `uptime      ${Math.round((backendDiagnostics.uptime_seconds || 0) / 60)} min`,
+        `receiver    ${receiver.available ? "ready" : "unavailable"}${receiver.active ? " / active" : ""}`,
+        `sse clients ${events.clients ?? "n/a"}`,
+        `crate       ${crate.building ? "building" : "ready"}${crate.age_seconds == null ? "" : ` / ${Math.round(crate.age_seconds)}s old`}`,
+        `wled        ${wled.configured_devices ?? 0} configured / ${wled.discovered_devices ?? 0} seen`,
+        `lyrics      ${lyrics.circuit_open ? `backoff ${lyrics.retry_after}s` : "ready"}`,
+        `temperature ${system.cpu_temperature_c == null ? "n/a" : system.cpu_temperature_c + " °C"}`,
+        `load        ${load}`,
+        `disk free   ${diskGiB}`,
+      );
+    }
+    diagnosticsEl.textContent = lines.join("\n");
+  }
+
+  async function fetchBackendDiagnostics() {
+    if (!diagnosticsVisible || document.hidden) return;
     try {
-      const resp = await fetch("/api" + path, { method });
-      if (resp.ok && resp.status !== 204) return resp.json();
-    } catch(e) {}
-    return null;
+      const response = await fetch("/api/diagnostics", {
+        cache: "no-store",
+        credentials: "same-origin",
+      });
+      if (!response.ok) {
+        backendDiagnostics = null;
+        backendDiagnosticsState = response.status === 401 || response.status === 403
+          ? "owner authorisation required"
+          : `unavailable (${response.status})`;
+      } else {
+        backendDiagnostics = await response.json();
+        backendDiagnosticsState = "connected";
+      }
+    } catch (e) {
+      backendDiagnostics = null;
+      backendDiagnosticsState = "offline / local only";
+    }
+    renderDiagnostics();
+  }
+
+  function setDiagnosticsVisible(visible) {
+    diagnosticsVisible = !!visible;
+    diagnosticsEl.hidden = !diagnosticsVisible;
+    if (diagnosticsTimer) clearInterval(diagnosticsTimer);
+    diagnosticsTimer = null;
+    if (diagnosticsVisible) {
+      renderDiagnostics();
+      fetchBackendDiagnostics();
+      diagnosticsTimer = setInterval(fetchBackendDiagnostics, 10000);
+    }
+  }
+
+  async function fetchNowPlaying(signal) {
+    const started = performance.now();
+    try {
+      const resp = await fetch("/api/now-playing", {
+        method: "GET",
+        cache: "no-store",
+        credentials: "same-origin",
+        signal,
+      });
+      diagnostics.pollMs = performance.now() - started;
+      if (resp.status === 204) return { kind: "idle", status: 204 };
+      if (!resp.ok) return { kind: "error", status: resp.status };
+      const data = await resp.json();
+      return data && data.item
+        ? { kind: "data", data, status: resp.status }
+        : { kind: "idle", status: resp.status };
+    } catch (error) {
+      if (error && error.name === "AbortError") return { kind: "aborted" };
+      diagnostics.pollMs = performance.now() - started;
+      return { kind: "error", status: 0, error };
+    }
+  }
+
+  function noteActivity() {
+    lastInteractionAt = performance.now();
+    if (state.browsing) armBrowseTimeout();
+    if (state.tracklisting) armTlTimeout();
+    scheduleAnimation(true);
   }
 
   function setPlayerMode(hasTrack) {
@@ -1668,6 +1983,12 @@
     return String(s).replace(/[&<>"']/g, c => ({
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
     }[c]));
+  }
+
+  function cssUrl(value) {
+    // JSON string escaping is also valid for a quoted CSS url() token. Unlike
+    // HTML escaping it preserves query separators such as `&` verbatim.
+    return "url(" + JSON.stringify(String(value)) + ")";
   }
 
   function rgbToHsv(r, g, b) {
@@ -1856,15 +2177,24 @@
   function parseLRC(lrc) {
     if (!lrc) return [];
     const lines = [];
+    const offsetMatch = lrc.match(/^\[offset:([+-]?\d+)\]/mi);
+    const offsetMs = offsetMatch ? parseInt(offsetMatch[1], 10) : 0;
     for (const line of lrc.split("\n")) {
-      const m = line.match(/^\[(\d+):(\d+)\.(\d+)\]\s*(.*)/);
-      if (m) {
-        const ms = parseInt(m[1]) * 60000 + parseInt(m[2]) * 1000 + parseInt(m[3]) * 10;
-        const text = m[4].trim();
-        if (text) lines.push({ time: ms, text });
+      const stamps = [...line.matchAll(/\[(\d+):(\d{1,2})(?:[.:](\d{1,3}))?\]/g)];
+      if (stamps.length) {
+        const text = line.replace(/\[(\d+):(\d{1,2})(?:[.:](\d{1,3}))?\]/g, "").trim();
+        if (!text) continue;
+        for (const m of stamps) {
+          // LRC permits tenths, hundredths and milliseconds. Right-padding
+          // preserves their meaning: .1=100ms, .12=120ms, .123=123ms.
+          const fractionMs = parseInt((m[3] || "0").padEnd(3, "0").slice(0, 3), 10);
+          const ms = Math.max(0,
+            parseInt(m[1], 10) * 60000 + parseInt(m[2], 10) * 1000 + fractionMs + offsetMs);
+          lines.push({ time: ms, text });
+        }
       }
     }
-    return lines;
+    return lines.sort((a, b) => a.time - b.time);
   }
 
   async function fetchLyrics(trackName, artistName, albumName, durationSec) {
@@ -1874,10 +2204,23 @@
         album: albumName, duration: String(durationSec)
       });
       const resp = await fetch("/api/lyrics?" + params);
-      if (!resp.ok) return [];
+      if (!resp.ok) return { lines: [], status: "Lyrics are temporarily unavailable." };
       const data = await resp.json();
-      return parseLRC(data.syncedLyrics);
-    } catch(e) { return []; }
+      const lines = parseLRC(data.syncedLyrics);
+      return { lines, status: lines.length ? "" : "No synced lyrics for this track." };
+    } catch(e) { return { lines: [], status: "Lyrics are unavailable while offline." }; }
+  }
+
+  function showLyricsStatus(message, duration) {
+    if (lyricsStatusTimer) clearTimeout(lyricsStatusTimer);
+    lyricsStatus.textContent = message || "";
+    lyricsStatus.classList.toggle("visible", !!message);
+    if (message && duration) {
+      lyricsStatusTimer = setTimeout(() => {
+        lyricsStatus.textContent = "";
+        lyricsStatus.classList.remove("visible");
+      }, duration);
+    }
   }
 
   function renderLyricLines() {
@@ -1900,7 +2243,7 @@
     if (!lyricsLines.length) return;
 
     let p = state.progressMs;
-    if (state.isPlaying) p += nowMs - state.lastUpdate;
+    if (state.isPlaying && !state.stale) p += nowMs - state.lastUpdate;
     p = Math.min(p, state.durationMs);
 
     // Find current line
@@ -2034,6 +2377,13 @@
   }
 
   function startRecordFlip(direction) {
+    if (REDUCED_MOTION) {
+      flipStartTime = 0;
+      flipArtSwapped = false;
+      flipHoldDeadline = 0;
+      scheduleAnimation(true);
+      return;
+    }
     flipDirection = direction === "previous" ? 1 : -1;
     flipStartTime = performance.now();
     lastFlipStartedAt = flipStartTime;
@@ -2048,26 +2398,89 @@
     artworkEl.classList.add("art-changing");
     progressCanvas.classList.add("flip-hidden"); // static notches fade off for the flip
     sheenEl.classList.add("flip-hidden");        // static reflection sits the flip out
+    scheduleAnimation(true);
     // The disc-face swap, and the art-changing cleanup, are handled at the
     // hidden 90° point and on flip completion inside applyVinylTransform.
   }
 
-  // Stage new artwork/palette so a running flip reveals it at the hidden 90°
-  // point; outside a flip, apply immediately.
-  function stageArtwork(url) {
-    if (flipStartTime && !flipArtSwapped) pendingArt = url;
-    else artworkEl.src = url;
-  }
-  function stagePalette(p) {
+  // Artwork and its sampled palette are one versioned bundle. A slow CDN
+  // response from a skipped track can never recolour or overwrite the current
+  // record, and the label/lava change in the same frame as the decoded image.
+  function commitArtworkBundle(url, palette) {
     if (flipStartTime && !flipArtSwapped) {
-      pendingPalette = p;
+      pendingArt = url;
+      pendingPalette = palette;
     } else {
-      labelPalette = p;
+      artworkEl.src = url;
+      labelPalette = palette;
       lastLabelKey = "";
       renderLabel();
-      setLava(p);
-      setUiAccent(p);
+      setLava(palette);
+      setUiAccent(palette);
     }
+  }
+
+  function artworkRequestIsCurrent(epoch, playbackKey, url) {
+    return epoch === artworkEpoch && playbackKey === state.playbackKey && url === state.artUrl;
+  }
+
+  function stageArtworkBundle(url, palette, epoch, playbackKey) {
+    if (!artworkRequestIsCurrent(epoch, playbackKey, url)) return;
+    commitArtworkBundle(url, palette);
+  }
+
+  function failArtworkBundle(epoch, playbackKey, url) {
+    if (!artworkRequestIsCurrent(epoch, playbackKey, url)) return false;
+    artworkLoadFailedAt = performance.now();
+    // Keep state.artUrl pointing at the desired remote URL so the normal retry
+    // window can recover it, but never leave the previous record visible.
+    commitArtworkBundle(NEUTRAL_ART_URL, null);
+    return true;
+  }
+
+  function stageNeutralArtwork(playbackKey) {
+    // This synchronous epoch invalidates every older image/palette promise,
+    // preventing a late previous cover from replacing the neutral surface.
+    artworkEpoch++;
+    artworkLoadFailedAt = -Infinity;
+    state.artUrl = "";
+    if (playbackKey !== state.playbackKey) return;
+    commitArtworkBundle(NEUTRAL_ART_URL, null);
+  }
+
+  async function loadArtworkBundle(url, playbackKey) {
+    const epoch = ++artworkEpoch;
+    const imageReady = new Promise((resolve, reject) => {
+      const image = new Image();
+      image.decoding = "async";
+      const timeout = setTimeout(() => {
+        image.src = "";
+        reject(new Error("Artwork preload timed out"));
+      }, 8000);
+      image.onload = async () => {
+        clearTimeout(timeout);
+        try { if (image.decode) await image.decode(); } catch (e) { /* already decoded by onload */ }
+        resolve();
+      };
+      image.onerror = error => { clearTimeout(timeout); reject(error); };
+      image.src = url;
+    });
+    const paletteReady = Promise.race([
+      sampleLabelPalette(url),
+      new Promise(resolve => setTimeout(() => resolve(null), 1200)),
+    ]);
+    const [imageResult, paletteResult] = await Promise.allSettled([
+      imageReady,
+      paletteReady,
+    ]);
+    if (imageResult.status !== "fulfilled") {
+      failArtworkBundle(epoch, playbackKey, url);
+      return;
+    }
+    if (!artworkRequestIsCurrent(epoch, playbackKey, url)) return;
+    artworkLoadFailedAt = -Infinity;
+    const palette = paletteResult.status === "fulfilled" ? paletteResult.value : null;
+    stageArtworkBundle(url, palette, epoch, playbackKey);
   }
 
   // Title goes in as an inner span so overflow can edge-fade + take one
@@ -2115,43 +2528,134 @@
   }
 
   // ── Animation loop ──
-  function animate(now) {
-    requestAnimationFrame(animate);
+  let animationRaf = null;
+  let animationWakeTimer = null;
+  let standbyTimer = null;
+  let frameWindowTotal = 0;
+  let frameWindowCount = 0;
+  let slowFrameWindows = 0;
+  let fastFrameWindows = 0;
 
+  function animationNeedsFullRate() {
+    const minTarget = state.browsing ? 1 : 0;
+    const crateMoving = crateTarget !== null && Math.abs(crateScroll - crateTarget) > 0.4;
+    return (!REDUCED_MOTION && state.isPlaying && !state.stale && !state.tracklisting && !state.browsing) || !!flipStartTime ||
+      Math.abs(spinSpeed - spinTarget) > 0.001 || returningToZero ||
+      Math.abs(minimizeProg - minTarget) > 0.0015 || crateMoving;
+  }
+
+  function scheduleAnimation(immediate) {
+    if (screenDimmed || animationRaf !== null) return;
+    if (immediate && animationWakeTimer) {
+      clearTimeout(animationWakeTimer);
+      animationWakeTimer = null;
+    }
+    if (immediate || animationNeedsFullRate()) {
+      lastFrameTime = performance.now();
+      animationRaf = requestAnimationFrame(animate);
+      return;
+    }
+    if (animationWakeTimer) return;
+    // Static paused/idle scenes only need a low-rate tick to notice the dim
+    // deadline. Any input, poll or transition requests an immediate frame.
+    const untilDim = Math.max(50, DIM_DELAY - (performance.now() - lastInteractionAt));
+    animationWakeTimer = setTimeout(() => {
+      animationWakeTimer = null;
+      if (!screenDimmed) {
+        lastFrameTime = performance.now();
+        animationRaf = requestAnimationFrame(animate);
+      }
+    }, Math.min(REDUCED_MOTION && state.isPlaying ? 250 : 1000, untilDim));
+  }
+
+  function scheduleStandbyClock() {
+    if (standbyTimer) clearTimeout(standbyTimer);
+    standbyTimer = null;
+    if (!screenDimmed || !FLAG_STANDBY_CLOCK) return;
+    drawStandbyClock();
+    const now = new Date();
+    const toNextMinute = 60000 - (now.getSeconds() * 1000 + now.getMilliseconds()) + 20;
+    standbyTimer = setTimeout(scheduleStandbyClock, toNextMinute);
+  }
+
+  function setScreenDimmed(dimmed) {
+    if (screenDimmed === dimmed) return;
+    screenDimmed = dimmed;
+    dimmer.classList.toggle("dim", dimmed);
+    viewport.classList.toggle("dimmed", dimmed);
+    syncScreenBrightness();
+    standbyClock.classList.toggle("on", dimmed && FLAG_STANDBY_CLOCK);
+    wledChip.setAttribute("aria-hidden", dimmed || !wledChip.classList.contains("visible") ? "true" : "false");
+    if (dimmed) {
+      if (animationRaf !== null) cancelAnimationFrame(animationRaf);
+      animationRaf = null;
+      if (animationWakeTimer) clearTimeout(animationWakeTimer);
+      animationWakeTimer = null;
+      lastClockMin = -1;
+      scheduleStandbyClock();
+      if (wledRefreshTimer) clearTimeout(wledRefreshTimer);
+      wledRefreshTimer = null;
+    } else {
+      if (standbyTimer) clearTimeout(standbyTimer);
+      standbyTimer = null;
+      lastFrameTime = performance.now();
+      scheduleAnimation(true);
+      scheduleWledRefresh(0);
+    }
+  }
+
+  function observeFrame(dt) {
+    if (dt <= 0 || dt > 250) return;
+    frameWindowTotal += dt;
+    frameWindowCount++;
+    if (dt > 40) diagnostics.frameDrops++;
+    if (frameWindowCount < 120) return;
+    diagnostics.frameAvgMs = frameWindowTotal / frameWindowCount;
+    if (diagnostics.frameAvgMs > 24) {
+      slowFrameWindows++;
+      fastFrameWindows = 0;
+    } else if (diagnostics.frameAvgMs < 18) {
+      fastFrameWindows++;
+      slowFrameWindows = 0;
+    }
+    if (slowFrameWindows >= 2 && diagnostics.quality !== "reduced") {
+      diagnostics.quality = "reduced";
+      viewport.classList.add("quality-low");
+    } else if (fastFrameWindows >= 4 && diagnostics.quality !== "full") {
+      diagnostics.quality = "full";
+      viewport.classList.remove("quality-low");
+    }
+    frameWindowTotal = 0;
+    frameWindowCount = 0;
+    renderDiagnostics();
+  }
+
+  function animate(now) {
+    animationRaf = null;
     const dt = now - lastFrameTime;
     lastFrameTime = now;
+    observeFrame(dt);
 
     // --- Screen dim / wake — decided first so a dimmed screen can skip all
-    // rendering. Dimming only happens when not playing; pausing here idles the
-    // GPU during those hours (the crate + lava would otherwise animate forever
-    // behind the overlay). rAF stays alive — it's near-free — so the wake tap
-    // is still detected next frame. ---
+    // rendering. Dimming only happens when not playing and after genuine user
+    // inactivity. Once dimmed, rAF is stopped entirely until a wake event. ---
     setPlayerMode(!!state.trackId);
     viewport.classList.toggle("controls-idle",
       !!state.trackId && now - lastInteractionAt > CONTROLS_IDLE_MS);
-    const timePaused = pausedSince > 0 ? now - pausedSince : 0;
-    const shouldDim = !state.isPlaying && timePaused >= DIM_DELAY;
-    if (shouldDim && !screenDimmed) {
-      dimmer.classList.add("dim");
-      viewport.classList.add("dimmed");
-      screenDimmed = true;
-      if (FLAG_STANDBY_CLOCK) { standbyClock.classList.add("on"); lastClockMin = -1; }
-    } else if (!shouldDim && screenDimmed) {
-      dimmer.classList.remove("dim");
-      viewport.classList.remove("dimmed");
-      screenDimmed = false;
-      standbyClock.classList.remove("on");
-    }
+    const modalOpen = $("wled-modal").classList.contains("open");
+    const shouldDim = !state.isPlaying && !modalOpen && now - lastInteractionAt >= DIM_DELAY;
+    if (shouldDim !== screenDimmed) setScreenDimmed(shouldDim);
     if (screenDimmed) {
-      // Paused: render nothing while the screen is dim — except the flagged
-      // standby clock, which redraws once per minute (GPU stays idle).
-      if (FLAG_STANDBY_CLOCK) drawStandbyClock();
+      // No rAF is scheduled while dimmed. The optional clock has its own
+      // minute-aligned timer, so both CPU and GPU truly sleep.
       return;
     }
 
     // --- Minimize morph easing (pinch to/from the crate) ---
     const minTarget = state.browsing ? 1 : 0;
-    if (minimizeProg !== minTarget) {
+    if (REDUCED_MOTION) {
+      minimizeProg = minTarget;
+    } else if (minimizeProg !== minTarget) {
       minimizeProg += (minTarget - minimizeProg) * (1 - Math.exp(-dt / 150));
       if (Math.abs(minTarget - minimizeProg) < 0.0015) minimizeProg = minTarget;
     }
@@ -2159,7 +2663,7 @@
     if (state.browsing) {
       // Minimizing: decelerate the record to upright (so it lands as a
       // square cover the right way up), coupled to the shrink progress.
-      const e = easeOutQuint(Math.min(1, minimizeProg));
+      const e = REDUCED_MOTION ? 1 : easeOutQuint(Math.min(1, minimizeProg));
       currentAngle = browseStartAngle + (browseTargetAngle - browseStartAngle) * e;
     } else if (!state.tracklisting) {
       // (While the tracklist is up the record is held still — see below — so the
@@ -2228,6 +2732,7 @@
       updateLyrics(now);       // lyrics
       updateCrate(now, dt);    // crate glide/snap
     }
+    scheduleAnimation();
   }
 
   function updateProgressRing(now) {
@@ -2246,7 +2751,7 @@
     lastProgressEmpty = false;
 
     let p = state.progressMs;
-    if (state.isPlaying) {
+    if (state.isPlaying && !state.stale) {
       p += now - state.lastUpdate;
     }
     p = Math.min(p, state.durationMs);
@@ -2393,10 +2898,12 @@
 
   // ── Spin control ──
   function setSpinTarget(target) {
+    if (REDUCED_MOTION) target = 0;
     if (spinTarget === target) return;
     spinTarget = target;
     spinStartTime = performance.now();
     spinStartSpeed = spinSpeed;
+    scheduleAnimation(true);
   }
 
   // ── 45 Mode ──
@@ -2438,8 +2945,15 @@
   let crateDrag = null;
   let crateCaptionIdx = -1;
   let shelfFetchedAt = -Infinity;
+  let shelfRetryAt = -Infinity;
+  let shelfRefreshPromise = null;
+  let shelfRetryTimer = null;
+  let crateBuilding = false;
   let shelfLaunchedAt = -Infinity;
   let shelfRenderKey = "";
+  const CRATE_CACHE_MS = 120000;
+  const CRATE_RETRY_MS = 10000;
+  const CRATE_BUILD_RETRY_MS = 3000;
 
   function crateMaxScroll() {
     return Math.max(0, (crateItems.length - 1) * CRATE_SPACING);
@@ -2449,23 +2963,35 @@
     return Math.max(0, Math.min(crateItems.length - 1, Math.round(crateScroll / CRATE_SPACING)));
   }
 
+  function stableSectionKey(section, index) {
+    return String(section && section.id || section && section.title || "section-" + index);
+  }
+
+  function stableCrateItemKey(item, index) {
+    return String(item && (item.id || item.uri) || [item && item.title || "", item && item.subtitle || "", index].join("|"));
+  }
+
   const CHIP_ARC_R = 2000; // px — must match the #crate-chips top offset
   function renderChips() {
     crateChips.innerHTML = "";
     const els = [];
-    for (const s of crateData.sections) {
-      const chip = document.createElement("div");
-      chip.className = "crate-chip" + (s.id === crateSection ? " active" : "");
+    crateData.sections.forEach((s, sectionIndex) => {
+      const sectionKey = stableSectionKey(s, sectionIndex);
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "crate-chip" + (sectionKey === crateSection ? " active" : "");
       chip.textContent = s.title;
+      chip.setAttribute("role", "tab");
+      chip.setAttribute("aria-selected", sectionKey === crateSection ? "true" : "false");
       chip.addEventListener("click", () => {
-        if (crateSection === s.id) return;
-        crateSection = s.id;
+        if (crateSection === sectionKey) return;
+        crateSection = sectionKey;
         buildCrate();
         renderChips();
       });
       crateChips.appendChild(chip);
       els.push(chip);
-    }
+    });
     // Arc layout: cumulative widths → angle about an anchor far below the
     // row, so the chips follow the bezel's curvature and tilt with it.
     const gap = 12;
@@ -2482,16 +3008,23 @@
 
   function buildCrate() {
     const sections = crateData.sections;
-    const section = sections.find(s => s.id === crateSection) || sections[0];
+    const sectionIndex = Math.max(0, sections.findIndex((s, i) => stableSectionKey(s, i) === crateSection));
+    const section = sections[sectionIndex] || sections[0];
     if (!section) return;
-    crateSection = section.id;
+    crateSection = stableSectionKey(section, sectionIndex);
     crateItems = section.items || [];
     crateBelt.innerHTML = "";
-    crateCards = crateItems.map(item => {
+    crateCards = crateItems.map((item, index) => {
       const el = document.createElement("div");
       el.className = "crate-card";
+      el.dataset.key = stableCrateItemKey(item, index);
+      el.id = "crate-option-" + index;
+      el.setAttribute("role", "option");
+      el.setAttribute("aria-label", [item.title || "Untitled record", item.subtitle || ""].filter(Boolean).join(" — "));
+      el.setAttribute("aria-selected", "false");
       el.style.setProperty("--accent", item.accent || "#888");
-      if (item.image) el.style.backgroundImage = `url('${esc(item.image)}')`;
+      el._imageUrl = item.image || "";
+      el._imageApplied = false;
       crateBelt.appendChild(el);
       return el;
     });
@@ -2508,10 +3041,17 @@
       const d = i * CRATE_SPACING - crateScroll;
       const ad = Math.abs(d);
       if (ad > 720) {
+        el.setAttribute("aria-hidden", "true");
         el.style.opacity = "0";
         el.style.transform = "translate3d(-9999px,0,0)";
         el.style.willChange = "auto"; // demote parked sleeves — GPU layers cost real RAM on the 1GB Pi
         continue;
+      }
+      el.setAttribute("aria-hidden", "false");
+      if (!el._imageApplied && el._imageUrl) {
+        el.style.backgroundImage = cssUrl(el._imageUrl);
+        el._imageApplied = true;
+        queueCrateImage(el._imageUrl);
       }
       el.style.willChange = "transform";
       const t = Math.max(-1, Math.min(1, d / 320));
@@ -2526,16 +3066,19 @@
       el.style.opacity = ad > 560 ? String(Math.max(0, 1 - (ad - 560) / 140)) : "1";
       el.style.zIndex = String(200 - Math.round(ad / 10));
       el.classList.toggle("focused", i === focusIdx);
+      el.setAttribute("aria-selected", i === focusIdx ? "true" : "false");
     }
     if (focusIdx !== crateCaptionIdx && crateItems[focusIdx]) {
+      crateEl.setAttribute("aria-activedescendant", crateCards[focusIdx].id);
       crateCaptionIdx = focusIdx;
       capTitle.textContent = crateItems[focusIdx].title || "";
       capSub.textContent = crateItems[focusIdx].subtitle || "";
       if (FLAG_REFLECT) {
         const img = crateItems[focusIdx].image;
         crateReflection.style.display = img ? "block" : "none";
-        if (img) crateReflection.style.backgroundImage = `url('${esc(img)}')`;
+        if (img) crateReflection.style.backgroundImage = cssUrl(img);
       }
+      preloadCrateWindow(focusIdx);
     }
   }
 
@@ -2544,6 +3087,11 @@
   function updateCrate(now, dt) {
     if (!crateCards.length || !shelf.classList.contains("visible")) return;
     if (!crateDrag && crateTarget !== null && crateScroll !== crateTarget) {
+      if (REDUCED_MOTION) {
+        crateScroll = crateTarget;
+        layoutCrate();
+        return;
+      }
       const k = 1 - Math.exp(-dt / 130);
       crateScroll += (crateTarget - crateScroll) * k;
       if (Math.abs(crateTarget - crateScroll) < 0.4) crateScroll = crateTarget;
@@ -2587,6 +3135,7 @@
     if (!crateDrag || e.pointerId !== crateDrag.id) return;
     const drag = crateDrag;
     crateDrag = null;
+    scheduleAnimation(true);
     const max = crateMaxScroll();
 
     if (!drag.moved) {
@@ -2616,6 +3165,24 @@
     if (!crateDrag || e.pointerId !== crateDrag.id) return;
     crateDrag = null;
     crateTarget = Math.min(crateMaxScroll(), Math.max(0, Math.round(crateScroll / CRATE_SPACING) * CRATE_SPACING));
+    scheduleAnimation(true);
+  });
+
+  crateEl.addEventListener("keydown", e => {
+    if (!crateItems.length) return;
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      launchItem(crateItems[crateFocusedIndex()]);
+      return;
+    }
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    const direction = e.key === "ArrowRight" ? 1 : -1;
+    const next = Math.max(0, Math.min(crateItems.length - 1, crateFocusedIndex() + direction));
+    crateTarget = next * CRATE_SPACING;
+    crateScroll = crateTarget;
+    layoutCrate();
+    armBrowseTimeout();
   });
 
   async function launchItem(item) {
@@ -2647,24 +3214,161 @@
     }
   }
 
-  // Warm every crate cover into the browser's HTTP cache ahead of time, so the
-  // background-images that buildCrate() assigns paint instantly at pinch-in
-  // instead of downloading blank-first over Wi-Fi. Image refs are held until
-  // load so the fetch can't be GC-cancelled; URLs are de-duped across refreshes.
-  const _crateImgWarm = new Map();
+  // Warm only the likely-visible sleeves, with bounded concurrency and a
+  // persistent completed set. This avoids repeating a burst of ~50 decodes on
+  // every two-minute crate refresh.
+  const _crateImgDone = new Set();
+  const _crateImgQueued = new Set();
+  const _crateImgQueue = [];
+  const _crateImgActive = new Map();
+  const CRATE_PRELOAD_CONCURRENCY = 3;
+
+  function pumpCratePreloads() {
+    while (_crateImgActive.size < CRATE_PRELOAD_CONCURRENCY && _crateImgQueue.length) {
+      const url = _crateImgQueue.shift();
+      _crateImgQueued.delete(url);
+      if (_crateImgDone.has(url) || _crateImgActive.has(url)) continue;
+      const image = new Image();
+      image.decoding = "async";
+      _crateImgActive.set(url, image);
+      image.onload = image.onerror = () => {
+        _crateImgActive.delete(url);
+        _crateImgDone.add(url); // also suppress retry storms for broken covers
+        while (_crateImgDone.size > 256) _crateImgDone.delete(_crateImgDone.values().next().value);
+        pumpCratePreloads();
+      };
+      image.src = url;
+    }
+  }
+
+  function queueCrateImage(url) {
+    if (!url || _crateImgDone.has(url) || _crateImgActive.has(url) || _crateImgQueued.has(url)) return;
+    if (_crateImgQueue.length >= 64) return;
+    _crateImgQueued.add(url);
+    _crateImgQueue.push(url);
+    pumpCratePreloads();
+  }
+
+  function preloadCrateWindow(focusIndex) {
+    for (let i = Math.max(0, focusIndex - 3); i <= Math.min(crateItems.length - 1, focusIndex + 3); i++) {
+      queueCrateImage(crateItems[i] && crateItems[i].image);
+    }
+  }
+
   function preloadCrateImages(data) {
     if (!data || !data.sections) return;
     for (const s of data.sections) {
-      for (const it of (s.items || [])) {
-        const u = it && it.image;
-        if (!u || _crateImgWarm.has(u)) continue;
-        const im = new Image();
-        _crateImgWarm.set(u, im);
-        im.decoding = "async";
-        im.onload = im.onerror = () => { _crateImgWarm.delete(u); };
-        im.src = u;
-      }
+      // First few covers from each tab make initial navigation feel instant;
+      // layoutCrate queues neighbours as focus moves.
+      for (const it of (s.items || []).slice(0, 4)) queueCrateImage(it && it.image);
     }
+  }
+
+  function clearCrateUi(showEmptyMessage) {
+    crateSection = null;
+    crateItems = [];
+    crateCards = [];
+    crateDrag = null;
+    crateScroll = 0;
+    crateTarget = 0;
+    crateCaptionIdx = -1;
+    shelfRenderKey = "empty";
+    crateChips.replaceChildren();
+    crateBelt.replaceChildren();
+    crateEl.removeAttribute("aria-activedescendant");
+    crateReflection.style.display = "none";
+    crateReflection.style.backgroundImage = "";
+    capTitle.textContent = showEmptyMessage ? "No records available" : "";
+    capSub.textContent = showEmptyMessage ? "Connect Spotify to fill the record shelf" : "";
+  }
+
+  function renderCrateLoading() {
+    clearCrateUi(false);
+    shelfRenderKey = "loading";
+    capTitle.textContent = "Building the record shelf…";
+    capSub.textContent = "Finding albums and playlists";
+    shelf.classList.toggle("visible", !state.trackId || state.browsing);
+  }
+
+  function renderCrateData() {
+    if (!crateData && crateBuilding) {
+      renderCrateLoading();
+      return;
+    }
+    const sections = (crateData && crateData.sections) || [];
+    if (!sections.length) {
+      clearCrateUi(true);
+      shelf.classList.toggle("visible", !state.trackId || state.browsing);
+      return;
+    }
+    const key = JSON.stringify(sections.map((s, sectionIndex) => [
+      stableSectionKey(s, sectionIndex),
+      (s.items || []).map((item, itemIndex) => stableCrateItemKey(item, itemIndex)),
+    ]));
+    if (key !== shelfRenderKey) {
+      shelfRenderKey = key;
+      if (!crateSection || !sections.some((s, i) => stableSectionKey(s, i) === crateSection)) {
+        crateSection = stableSectionKey(sections[0], 0);
+      }
+      renderChips();
+      buildCrate();
+    }
+    shelf.classList.toggle("visible", !state.trackId || state.browsing);
+  }
+
+  function scheduleCrateRetry(delay) {
+    if (shelfRetryTimer) clearTimeout(shelfRetryTimer);
+    shelfRetryTimer = setTimeout(() => {
+      shelfRetryTimer = null;
+      refreshCrateData();
+    }, delay);
+  }
+
+  function applyCratePayload(data, now) {
+    if (!data || !Array.isArray(data.sections)) throw new Error("invalid crate payload");
+    if (data.building === true) {
+      crateBuilding = true;
+      shelfRetryAt = now + CRATE_BUILD_RETRY_MS;
+      if (!crateData) renderCrateLoading();
+      scheduleCrateRetry(CRATE_BUILD_RETRY_MS);
+      return false;
+    }
+
+    crateBuilding = false;
+    crateData = data;
+    shelfFetchedAt = now;
+    shelfRetryAt = now + CRATE_CACHE_MS;
+    if (shelfRetryTimer) clearTimeout(shelfRetryTimer);
+    shelfRetryTimer = null;
+    preloadCrateImages(data);
+    renderCrateData();
+    return true;
+  }
+
+  function refreshCrateData() {
+    if (shelfRefreshPromise) return shelfRefreshPromise;
+    // Reserve a short retry window immediately so rapid playback/SSE updates
+    // cannot start duplicate crate requests. A failed request preserves the
+    // last successfully rendered data and becomes eligible again after 10s.
+    shelfRetryAt = performance.now() + CRATE_RETRY_MS;
+    shelfRefreshPromise = (async () => {
+      const response = await fetch("/api/crate", { cache: "no-store", credentials: "same-origin" });
+      if (!response.ok) throw new Error("crate request failed: " + response.status);
+      const data = await response.json();
+      // A non-building empty array is authoritative (for example after an
+      // account disconnect). `building:true`, however, is a transient cold
+      // response and must never erase the last completed shelf.
+      return applyCratePayload(data, performance.now());
+    })().catch(() => {
+      crateBuilding = false;
+      shelfRetryAt = performance.now() + CRATE_RETRY_MS;
+      scheduleCrateRetry(CRATE_RETRY_MS);
+      renderCrateData();
+      return false;
+    }).finally(() => {
+      shelfRefreshPromise = null;
+    });
+    return shelfRefreshPromise;
   }
 
   async function updateShelf() {
@@ -2678,34 +3382,13 @@
     if (!state.browsing && performance.now() - shelfLaunchedAt < 10000) return;
 
     const now = performance.now();
-    if (!crateData || now - shelfFetchedAt > 120000) {
-      shelfFetchedAt = now;
-      const refresh = (async () => {
-        try {
-          const r = await fetch("/api/crate");
-          if (r.ok) {
-            const d = await r.json();
-            if (d && d.sections && d.sections.length) { crateData = d; preloadCrateImages(d); }
-          }
-        } catch (e) { /* offline — try again next cycle */ }
-      })();
+    if ((!crateData || now - shelfFetchedAt > CRATE_CACHE_MS) && now >= shelfRetryAt) {
+      const refresh = refreshCrateData();
       // Only block when we have nothing to show; a stale crate renders
       // immediately and the refresh lands on a later poll.
       if (!crateData) await refresh;
     }
-    const sections = (crateData && crateData.sections) || [];
-    if (!sections.length) {
-      shelf.classList.remove("visible");
-      return;
-    }
-    const key = JSON.stringify(sections.map(s => [s.id, (s.items || []).length, s.items[0] && s.items[0].uri]));
-    if (key !== shelfRenderKey) {
-      shelfRenderKey = key;
-      if (!crateSection || !sections.find(s => s.id === crateSection)) crateSection = sections[0].id;
-      renderChips();
-      buildCrate();
-    }
-    if (!state.trackId || state.browsing) shelf.classList.add("visible");
+    renderCrateData();
   }
 
   // ── Browse mode (pinch-in minimize) ──
@@ -2732,6 +3415,7 @@
     // here made every pinch-in wait on the server.
     updateShelf();
     armBrowseTimeout();
+    scheduleAnimation(true);
   }
 
   function exitBrowse() {
@@ -2742,6 +3426,7 @@
     if (state.trackId) shelf.classList.remove("visible");
     // Record is upright (angle 0) — spin it back up if playback continues.
     setSpinTarget(state.isPlaying ? 1 : 0);
+    scheduleAnimation(true);
   }
 
   function armBrowseTimeout() {
@@ -2761,11 +3446,12 @@
   // from there; tap aside (off the list column) to dismiss.
   const tlEl = $("tracklist");
   const tlPicker = $("tl-picker");
+  const tlStatus = $("tl-status");
   const tlAlbumEl = tlEl.querySelector(".tl-album");
   const tlArtistEl = tlEl.querySelector(".tl-artist");
   const TL_ROW_PX = 96;        // vertical spacing between rows (1080 space)
   const TL_CENTER = 330;       // picker mid-line (height 660 / 2)
-  const tracklistCache = {};   // albumId -> [tracks]
+  const tracklistCache = new Map(); // bounded insertion-order LRU: albumId -> tracks
   let tlTracks = [];
   let tlRows = [];
   let tlOffset = 0;            // float index centered on the mid-line
@@ -2773,6 +3459,9 @@
   let tlDragMoved = false;
   let tlTimer = null;
   let tlLaunchAt = -Infinity;
+  let tlRequestEpoch = 0;
+  let tlAbortController = null;
+  let tlRestoreFocus = null;
 
   // Tracklist highlight uses the guarded UI accent — same tint as the rest of
   // the chrome, and never goes muddy on dark artwork like the raw accent could.
@@ -2797,6 +3486,11 @@
 
   function tlAnimateTo(target) {
     cancelAnimationFrame(tlSnapRaf);
+    if (REDUCED_MOTION) {
+      tlOffset = target;
+      tlLayout();
+      return;
+    }
     const step = () => {
       tlOffset += (target - tlOffset) * 0.22;
       if (Math.abs(target - tlOffset) < 0.004) { tlOffset = target; tlLayout(); return; }
@@ -2814,13 +3508,20 @@
   function buildTlRows() {
     tlPicker.innerHTML = "";
     tlRows = [];
-    const curUri = state.trackId ? "spotify:track:" + state.trackId : "";
+    if (tlTracks.length) tlStatus.textContent = "";
+    else if (!tlStatus.textContent) tlStatus.textContent = "No tracks are available for this album.";
+    const curUri = state.trackUri || "";
     let curIdx = 0;
     tlTracks.forEach((t, i) => {
-      const row = document.createElement("div");
+      const row = document.createElement("button");
+      row.type = "button";
       row.className = "tl-row";
       const isCur = t.uri === curUri;
       if (isCur) { row.classList.add("tl-current"); row._current = true; curIdx = i; }
+      row.setAttribute("role", "option");
+      row.setAttribute("aria-selected", isCur ? "true" : "false");
+      row.tabIndex = -1;
+      row.dataset.key = String(t.id || t.uri || [t.name || "", t.duration_ms || 0, i].join("|"));
       const num = document.createElement("span");
       num.className = "tl-num";
       num.textContent = t.number || (i + 1);
@@ -2841,22 +3542,59 @@
       tlRows.push(row);
     });
     tlOffset = curIdx;
+    if (tlRows[curIdx]) tlRows[curIdx].tabIndex = 0;
     tlLayout();
   }
 
   async function loadTracklist() {
     const key = state.albumId || "";
-    if (key && tracklistCache[key]) { tlTracks = tracklistCache[key]; buildTlRows(); return; }
+    const epoch = ++tlRequestEpoch;
+    if (tlAbortController) tlAbortController.abort();
+    tlAbortController = new AbortController();
+    if (key && tracklistCache.has(key)) {
+      tlTracks = tracklistCache.get(key);
+      tracklistCache.delete(key);
+      tracklistCache.set(key, tlTracks);
+      tlStatus.textContent = tlTracks.length ? "" : "No tracks are available for this album.";
+      buildTlRows();
+      tlAbortController = null;
+      return;
+    }
+    tlTracks = [];
+    tlPicker.innerHTML = "";
+    tlStatus.textContent = "Loading album tracks…";
     try {
       const url = key ? "/api/album/tracks?album_id=" + encodeURIComponent(key) : "/api/album/tracks";
-      const r = await fetch(url);
+      const r = await fetch(url, { signal: tlAbortController.signal, credentials: "same-origin" });
+      if (epoch !== tlRequestEpoch || key !== (state.albumId || "") || !state.tracklisting) return;
       if (r.ok) {
         const d = await r.json();
         tlTracks = (d && d.tracks) || [];
-        if (d && d.album_id) tracklistCache[d.album_id] = tlTracks;
-      } else { tlTracks = []; }
-    } catch (e) { tlTracks = []; }
-    if (state.tracklisting) buildTlRows();
+        if (d && d.album_id) {
+          tracklistCache.delete(d.album_id);
+          tracklistCache.set(d.album_id, tlTracks);
+          while (tracklistCache.size > 12) tracklistCache.delete(tracklistCache.keys().next().value);
+        }
+        tlStatus.textContent = "";
+      } else {
+        tlTracks = [];
+        tlStatus.textContent = r.status === 401 || r.status === 403
+          ? "Owner authorisation is required to browse this album."
+          : "Album tracks could not be loaded. Tap aside to close.";
+      }
+    } catch (e) {
+      if (e && e.name === "AbortError") return;
+      if (epoch !== tlRequestEpoch || !state.tracklisting) return;
+      tlTracks = [];
+      tlStatus.textContent = "Album tracks are unavailable while the display is offline.";
+    } finally {
+      if (epoch === tlRequestEpoch) tlAbortController = null;
+    }
+    if (state.tracklisting) {
+      buildTlRows();
+      const focused = tlRows[Math.round(tlOffset)];
+      if (focused) focused.focus({ preventScroll: true });
+    }
   }
 
   function refreshTracklist() {
@@ -2869,8 +3607,12 @@
   function openTracklist() {
     if (state.tracklisting || state.browsing || !state.trackId) return;
     state.tracklisting = true;
+    tlRestoreFocus = document.activeElement;
+    setModalLayersInert("tracklist", tracklistBackgroundLayers, true);
     viewport.classList.add("tracklisting");
     tlEl.classList.add("visible");
+    tlEl.setAttribute("aria-hidden", "false");
+    tlEl.focus({ preventScroll: true });
     // Progressive disclosure: the gesture hint retires after 3 viewings.
     try {
       const seen = +(localStorage.tlHintSeen || 0);
@@ -2884,11 +3626,25 @@
   }
 
   function closeTracklist() {
-    if (!state.tracklisting) return;
+    const wasOpen = state.tracklisting;
     state.tracklisting = false;
+    setModalLayersInert("tracklist", tracklistBackgroundLayers, false);
     viewport.classList.remove("tracklisting");
     tlEl.classList.remove("visible");
+    tlEl.setAttribute("aria-hidden", "true");
     if (tlTimer) { clearTimeout(tlTimer); tlTimer = null; }
+    if (tlAbortController) { tlAbortController.abort(); tlAbortController = null; }
+    tlRequestEpoch++;
+    cancelAnimationFrame(tlSnapRaf);
+    tlPts.clear();
+    tlScroll = null;
+    tlPinch = null;
+    tlDragMoved = false;
+    if (wasOpen && tlRestoreFocus && typeof tlRestoreFocus.focus === "function") {
+      tlRestoreFocus.focus({ preventScroll: true });
+    }
+    tlRestoreFocus = null;
+    scheduleAnimation(true);
   }
 
   function armTlTimeout() {
@@ -2968,8 +3724,16 @@
     }
     if (tlPts.size < 2) tlPinch = null;
   }
+  function tlPointerAbort(e) {
+    tlPts.delete(e.pointerId);
+    tlScroll = null;
+    tlPinch = null;
+    tlDragMoved = false;
+    tlSnap();
+  }
   tlEl.addEventListener("pointerup", tlPointerEnd);
-  tlEl.addEventListener("pointercancel", tlPointerEnd);
+  tlEl.addEventListener("pointercancel", tlPointerAbort);
+  tlEl.addEventListener("lostpointercapture", tlPointerAbort);
   tlPicker.addEventListener("wheel", e => {
     e.preventDefault();
     tlOffset = Math.max(0, Math.min(tlTracks.length - 1, tlOffset + (e.deltaY > 0 ? 0.5 : -0.5)));
@@ -2986,7 +3750,31 @@
     closeTracklist();
   });
 
-  // ── Volume HUD (two-finger drag / pinch-out) ──
+  tlEl.addEventListener("keydown", e => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeTracklist();
+      return;
+    }
+    if (e.key === "Tab" && tlRows.length) {
+      e.preventDefault();
+      const row = tlRows[Math.max(0, Math.min(tlRows.length - 1, Math.round(tlOffset)))];
+      if (row) row.focus({ preventScroll: true });
+      return;
+    }
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    e.preventDefault();
+    const delta = e.key === "ArrowDown" ? 1 : -1;
+    tlOffset = Math.max(0, Math.min(tlTracks.length - 1, Math.round(tlOffset) + delta));
+    tlAnimateTo(tlOffset);
+    tlRows.forEach(row => { row.tabIndex = -1; });
+    const row = tlRows[tlOffset];
+    if (row) row.tabIndex = 0;
+    if (row) row.focus({ preventScroll: true });
+    armTlTimeout();
+  });
+
+  // ── Volume HUD (two-finger vertical drag) ──
   const VOL_ARC_R = 505;
   const VOL_A0 = -55, VOL_A1 = 55; // degrees on the right rim; -55 = top = 100%
   let volHudTimer = null;
@@ -3012,14 +3800,14 @@
     volLabel.textContent = String(Math.round(pct));
   }
 
-  function showVolumeHud(opts) {
+  function showVolumeHud() {
     renderVolume(state.volume);
+    brightnessHud.classList.remove("visible");
     volumeHud.classList.add("visible");
-    volumeHud.classList.toggle("pinned", !!(opts && opts.pinned));
     if (volHudTimer) clearTimeout(volHudTimer);
     volHudTimer = setTimeout(() => {
-      volumeHud.classList.remove("visible", "pinned");
-    }, (opts && opts.pinned) ? 4500 : 2600);
+      volumeHud.classList.remove("visible");
+    }, 2600);
   }
 
   function setVolume(pct) {
@@ -3045,20 +3833,204 @@
     }
   }
 
-  // Pinned HUD: drag anywhere along the right rim to set volume directly.
-  function hudPointerVolume(e) {
-    if (!volumeHud.classList.contains("pinned")) return;
-    const deg = (Math.atan2(e.clientY - 540, e.clientX - 540) * 180) / Math.PI;
-    if (deg < VOL_A0 - 14 || deg > VOL_A1 + 14) return;
-    setVolume(((VOL_A1 - deg) / (VOL_A1 - VOL_A0)) * 100);
-    showVolumeHud({ pinned: true }); // keep it open while interacting
-    e.preventDefault();
-    e.stopPropagation();
+  // ── Backlight HUD + hardware control (three-finger vertical drag) ──
+  // UI values stay logical 0–100. The server maps them onto the current
+  // hardware-safe range (80% maximum while the display is on the Pi's 3A
+  // supply), so this page never needs to know USB-current details.
+  const BRIGHT_ARC_R = 505;
+  const BRIGHT_A0 = 125, BRIGHT_A1 = 235; // mirrored onto the left rim
+  const IDLE_BRIGHTNESS_PERCENT = 10;
+  const BRIGHTNESS_RETRY_DELAYS_MS = [250, 750, 1500];
+  let brightHudTimer = null;
+  let brightSendTimer = null;
+  let brightTimerKind = null;
+  let brightPendingIntent = null;
+  let brightSendInFlight = false;
+  let brightnessIntentRevision = 0;
+  let brightnessModeSyncPending = false;
+
+  function brightPoint(deg) {
+    const r = (deg * Math.PI) / 180;
+    return [540 + BRIGHT_ARC_R * Math.cos(r), 540 + BRIGHT_ARC_R * Math.sin(r)];
   }
-  volumeHud.querySelector("svg").addEventListener("pointerdown", hudPointerVolume);
-  volumeHud.querySelector("svg").addEventListener("pointermove", e => {
-    if (e.buttons || e.pressure > 0) hudPointerVolume(e);
-  });
+
+  function brightArcPath(a0, a1) {
+    const [x0, y0] = brightPoint(a0), [x1, y1] = brightPoint(a1);
+    return `M ${x0.toFixed(1)} ${y0.toFixed(1)} A ${BRIGHT_ARC_R} ${BRIGHT_ARC_R} 0 0 1 ${x1.toFixed(1)} ${y1.toFixed(1)}`;
+  }
+
+  function renderBrightness(pct) {
+    pct = Math.max(0, Math.min(100, Number(pct) || 0));
+    const a = BRIGHT_A0 + (pct / 100) * (BRIGHT_A1 - BRIGHT_A0);
+    brightFill.setAttribute("d", brightArcPath(BRIGHT_A0, a));
+    const [kx, ky] = brightPoint(a);
+    brightKnob.setAttribute("cx", kx.toFixed(1));
+    brightKnob.setAttribute("cy", ky.toFixed(1));
+    brightLabel.textContent = String(Math.round(pct));
+  }
+
+  function showBrightnessHud() {
+    renderBrightness(state.brightness);
+    volumeHud.classList.remove("visible");
+    brightnessHud.classList.add("visible");
+    if (brightHudTimer) clearTimeout(brightHudTimer);
+    brightHudTimer = setTimeout(() => {
+      brightnessHud.classList.remove("visible");
+    }, 2600);
+  }
+
+  function logicalBrightnessFrom(data) {
+    if (!data || typeof data !== "object") return null;
+    const candidates = [
+      data.desired_percent,
+      data.percent,
+      data.logical_percent,
+      data.brightness,
+    ];
+    for (const value of candidates) {
+      if (value === null || value === undefined || value === "") continue;
+      const n = Number(value);
+      if (Number.isFinite(n)) return Math.max(0, Math.min(100, n));
+    }
+    return null;
+  }
+
+  function armBrightnessSend(delay, kind) {
+    brightTimerKind = kind;
+    brightSendTimer = setTimeout(flushBrightnessSend, delay);
+  }
+
+  function scheduleBrightnessCommand(command, immediate) {
+    brightPendingIntent = {
+      command,
+      revision: ++brightnessIntentRevision,
+      retryCount: 0,
+    };
+    if (brightSendInFlight) return;
+    if (brightSendTimer) {
+      // A fresh user/mode intent supersedes a sleeping retry immediately. A
+      // normal 150ms timer keeps coalescing live gesture updates as before.
+      if (!immediate && brightTimerKind !== "retry") return;
+      clearTimeout(brightSendTimer);
+      brightSendTimer = null;
+      brightTimerKind = null;
+    }
+    armBrightnessSend(immediate ? 0 : 150, "normal");
+  }
+
+  function scheduleBrightnessSend(pct, immediate) {
+    scheduleBrightnessCommand({
+      percent: Math.round(Math.max(0, Math.min(100, pct))),
+    }, immediate);
+  }
+
+  function scheduleBrightnessMode(mode, immediate) {
+    scheduleBrightnessCommand({ mode }, immediate);
+  }
+
+  async function flushBrightnessSend() {
+    brightSendTimer = null;
+    brightTimerKind = null;
+    if (brightSendInFlight || brightPendingIntent === null) return;
+    const intent = brightPendingIntent;
+    brightPendingIntent = null;
+    brightSendInFlight = true;
+    let retryDelay = null;
+    try {
+      const response = await fetch("/api/backlight", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(intent.command),
+      });
+      if (!response.ok) {
+        const error = new Error("backlight request failed: " + response.status);
+        error.retryable = response.status === 408 || response.status === 425 ||
+          response.status === 429 || response.status >= 500;
+        throw error;
+      }
+      let data = null;
+      try { data = await response.json(); } catch (e) { /* a 204 is also valid */ }
+      const accepted = logicalBrightnessFrom(data);
+      if (accepted !== null && brightPendingIntent === null &&
+          intent.revision === brightnessIntentRevision) {
+        const command = intent.command;
+        const requestedPercent = Number(command.percent);
+        const modeMatchesScreen = !command.mode ||
+          command.mode === (screenDimmed ? "idle" : "active");
+        const responseMatches = modeMatchesScreen && (command.mode ||
+          (Number.isFinite(requestedPercent) && Math.abs(state.brightness - requestedPercent) < 0.51));
+        if (responseMatches) {
+          state.brightness = accepted;
+          if (!screenDimmed && command.mode !== "idle") state.activeBrightness = accepted;
+          renderBrightness(accepted);
+        }
+      }
+    } catch (error) {
+      console.warn("Backlight control unavailable:", error);
+      const stillCurrent = intent.revision === brightnessIntentRevision &&
+        brightPendingIntent === null;
+      if (error.retryable !== false && stillCurrent &&
+          intent.retryCount < BRIGHTNESS_RETRY_DELAYS_MS.length) {
+        retryDelay = BRIGHTNESS_RETRY_DELAYS_MS[intent.retryCount];
+        intent.retryCount++;
+        brightPendingIntent = intent;
+      }
+    } finally {
+      brightSendInFlight = false;
+      if (brightPendingIntent !== null) {
+        const retryingSameIntent = brightPendingIntent === intent && retryDelay !== null;
+        armBrightnessSend(retryingSameIntent ? retryDelay : 0,
+          retryingSameIntent ? "retry" : "normal");
+      }
+    }
+  }
+
+  function setBrightness(pct, { rememberActive = true, immediate = false } = {}) {
+    pct = Math.max(0, Math.min(100, pct));
+    state.brightness = pct;
+    if (rememberActive && !screenDimmed) state.activeBrightness = pct;
+    renderBrightness(pct);
+    scheduleBrightnessSend(pct, immediate);
+  }
+
+  function syncScreenBrightness() {
+    // If a screen-mode transition somehow lands during a gesture, defer it
+    // until release instead of overwriting the value under the user's fingers.
+    if (brightnessGesture) {
+      brightnessModeSyncPending = true;
+      return;
+    }
+    brightnessModeSyncPending = false;
+    state.brightness = screenDimmed ? IDLE_BRIGHTNESS_PERCENT : state.activeBrightness;
+    renderBrightness(state.brightness);
+    scheduleBrightnessMode(screenDimmed ? "idle" : "active", true);
+  }
+
+  async function fetchBrightnessState() {
+    if (brightSendInFlight || brightPendingIntent !== null || brightnessGesture) return;
+    const intentAtStart = brightnessIntentRevision;
+    try {
+      const response = await fetch("/api/backlight", { cache: "no-store" });
+      if (!response.ok) return;
+      const data = await response.json();
+      if (intentAtStart !== brightnessIntentRevision || brightSendInFlight ||
+          brightPendingIntent !== null || brightnessGesture) return;
+      const logical = logicalBrightnessFrom(data);
+      if (logical === null) return;
+      state.brightness = logical;
+      const reportedActive = Number(data.active_percent);
+      if (data.active_percent != null && Number.isFinite(reportedActive)) {
+        state.activeBrightness = Math.max(0, Math.min(100, reportedActive));
+      } else if (!screenDimmed) {
+        state.activeBrightness = logical;
+      }
+      renderBrightness(logical);
+      // The backend can legitimately remain in idle mode across a kiosk
+      // reload. This page starts awake, so restore the preserved active value
+      // after hydrating it; the HUD stays hidden during reconciliation.
+      if (!screenDimmed && data.mode === "idle") syncScreenBrightness();
+    } catch (e) { /* backlight helper may still be starting */ }
+  }
 
   // ── Twist-seek chip ──
   let chipTimer = null;
@@ -3090,20 +4062,59 @@
     } catch (e) { /* receiver offline */ }
   }
 
-  // ── Poll Spotify ──
-  async function poll() {
-    const data = await api("GET", "/now-playing");
-    if (!data || !data.item) {
+  // ── Playback transport: SSE signal + non-overlapping polling fallback ──
+  const POLL_FALLBACK_MS = 2000;
+  const POLL_SSE_SAFETY_MS = 15000;
+  const PLAYBACK_ERROR_GRACE_MS = 8000;
+  let pollTimer = null;
+  let pollInFlight = null;
+  let pollQueued = false;
+  let pollGeneration = 0;
+  let lastAppliedGeneration = 0;
+  let lastPlaybackSuccessAt = 0;
+  let eventSource = null;
+  let sseConnected = false;
+  let sseRetryTimer = null;
+  let pendingManualDirection = null;
+  let pendingManualAt = -Infinity;
+  let pendingManualProgress = 0;
+
+  function schedulePoll(delay) {
+    if (pollTimer) clearTimeout(pollTimer);
+    pollTimer = setTimeout(() => poll("timer"), Math.max(0, delay));
+  }
+
+  function applyIdlePlayback() {
+      const hadTrack = !!state.trackId;
+      if (state.tracklisting) closeTracklist();
+      tlTracks = [];
+      tlRows = [];
+      tlPicker.replaceChildren();
+      tlStatus.textContent = "";
+      flipStartTime = 0;
+      pendingArt = null;
+      pendingPalette = undefined;
+      flipArtSwapped = false;
+      flipHoldDeadline = 0;
+      vinyl.classList.remove("flipping");
+      artworkEl.classList.remove("art-changing");
+      progressCanvas.classList.remove("flip-hidden");
+      sheenEl.classList.remove("flip-hidden");
+      discFace.style.transform = "";
       state.trackId = null;
+      state.trackUri = "";
+      state.playbackKey = null;
       state.isPlaying = false;
+      state.stale = false;
       state.progressMs = 0;
       state.durationMs = 1;
       state.trackName = "";
       state.artistName = "";
       state.albumName = "";
+      state.albumId = "";
       state.releaseDate = "";
       state.recordLabel = "";
-      if (!pausedSince) pausedSince = performance.now();
+      stageNeutralArtwork(null);
       setPillMetadata("", "", false);
       timeElapsed.textContent = "0:00";
       timeRemaining.textContent = "-0:00";
@@ -3111,20 +4122,50 @@
       pill.classList.remove("visible");
       skipPrev.classList.remove("visible");
       skipNext.classList.remove("visible");
+      skipPrev.disabled = true;
+      skipNext.disabled = true;
+      pauseBtn.disabled = true;
       lyricsLines = [];
       lyricsTrackId = null;
       currentLyricIdx = -1;
+      if (lyricsLoadingTimer) clearTimeout(lyricsLoadingTimer);
+      lyricsLoadingTimer = null;
+      showLyricsStatus("", 0);
       lyricsInner.innerHTML = "";
       lyricsWrap.classList.remove("visible");
       setSingleMode(false);
       setSpinTarget(0);
+      pauseBtn.setAttribute("aria-label", "Play");
       if (state.browsing) exitBrowse(); // track ended — idle shelf takes over
+      updateWledChipVisibility();
+      if (hadTrack) {
+        shelfFetchedAt = -Infinity;
+        shelfRetryAt = -Infinity;
+      }
       updateShelf();
-      return;
-    }
+      scheduleAnimation(true);
+  }
 
+  function shouldUse45Rpm(track, data) {
+    const album = track.album || {};
+    const explicit = Number(data.display_rpm || track.display_rpm || album.display_rpm || 0);
+    if (explicit === 45 || explicit === 33 || explicit === 33.333) return explicit === 45;
+    if ((album.album_type || "").toLowerCase() !== "single") return false;
+    const trackCount = Number(album.total_tracks || track.album_track_count || 0);
+    const duration = Number(track.duration_ms || 0);
+    // Spotify labels EPs inconsistently. Conservative physical-media logic:
+    // unknown/short singles may be 45; four-track or very long releases stay 33⅓.
+    return (!trackCount || trackCount <= 3) && (!duration || duration <= 12 * 60 * 1000);
+  }
+
+  function applyPlaybackData(data) {
     const track = data.item;
-    const newId = track.id;
+    const newKey = stableTrackKey(track);
+    const previousKey = state.playbackKey;
+    const trackChanged = newKey !== previousKey;
+    const incomingProgress = Number(data.progress_ms || 0);
+    const now = performance.now();
+
     pill.classList.add("visible");
     if (!state.browsing) shelf.classList.remove("visible");
 
@@ -3138,25 +4179,30 @@
     const artUrl = images.length ? images[0].url : "";
     // Album id lands a poll or two after a track change (server enrichment);
     // keep it fresh every poll so the pinch-out tracklist can load.
+    const priorAlbumId = state.albumId;
     state.albumId = (track.album || {}).id || state.albumId;
+    if (!trackChanged && state.tracklisting && state.albumId !== priorAlbumId) refreshTracklist();
 
     // Track info — start the flip FIRST (before staging art) so the art swap
     // lands at the hidden 90° point instead of popping at a visible angle.
-    if (newId !== state.trackId) {
-      const hadTrack = !!state.trackId;
+    if (trackChanged) {
+      const hadTrack = !!previousKey;
       // A manual skip already flipped via the swipe handler — if the poll
       // notices the track change just after that flip finished, don't play a
       // second one. (Mid-flip changes are staged into the running flip.)
-      if (hadTrack && !flipStartTime && performance.now() - lastFlipStartedAt > 2600) {
-        startRecordFlip("next");
+      if (hadTrack && !flipStartTime && now - lastFlipStartedAt > 2600) {
+        startRecordFlip(pendingManualDirection || "next");
       }
       // Same-album track change: the artwork URL won't change, so nothing
       // would ever be staged — feed the current art to the running flip so
       // the 90° reveal (with its A/B side toggle) happens without holding.
       if (flipStartTime && !flipArtSwapped && artUrl && artUrl === state.artUrl) {
         pendingArt = artUrl;
+        pendingPalette = labelPalette;
       }
-      state.trackId = newId;
+      state.playbackKey = newKey;
+      state.trackId = spotifyTrackId(track) || newKey;
+      state.trackUri = track.uri || (spotifyTrackId(track) ? "spotify:track:" + spotifyTrackId(track) : "");
       state.trackName = track.name || "";
       state.artistName = (track.artists || []).map(a => a.name).join(", ");
       state.albumName = (track.album || {}).name || "";
@@ -3165,60 +4211,177 @@
       setPillMetadata(state.trackName, state.artistName, hadTrack);
 
       // Fetch lyrics for new track
-      if (newId !== lyricsTrackId) {
-        lyricsTrackId = newId;
+      if (newKey !== lyricsTrackId) {
+        lyricsTrackId = newKey;
         lyricsLines = [];
         lyricsWrap.classList.remove("visible");
         currentLyricIdx = -1;
+        if (lyricsLoadingTimer) clearTimeout(lyricsLoadingTimer);
+        showLyricsStatus("", 0);
+        lyricsLoadingTimer = setTimeout(() => {
+          if (lyricsTrackId === newKey) showLyricsStatus("Finding synced lyrics…", 0);
+        }, 600);
         const durSec = Math.round((track.duration_ms || 0) / 1000);
         fetchLyrics(state.trackName, state.artistName, state.albumName, durSec)
-          .then(lines => {
-            if (lyricsTrackId === newId) {
-              lyricsLines = lines;
+          .then(result => {
+            if (lyricsTrackId === newKey) {
+              if (lyricsLoadingTimer) clearTimeout(lyricsLoadingTimer);
+              lyricsLoadingTimer = null;
+              lyricsLines = result.lines;
               renderLyricLines();
+              showLyricsStatus(result.status, result.status ? 3500 : 0);
             }
           });
+      }
+      pendingManualDirection = null;
+    } else if (pendingManualDirection === "previous") {
+      // Spotify's previous action often restarts the current track. Wait for
+      // the receiver response, then flip the existing decoded bundle rather
+      // than holding the disc edge-on waiting for an artwork URL change.
+      const restarted = incomingProgress + 1000 < pendingManualProgress;
+      if (restarted || now - pendingManualAt >= 1000) {
+        startRecordFlip("previous");
+        pendingArt = state.artUrl || artworkEl.currentSrc || artworkEl.src || "";
+        pendingPalette = labelPalette;
+        pendingManualDirection = null;
       }
     }
 
     // Art — staged so a running flip reveals it at the hidden 90° point;
     // outside a flip it applies immediately. Preloaded so the swap is instant.
-    if (artUrl && artUrl !== state.artUrl) {
+    if (artUrl && (artUrl !== state.artUrl ||
+        (artworkLoadFailedAt > 0 && now - artworkLoadFailedAt > 15000))) {
       state.artUrl = artUrl;
-      const preload = new Image();
-      preload.onload = () => stageArtwork(artUrl);
-      preload.onerror = () => stageArtwork(artUrl);
-      preload.src = artUrl;
-      sampleLabelPalette(artUrl).then(stagePalette);
+      loadArtworkBundle(artUrl, newKey);
+    } else if (!artUrl && trackChanged) {
+      stageNeutralArtwork(newKey);
     }
 
     // Playback
     state.isPlaying = data.is_playing || false;
     state.progressMs = data.progress_ms || 0;
     state.durationMs = track.duration_ms || 1;
-    state.lastUpdate = performance.now();
+    state.lastUpdate = now;
+    state.stale = !!data.stale;
 
     // 45 Mode + label metadata — these arrive via background enrichment a
     // poll or two after the track starts, so check every poll rather than
     // only on track change.
-    setSingleMode(((track.album || {}).album_type || "") === "single");
+    setSingleMode(shouldUse45Rpm(track, data));
     state.releaseDate = (track.album || {}).release_date || "";
     state.recordLabel = (track.album || {}).label || "";
     renderLabel();
 
-    // Pause/idle tracking for screen dimming
-    if (!state.isPlaying && !pausedSince) {
-      pausedSince = performance.now();
-    } else if (state.isPlaying) {
-      pausedSince = 0;
-    }
-
     // Spin — but not while browsing, where the record is held minimized.
     if (!state.browsing) setSpinTarget(state.isPlaying ? 1 : 0);
+    pauseBtn.setAttribute("aria-label", state.isPlaying ? "Pause" : "Play");
+    if (state.isPlaying && screenDimmed) setScreenDimmed(false);
 
     // Show controls when track is loaded
     skipPrev.classList.toggle("visible", !!state.trackId);
     skipNext.classList.toggle("visible", !!state.trackId);
+    skipPrev.disabled = !state.trackId;
+    skipNext.disabled = !state.trackId;
+    pauseBtn.disabled = !state.trackId;
+    if (wledModal.classList.contains("open")) closeWledModal();
+    updateWledChipVisibility();
+    scheduleAnimation(true);
+  }
+
+  function handlePlaybackError(result) {
+    diagnostics.failures++;
+    const sinceGood = lastPlaybackSuccessAt ? performance.now() - lastPlaybackSuccessAt : 0;
+    const auth = result.status === 401 || result.status === 403;
+    if (auth) {
+      setConnectionMessage("Owner authorisation is required for this display.", "auth");
+    } else if (sinceGood >= PLAYBACK_ERROR_GRACE_MS || diagnostics.failures >= 3) {
+      setConnectionMessage("Connection interrupted — showing last known playback.", "offline");
+      if (!state.stale && state.trackId) {
+        state.progressMs = currentProgressMs();
+        state.lastUpdate = performance.now();
+        state.stale = true;
+        if (!state.browsing) setSpinTarget(0);
+      }
+    }
+    renderDiagnostics();
+  }
+
+  function poll(reason) {
+    if (pollInFlight) {
+      pollQueued = true;
+      return pollInFlight;
+    }
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    const generation = ++pollGeneration;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    pollInFlight = (async () => {
+      const result = await fetchNowPlaying(controller.signal);
+      clearTimeout(timeout);
+      if (generation <= lastAppliedGeneration) return;
+      lastAppliedGeneration = generation;
+      if (result.kind === "aborted") {
+        handlePlaybackError({ status: 0, error: new Error("Playback request timed out") });
+        return;
+      }
+      if (result.kind === "error") {
+        handlePlaybackError(result);
+        return;
+      }
+      diagnostics.failures = 0;
+      diagnostics.lastSuccessAt = performance.now();
+      lastPlaybackSuccessAt = diagnostics.lastSuccessAt;
+      if (result.kind === "idle") applyIdlePlayback();
+      else applyPlaybackData(result.data);
+      if (result.kind === "data" && result.data.stale) {
+        setConnectionMessage("Receiver data is stale — waiting for a fresh update.", "stale");
+      } else {
+        setConnectionMessage("", "");
+      }
+      renderDiagnostics();
+    })().catch(error => {
+      clearTimeout(timeout);
+      handlePlaybackError({ status: 0, error });
+    }).finally(() => {
+      pollInFlight = null;
+      if (pollQueued) {
+        pollQueued = false;
+        queueMicrotask(() => poll("queued"));
+      } else {
+        schedulePoll(sseConnected ? POLL_SSE_SAFETY_MS : POLL_FALLBACK_MS);
+      }
+    });
+    return pollInFlight;
+  }
+
+  function connectPlaybackEvents() {
+    if (!("EventSource" in window) || eventSource) return;
+    diagnostics.transport = "sse-connecting";
+    renderDiagnostics();
+    const source = new EventSource("/api/events");
+    eventSource = source;
+    source.onopen = () => {
+      if (source !== eventSource) return;
+      sseConnected = true;
+      diagnostics.transport = "sse";
+      renderDiagnostics();
+      schedulePoll(POLL_SSE_SAFETY_MS);
+    };
+    const signalUpdate = () => poll("sse");
+    source.addEventListener("playback", signalUpdate);
+    source.addEventListener("update", signalUpdate); // compatible with older prototypes
+    source.onmessage = signalUpdate;
+    source.onerror = () => {
+      if (source !== eventSource) return;
+      source.close();
+      eventSource = null;
+      sseConnected = false;
+      diagnostics.transport = "polling";
+      renderDiagnostics();
+      schedulePoll(0);
+      if (sseRetryTimer) clearTimeout(sseRetryTimer);
+      sseRetryTimer = setTimeout(connectPlaybackEvents, 30000);
+    };
   }
 
   async function readControlResponse(resp) {
@@ -3236,9 +4399,13 @@
       const data = await readControlResponse(resp);
       if (!resp.ok) {
         console.warn("Control failed:", action, data.error || resp.status);
+        showWledToast(resp.status === 401 || resp.status === 403
+          ? "Owner authorisation is required"
+          : "Playback control is unavailable");
         return false;
       }
       setTimeout(poll, 300);
+      setTimeout(poll, 1100);
       return true;
     } catch(e) {
       console.warn("Control request failed:", action, e);
@@ -3249,7 +4416,9 @@
   skipPrev.addEventListener("click", async () => {
     if (performance.now() < suppressTapUntil) return;
     if (await controlAction("previous")) {
-      startRecordFlip("previous");
+      pendingManualDirection = "previous";
+      pendingManualAt = performance.now();
+      pendingManualProgress = currentProgressMs();
       confirmSwipe("previous");
     }
   });
@@ -3273,6 +4442,15 @@
   const SWIPE_COOLDOWN = 900;
   const SWIPE_VERTICAL_RATIO = 0.55;
   const SWIPE_MIN_VELOCITY = 0.25;
+
+  // Pointer-generated clicks arrive after pointerup. Consume them during the
+  // short suppression window so a completed multi-touch gesture cannot also
+  // activate a sleeve, track row, shelf tab, or playback control beneath it.
+  viewport.addEventListener("click", e => {
+    if (performance.now() >= suppressTapUntil) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }, true);
 
   function swipeThreshold() {
     return Math.max(96, viewport.clientWidth * 0.1);
@@ -3309,23 +4487,29 @@
   }
 
   // ── Multi-touch gesture engine ──
-  // The panel reports 10 touch points; we use two:
+  // The panel reports 10 touch points. Two fingers retain the player gestures;
+  // a third finger promotes the interaction to hardware backlight control:
   //   twist        → scrub (1 turn = 60s), the platter rotates under your fingers
-  //   vertical drag→ volume fader
+  //   two-finger vertical drag → volume fader
   //   two-finger tap → play/pause
   //   pinch in     → minimize to the shelf (browse mode)
-  //   pinch out    → pin the volume HUD open
+  //   pinch out    → open the current album's track list
+  //   three-finger vertical drag → display backlight
   const activePointers = new Map(); // pointerId -> {x, y}
   let mtGesture = null;
+  let brightnessGesture = null;
+  let multiTouchDrain = false; // after one finger lifts, ignore the rest until all are up
 
   const TWIST_SECONDS_PER_TURN = 60;
   const MT_TAP_MAX_MS = 300;
   const MT_TAP_MAX_MOVE = 18;
   const PINCH_COMMIT_PX = 90;
+  const BRIGHTNESS_START_PX = 32;
+  const BRIGHTNESS_FULL_SCALE_PX = 620;
 
   function currentProgressMs() {
     let p = state.progressMs;
-    if (state.isPlaying) p += performance.now() - state.lastUpdate;
+    if (state.isPlaying && !state.stale) p += performance.now() - state.lastUpdate;
     return Math.min(p, state.durationMs);
   }
 
@@ -3338,6 +4522,10 @@
       angle: (Math.atan2(dy, dx) * 180) / Math.PI,
       cy: (a.y + b.y) / 2,
     };
+  }
+
+  function pointerCentroidY(ids) {
+    return ids.reduce((sum, id) => sum + activePointers.get(id).y, 0) / ids.length;
   }
 
   function cancelSwipe() {
@@ -3367,6 +4555,7 @@
       seekBase: currentProgressMs(),
       seekPreview: null,
       volBase: state.volume,
+      angleBase: currentAngle,
       startPts: ids.map(id => ({ ...activePointers.get(id) })),
     };
   }
@@ -3457,9 +4646,116 @@
     mtGesture = null;
   }
 
+  function abortMtGesture() {
+    if (!mtGesture) return false;
+    if (mtGesture.mode === "twist") currentAngle = mtGesture.angleBase;
+    if (mtGesture.mode === "vdrag") setVolume(mtGesture.volBase);
+    hideGestureChip(0);
+    platter.classList.remove("no-transition");
+    platter.style.transform = "";
+    suppressTapUntil = performance.now() + 350;
+    mtGesture = null;
+    return true;
+  }
+
+  function startBrightnessGesture() {
+    const ids = [...activePointers.keys()].slice(0, 3);
+    if (ids.length !== 3) return;
+
+    // Promotion is exclusive: landing the third finger ends the two-finger
+    // recogniser without running any of its release actions.
+    abortMtGesture();
+    cancelSwipe();
+    if (volHudTimer) clearTimeout(volHudTimer);
+    volumeHud.classList.remove("visible");
+
+    // The brightness gesture is available in browse and track-list modes too.
+    // Retire their one/two-finger trackers so they cannot move or activate
+    // content underneath the three fingers.
+    if (crateDrag) {
+      crateDrag = null;
+      const max = crateMaxScroll();
+      crateTarget = Math.min(max, Math.max(0,
+        Math.round(crateScroll / CRATE_SPACING) * CRATE_SPACING));
+    }
+    if (state.tracklisting) {
+      tlPts.clear();
+      tlScroll = null;
+      tlPinch = null;
+      tlDragMoved = true;
+      cancelAnimationFrame(tlSnapRaf);
+    }
+
+    brightnessGesture = {
+      ids,
+      cy0: pointerCentroidY(ids),
+      base: state.brightness,
+      started: false,
+      moved: new Set(),
+      startPts: ids.map(id => ({ ...activePointers.get(id) })),
+    };
+    suppressTapUntil = performance.now() + 700;
+  }
+
+  function processBrightnessGesture(e) {
+    const gesture = brightnessGesture;
+    for (let i = 0; i < gesture.ids.length; i++) {
+      const start = gesture.startPts[i];
+      const current = activePointers.get(gesture.ids[i]);
+      if (Math.hypot(current.x - start.x, current.y - start.y) > 4) {
+        gesture.moved.add(gesture.ids[i]);
+      }
+    }
+    const dCy = pointerCentroidY(gesture.ids) - gesture.cy0;
+
+    // Wait for all three contacts to report motion. The touch controller
+    // updates them one at a time, and acting on the first report alone would
+    // make a three-finger landing jump the fader.
+    if (!gesture.started && gesture.moved.size === 3 && Math.abs(dCy) >= BRIGHTNESS_START_PX) {
+      gesture.started = true;
+    }
+    if (gesture.started) {
+      setBrightness(gesture.base + (-dCy / BRIGHTNESS_FULL_SCALE_PX) * 100);
+      showBrightnessHud();
+    }
+    e.preventDefault();
+  }
+
+  function finishBrightnessGesture(aborted) {
+    if (!brightnessGesture) return false;
+    const gesture = brightnessGesture;
+    const changed = gesture.started;
+    brightnessGesture = null;
+    if (changed && aborted) {
+      // Cancellation is an abort, not a commit: restore the value from before
+      // the gesture and immediately reconcile the hardware.
+      setBrightness(gesture.base, { rememberActive: true, immediate: true });
+    } else if (changed) {
+      scheduleBrightnessSend(state.brightness, true);
+    }
+    if (aborted) brightnessHud.classList.remove("visible");
+    suppressTapUntil = performance.now() + 700;
+    if (state.tracklisting) {
+      tlSnap();
+      setTimeout(() => { if (!tlScroll) tlDragMoved = false; }, 750);
+    }
+    if (brightnessModeSyncPending) syncScreenBrightness();
+    return true;
+  }
+
   viewport.addEventListener("pointerdown", e => {
-    lastInteractionAt = performance.now(); // wakes the retired skip arrows
+    noteActivity(); // wakes the retired skip arrows and extends open panels
+    if (e.target.closest("#wled-modal")) return;
     activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (multiTouchDrain || brightnessGesture) return;
+
+    // Recognise this before the player-mode guards: hardware brightness must
+    // remain adjustable from the shelf, track list, and idle screen.
+    if (activePointers.size === 3) {
+      startBrightnessGesture();
+      e.preventDefault();
+      return;
+    }
     if (state.browsing) return; // browse mode: sleeve taps + mini-disc only
     if (state.tracklisting) return; // tracklist open: picker scroll + gutter taps only
 
@@ -3481,6 +4777,14 @@
   viewport.addEventListener("pointermove", e => {
     const p = activePointers.get(e.pointerId);
     if (p) { p.x = e.clientX; p.y = e.clientY; }
+
+    if (brightnessGesture) {
+      if (brightnessGesture.ids.includes(e.pointerId)
+          && brightnessGesture.ids.every(id => activePointers.has(id))) {
+        processBrightnessGesture(e);
+      }
+      return;
+    }
 
     if (mtGesture) {
       if (mtGesture.ids.includes(e.pointerId)
@@ -3512,10 +4816,17 @@
   function releasePointer(e) {
     activePointers.delete(e.pointerId);
 
-    if (mtGesture && mtGesture.ids.includes(e.pointerId)) {
-      finalizeMtGesture();
+    if (brightnessGesture && brightnessGesture.ids.includes(e.pointerId)) {
+      finishBrightnessGesture(false);
+      multiTouchDrain = activePointers.size > 0;
       return true;
     }
+    if (mtGesture && mtGesture.ids.includes(e.pointerId)) {
+      finalizeMtGesture();
+      multiTouchDrain = activePointers.size > 0;
+      return true;
+    }
+    if (activePointers.size === 0) multiTouchDrain = false;
     return false;
   }
 
@@ -3547,7 +4858,13 @@
       clearSwipeFeedback();
       controlAction(action).then(ok => {
         if (ok) {
-          startRecordFlip(action);
+          if (action === "previous") {
+            pendingManualDirection = "previous";
+            pendingManualAt = performance.now();
+            pendingManualProgress = currentProgressMs();
+          } else {
+            startRecordFlip(action);
+          }
           confirmSwipe(action);
         }
       });
@@ -3563,9 +4880,52 @@
   }, { passive: false });
 
   viewport.addEventListener("pointercancel", e => {
-    if (releasePointer(e)) return;
-    if (!swipeGesture || e.pointerId !== swipeGesture.pointerId) return;
+    activePointers.delete(e.pointerId);
+    if (brightnessGesture && brightnessGesture.ids.includes(e.pointerId)) {
+      finishBrightnessGesture(true);
+      multiTouchDrain = activePointers.size > 0;
+      return;
+    }
+    if (mtGesture && mtGesture.ids.includes(e.pointerId)) {
+      abortMtGesture();
+      multiTouchDrain = activePointers.size > 0;
+      return;
+    }
+    if (swipeGesture && e.pointerId === swipeGesture.pointerId) cancelSwipe();
+    if (activePointers.size === 0) multiTouchDrain = false;
+  });
+  viewport.addEventListener("lostpointercapture", e => {
+    activePointers.delete(e.pointerId);
+    if (brightnessGesture && brightnessGesture.ids.includes(e.pointerId)) {
+      finishBrightnessGesture(true);
+      multiTouchDrain = activePointers.size > 0;
+    } else if (mtGesture && mtGesture.ids.includes(e.pointerId)) {
+      abortMtGesture();
+      multiTouchDrain = activePointers.size > 0;
+    }
+    if (swipeGesture && e.pointerId === swipeGesture.pointerId) cancelSwipe();
+    if (activePointers.size === 0) multiTouchDrain = false;
+  });
+
+  function abortAllInput() {
+    activePointers.clear();
+    finishBrightnessGesture(true);
+    abortMtGesture();
+    multiTouchDrain = false;
     cancelSwipe();
+    clearSwipeFeedback();
+    crateDrag = null;
+    tlPts.clear();
+    tlScroll = null;
+    tlPinch = null;
+    tlDragMoved = false;
+    platter.classList.remove("no-transition");
+    platter.style.transform = "";
+  }
+  window.addEventListener("blur", abortAllInput);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) abortAllInput();
+    else { noteActivity(); poll("visible"); fetchBrightnessState(); }
   });
 
   // ── Wake from screen dim ──
@@ -3574,15 +4934,46 @@
   // (animate() then drops .dim, restoring pointer-events:none) and stop the
   // event so nothing underneath is activated. Touch pointers implicitly
   // capture to the dimmer, so the matching pointerup/click can't leak either.
+  const wakeContactPointers = new Set();
+  let wakeDrainReleaseTimer = null;
+
   function wakeScreen(e) {
     e.stopPropagation();
     e.preventDefault();
-    pausedSince = performance.now();
+    if (wakeDrainReleaseTimer) clearTimeout(wakeDrainReleaseTimer);
+    wakeDrainReleaseTimer = null;
+    wakeContactPointers.add(e.pointerId);
+    dimmer.classList.add("wake-drain");
+    noteActivity();
+    setScreenDimmed(false);
     suppressTapUntil = performance.now() + 650; // belt & braces vs stray clicks
   }
+
+  function finishWakeContact(e) {
+    e.stopPropagation();
+    e.preventDefault();
+    wakeContactPointers.delete(e.pointerId);
+    if (wakeContactPointers.size) return;
+    if (wakeDrainReleaseTimer) clearTimeout(wakeDrainReleaseTimer);
+    wakeDrainReleaseTimer = setTimeout(() => {
+      wakeDrainReleaseTimer = null;
+      if (!wakeContactPointers.size) dimmer.classList.remove("wake-drain");
+    }, 0);
+  }
+
+  function clearWakeContactDrain() {
+    if (wakeDrainReleaseTimer) clearTimeout(wakeDrainReleaseTimer);
+    wakeDrainReleaseTimer = null;
+    wakeContactPointers.clear();
+    dimmer.classList.remove("wake-drain");
+  }
+
   dimmer.addEventListener("pointerdown", wakeScreen);
-  dimmer.addEventListener("pointerup", e => { e.stopPropagation(); e.preventDefault(); });
+  dimmer.addEventListener("pointerup", finishWakeContact);
+  dimmer.addEventListener("pointercancel", finishWakeContact);
+  dimmer.addEventListener("lostpointercapture", finishWakeContact);
   dimmer.addEventListener("click", e => { e.stopPropagation(); e.preventDefault(); });
+  window.addEventListener("blur", clearWakeContactDrain);
 
   // ── Prevent all image/element dragging ──
   document.addEventListener("dragstart", e => e.preventDefault());
@@ -3600,12 +4991,18 @@
   // wledDiscovered shape: [{ip, name, port, pixel_count}, ...]
   let wledStatus = null;
   let wledDiscovered = [];
-  let wledLastStatusFetch = 0;
-  let wledLastDevicesFetch = 0;
+  let wledLastStatusFetch = -Infinity;
+  let wledLastDevicesFetch = -Infinity;
   let wledToastTimer = null;
+  let wledStatusError = "";
+  let wledDiscoveryError = "";
+  let wledRestoreFocus = null;
+  let wledRefreshTimer = null;
+  let wledMutationQueue = Promise.resolve();
+  let wledStatusEpoch = 0;
 
-  const WLED_STATUS_INTERVAL = 30000;
-  const WLED_DEVICES_INTERVAL = 5000;
+  const WLED_STATUS_INTERVAL = 15000;
+  const WLED_DEVICES_INTERVAL = 30000;
 
   function showWledToast(message) {
     wledToast.textContent = message;
@@ -3646,31 +5043,51 @@
   }
 
   function updateWledChipVisibility() {
-    const show = isIdleForSetup() && hasUnaddedDiscoveredDevice() && !wledModal.classList.contains("open");
+    const show = !screenDimmed && isIdleForSetup() && hasUnaddedDiscoveredDevice() && !wledModal.classList.contains("open");
     if (show) wledChipLabel.textContent = chipMessage();
     wledChip.classList.toggle("visible", show);
+    wledChip.setAttribute("aria-hidden", show ? "false" : "true");
+    wledChip.tabIndex = show ? 0 : -1;
   }
 
   async function fetchWledStatus() {
+    const epoch = ++wledStatusEpoch;
     try {
       const r = await fetch("/api/wled/status");
-      if (!r.ok) return;
-      wledStatus = await r.json();
-    } catch (e) { /* ignore */ }
+      if (epoch !== wledStatusEpoch) return;
+      if (!r.ok) {
+        wledStatusError = r.status === 401 || r.status === 403
+          ? "Owner authorisation is required to manage WLED."
+          : "WLED status is unavailable.";
+        return;
+      }
+      const status = await r.json();
+      if (epoch !== wledStatusEpoch) return;
+      wledStatus = status;
+      wledStatusError = "";
+    } catch (e) {
+      if (epoch === wledStatusEpoch) wledStatusError = "WLED status is unavailable while offline.";
+    }
   }
 
   async function fetchWledDiscovered() {
     try {
       const r = await fetch("/api/wled/discovered");
-      if (!r.ok) return;
+      if (!r.ok) {
+        wledDiscoveryError = r.status === 401 || r.status === 403
+          ? "Owner authorisation is required to discover WLED devices."
+          : "WLED discovery is unavailable.";
+        return;
+      }
       const data = await r.json();
       wledDiscovered = Array.isArray(data.devices) ? data.devices : [];
-    } catch (e) { /* ignore */ }
+      wledDiscoveryError = "";
+    } catch (e) { wledDiscoveryError = "WLED discovery is unavailable while offline."; }
   }
 
   async function refreshWled() {
     const now = performance.now();
-    if (!isIdleForSetup()) {
+    if (!isIdleForSetup() && !wledModal.classList.contains("open")) {
       wledDiscovered = [];
       updateWledChipVisibility();
       return;
@@ -3688,8 +5105,29 @@
     updateWledChipVisibility();
   }
 
+  function scheduleWledRefresh(delay) {
+    if (wledRefreshTimer) clearTimeout(wledRefreshTimer);
+    wledRefreshTimer = null;
+    if (screenDimmed) return;
+    wledRefreshTimer = setTimeout(async () => {
+      wledRefreshTimer = null;
+      if (isIdleForSetup() || wledModal.classList.contains("open")) await refreshWled();
+      scheduleWledRefresh(wledModal.classList.contains("open") ? 5000 : 10000);
+    }, Math.max(0, delay));
+  }
+
   function renderWledList() {
     wledList.innerHTML = "";
+
+    const loadError = wledStatusError || wledDiscoveryError;
+    if (loadError) {
+      const error = document.createElement("li");
+      error.className = "empty";
+      error.setAttribute("role", "status");
+      error.textContent = loadError;
+      wledList.appendChild(error);
+      if (wledStatusError) return;
+    }
 
     // Build the union of discovered + configured devices so the user can
     // remove a configured device that's currently offline / not visible.
@@ -3707,7 +5145,7 @@
     }
 
     if (!rows.length) {
-      const empty = document.createElement("div");
+      const empty = document.createElement("li");
       empty.className = "empty";
       empty.textContent = "No WLED devices visible on the network.";
       wledList.appendChild(empty);
@@ -3719,6 +5157,9 @@
       const isAdded = configured.has(row.host);
       const li = document.createElement("li");
       if (isAdded) li.classList.add("added");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.setAttribute("aria-label", `${isAdded ? "Remove" : "Add"} ${row.name}`);
 
       const meta = document.createElement("div");
       meta.className = "meta";
@@ -3735,9 +5176,10 @@
       action.className = "action";
       action.textContent = isAdded ? "Remove" : "Add";
 
-      li.appendChild(meta);
-      li.appendChild(action);
-      li.addEventListener("click", () => toggleWledDevice(row, !isAdded));
+      button.appendChild(meta);
+      button.appendChild(action);
+      button.addEventListener("click", () => toggleWledDevice(row, !isAdded));
+      li.appendChild(button);
       wledList.appendChild(li);
     }
   }
@@ -3752,7 +5194,9 @@
         body: JSON.stringify(body),
       });
       if (!r.ok) {
-        showWledToast("Failed to save WLED devices");
+        showWledToast(r.status === 401 || r.status === 403
+          ? "Owner authorisation is required"
+          : "Failed to save WLED devices");
         return false;
       }
       await fetchWledStatus();
@@ -3765,38 +5209,103 @@
     }
   }
 
-  async function toggleWledDevice(row, add) {
-    const current = (wledStatus && wledStatus.devices) ? wledStatus.devices.slice() : [];
-    let next;
-    if (add) {
-      next = current.filter(d => d.host !== row.host);
-      next.push({ host: row.host, name: row.name, pixel_count: row.pixel_count || 46 });
-    } else {
-      next = current.filter(d => d.host !== row.host);
-    }
-    const ok = await pushWledDevices(next, next.length > 0);
-    if (ok) {
-      showWledToast(add ? `Added ${row.name}` : `Removed ${row.name}`);
-    }
+  function serialiseWledMutation(operation) {
+    const queued = wledMutationQueue.then(operation, operation);
+    // Keep the queue usable after a failed mutation; callers still receive the
+    // real operation result through `queued`.
+    wledMutationQueue = queued.catch(() => false);
+    return queued;
   }
 
-  async function disableWled() {
-    const ok = await pushWledDevices([], false);
-    if (ok) {
-      showWledToast("WLED disabled");
-      closeWledModal();
+  function toggleWledDevice(row, add) {
+    return serialiseWledMutation(async () => {
+      // Compute from the latest server-confirmed state at execution time, not
+      // click time, so rapid edits to different devices cannot overwrite one another.
+      const current = (wledStatus && wledStatus.devices) ? wledStatus.devices.slice() : [];
+      let next;
+      if (add) {
+        next = current.filter(d => d.host !== row.host);
+        next.push({ host: row.host, name: row.name, pixel_count: row.pixel_count || 46 });
+      } else {
+        next = current.filter(d => d.host !== row.host);
+      }
+      const ok = await pushWledDevices(next, next.length > 0);
+      if (ok) showWledToast(add ? `Added ${row.name}` : `Removed ${row.name}`);
+      return ok;
+    });
+  }
+
+  function disableWled() {
+    return serialiseWledMutation(async () => {
+      const ok = await pushWledDevices([], false);
+      if (ok) {
+        showWledToast("WLED disabled");
+        closeWledModal();
+      }
+      return ok;
+    });
+  }
+
+  const modalInertRecords = new Map();
+  const sharedPlayerBackgroundLayers = [
+    platter, $("static-layer"), shelf, volumeHud, brightnessHud,
+    gestureChip, connectionStatus, wledChip, diagnosticsEl,
+  ];
+  const tracklistBackgroundLayers = sharedPlayerBackgroundLayers;
+  const wledBackgroundLayers = [...sharedPlayerBackgroundLayers, tlEl];
+
+  function setModalLayersInert(owner, layers, inert) {
+    for (const layer of layers) {
+      if (!layer) continue;
+      let record = modalInertRecords.get(layer);
+      if (inert) {
+        if (!record) {
+          record = { initial: !!layer.inert, owners: new Set() };
+          modalInertRecords.set(layer, record);
+        }
+        record.owners.add(owner);
+        layer.inert = true;
+      } else if (record) {
+        record.owners.delete(owner);
+        if (!record.owners.size) {
+          layer.inert = record.initial;
+          modalInertRecords.delete(layer);
+        }
+      }
     }
   }
 
   function openWledModal() {
+    noteActivity();
+    setScreenDimmed(false);
+    abortAllInput();
+    if (state.tracklisting) closeTracklist();
+    wledRestoreFocus = document.activeElement;
     renderWledList();
     wledModal.classList.add("open");
+    wledModal.setAttribute("aria-hidden", "false");
+    viewport.classList.add("modal-open");
+    setModalLayersInert("wled", wledBackgroundLayers, true);
     wledChip.classList.remove("visible");
+    wledChip.setAttribute("aria-hidden", "true");
+    wledModal.querySelector(".panel").focus({ preventScroll: true });
+    wledLastStatusFetch = -Infinity;
+    wledLastDevicesFetch = -Infinity;
+    refreshWled().then(() => { if (wledModal.classList.contains("open")) renderWledList(); });
   }
 
   function closeWledModal() {
     wledModal.classList.remove("open");
+    wledModal.setAttribute("aria-hidden", "true");
+    viewport.classList.remove("modal-open");
+    setModalLayersInert("wled", wledBackgroundLayers, false);
+    noteActivity();
     updateWledChipVisibility();
+    const focusTarget = wledRestoreFocus && wledRestoreFocus.offsetParent !== null
+      ? wledRestoreFocus
+      : (!pauseBtn.disabled ? pauseBtn : null);
+    if (focusTarget && typeof focusTarget.focus === "function") focusTarget.focus({ preventScroll: true });
+    wledRestoreFocus = null;
   }
 
   wledChip.addEventListener("click", openWledModal);
@@ -3806,9 +5315,61 @@
     // Click outside the panel = dismiss
     if (e.target === wledModal) closeWledModal();
   });
+  wledModal.addEventListener("pointerdown", e => e.stopPropagation());
+  wledModal.addEventListener("keydown", e => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeWledModal();
+      return;
+    }
+    if (e.key !== "Tab") return;
+    const focusable = [...wledModal.querySelectorAll("button:not([disabled]), [tabindex='0']")]
+      .filter(el => !el.hidden && el.offsetParent !== null);
+    if (!focusable.length) return;
+    const first = focusable[0], last = focusable[focusable.length - 1];
+    const panel = wledModal.querySelector(".panel");
+    if (document.activeElement === panel) {
+      e.preventDefault();
+      (e.shiftKey ? last : first).focus();
+      return;
+    }
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
+
+  document.addEventListener("keydown", e => {
+    if ((e.key === "d" || e.key === "D") && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      setDiagnosticsVisible(!diagnosticsVisible);
+      return;
+    }
+    noteActivity();
+    if (wledModal.classList.contains("open") || state.tracklisting) return;
+    if (e.key === "Escape" && state.browsing) {
+      e.preventDefault();
+      exitBrowse();
+      return;
+    }
+    if (state.browsing) return;
+    if (e.target && e.target.closest("button, a, input, select, textarea, [role='listbox'], [role='tab'], [role='option']")) return;
+    if ((e.key === " " || e.key === "Spacebar") && state.trackId) {
+      e.preventDefault();
+      controlAction("play-pause");
+    } else if (e.key === "ArrowRight" && state.trackId) {
+      e.preventDefault();
+      controlAction("next").then(ok => { if (ok) startRecordFlip("next"); });
+    } else if (e.key === "ArrowLeft" && state.trackId) {
+      e.preventDefault();
+      controlAction("previous").then(ok => {
+        if (!ok) return;
+        pendingManualDirection = "previous";
+        pendingManualAt = performance.now();
+        pendingManualProgress = currentProgressMs();
+      });
+    }
+  });
 
   // ── Init ──
-  if (FLAG_BOOT) {
+  if (FLAG_BOOT && !REDUCED_MOTION) {
     // Boot moment: grooves sweep in from the label outward over ~1.2s.
     const bootT0 = performance.now();
     (function bootSweep(now) {
@@ -3822,19 +5383,21 @@
   volTrack.setAttribute("d", volArcPath(VOL_A0, VOL_A1));
   $("vol-backing").setAttribute("d", volArcPath(VOL_A0, VOL_A1));
   renderVolume(state.volume);
+  brightTrack.setAttribute("d", brightArcPath(BRIGHT_A0, BRIGHT_A1));
+  $("bright-backing").setAttribute("d", brightArcPath(BRIGHT_A0, BRIGHT_A1));
+  renderBrightness(state.brightness);
+  fetchBrightnessState();
   // Warm the crate so the first pinch-in shows records instantly.
-  fetch("/api/crate").then(r => (r.ok ? r.json() : null)).then(d => {
-    if (d && d.sections && d.sections.length && !crateData) {
-      crateData = d;
-      shelfFetchedAt = performance.now();
-      preloadCrateImages(d); // warm covers during playback so the pinch reveal is instant
-    }
-  }).catch(() => {});
-  requestAnimationFrame(animate);
-  poll();
-  setInterval(poll, 2000);
-  refreshWled();
-  setInterval(refreshWled, 2000);
+  refreshCrateData();
+  skipPrev.setAttribute("aria-keyshortcuts", "ArrowLeft");
+  skipNext.setAttribute("aria-keyshortcuts", "ArrowRight");
+  pauseBtn.setAttribute("aria-keyshortcuts", "Space");
+  diagnostics.transport = "polling";
+  setDiagnosticsVisible(diagnosticsVisible);
+  scheduleAnimation(true);
+  poll("init");
+  connectPlaybackEvents();
+  scheduleWledRefresh(0);
 
 })();
 </script>

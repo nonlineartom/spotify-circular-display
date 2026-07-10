@@ -8,20 +8,28 @@ around the perimeter. Track info and controls in a compact pill.
 import io
 import math
 import os
+import queue
 import time
 import threading
 import requests
+
+# Respect the graphical session chosen by systemd/SDL. A driver can still be
+# forced for diagnostics, but Wayland and UID 1000 are no longer hard-coded.
+if os.environ.get("SPOTIFY_DISPLAY_SDL_DRIVER"):
+    os.environ["SDL_VIDEODRIVER"] = os.environ["SPOTIFY_DISPLAY_SDL_DRIVER"]
+
 import pygame
-from PIL import Image, ImageDraw
+from PIL import Image
 
-os.environ["SDL_VIDEODRIVER"] = "wayland"
-os.environ.setdefault("XDG_RUNTIME_DIR", "/run/user/1000")
-
-SERVER_URL = "http://localhost:5000"
+SERVER_URL = os.environ.get("SPOTIFY_DISPLAY_URL", "http://127.0.0.1:5000").rstrip("/")
 SCREEN_SIZE = 1080
 CENTER = SCREEN_SIZE // 2
-FPS = 30
-POLL_INTERVAL = 2.0
+FPS = max(1, min(60, int(os.environ.get("SPOTIFY_DISPLAY_FPS", "30"))))
+PAUSED_FPS = max(1, min(FPS, int(os.environ.get("SPOTIFY_DISPLAY_PAUSED_FPS", "5"))))
+IDLE_FPS = max(1, min(PAUSED_FPS, int(os.environ.get("SPOTIFY_DISPLAY_IDLE_FPS", "1"))))
+POLL_INTERVAL = max(0.5, float(os.environ.get("SPOTIFY_DISPLAY_POLL_SECONDS", "2")))
+DIM_AFTER_SECONDS = max(0, float(os.environ.get("SPOTIFY_DISPLAY_DIM_SECONDS", "300")))
+ART_RETRY_SECONDS = 30.0
 
 ART_SIZE = SCREEN_SIZE
 
@@ -99,16 +107,38 @@ class SpotifyVinyl:
         self.artist_name = ""
         self.progress_ms = 0
         self.duration_ms = 1
-        self.last_update = time.time()
+        self.last_update = time.monotonic()
 
         self.art_surface = None
         self.art_cache_url = ""
+        self.art_requested_url = ""
+        self.art_generation = 0
+        self.art_failed_at = 0.0
+        self._art_result = None
+        self._art_error_log = {}
+        self._art_queue = queue.Queue(maxsize=1)
+        self._control_queue = queue.Queue(maxsize=8)
 
         self.lock = threading.Lock()
         self.running = True
-        self.last_frame_time = time.time()
+        self.last_frame_time = time.monotonic()
+        self.last_activity = time.monotonic()
+        self.dimmed = False
+        self.last_finger_at = 0.0
+        self.last_poll_error_log = 0.0
 
-        threading.Thread(target=self._poll_loop, daemon=True).start()
+        self._poll_thread = threading.Thread(
+            target=self._poll_loop, daemon=True, name="display-poll"
+        )
+        self._art_thread = threading.Thread(
+            target=self._art_loop, daemon=True, name="display-art"
+        )
+        self._control_thread = threading.Thread(
+            target=self._control_loop, daemon=True, name="display-controls"
+        )
+        self._poll_thread.start()
+        self._art_thread.start()
+        self._control_thread.start()
 
     # ── Static overlays ─────────────────────────────────────
 
@@ -156,17 +186,75 @@ class SpotifyVinyl:
 
     # ── Artwork loading ─────────────────────────────────────
 
-    def _load_art(self, url):
+    def _queue_art(self, url):
+        now = time.monotonic()
+        with self.lock:
+            if not url or url == self.art_cache_url:
+                return
+            if url == self.art_requested_url:
+                if self.art_failed_at == 0.0 or now - self.art_failed_at < ART_RETRY_SECONDS:
+                    return
+            self.art_generation += 1
+            generation = self.art_generation
+            self.art_requested_url = url
+            self.art_failed_at = 0.0
+        job = (generation, url)
         try:
-            resp = requests.get(url, timeout=10)
-            img = Image.open(io.BytesIO(resp.content)).convert("RGB")
-            img = img.resize((ART_SIZE, ART_SIZE), Image.LANCZOS)
-            data = img.tobytes()
-            surf = pygame.image.fromstring(data, (ART_SIZE, ART_SIZE), "RGB")
-            with self.lock:
-                self.art_surface = surf
-        except Exception as e:
-            print(f"Art load error: {e}")
+            self._art_queue.put_nowait(job)
+        except queue.Full:
+            try:
+                self._art_queue.get_nowait()
+            except queue.Empty:
+                pass
+            self._art_queue.put_nowait(job)
+
+    def _art_loop(self):
+        """Download only the newest queued artwork; pygame conversion stays main-thread."""
+        while self.running:
+            try:
+                job = self._art_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if job is None:
+                return
+            generation, url = job
+            try:
+                resp = requests.get(url, timeout=8)
+                resp.raise_for_status()
+                img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+                img = img.resize((ART_SIZE, ART_SIZE), Image.Resampling.LANCZOS)
+                result = (generation, url, img.tobytes())
+                with self.lock:
+                    if generation == self.art_generation and url == self.art_requested_url:
+                        self._art_result = result
+            except (requests.RequestException, OSError, ValueError) as exc:
+                now = time.monotonic()
+                with self.lock:
+                    if generation == self.art_generation:
+                        self.art_failed_at = now
+                    last_log = self._art_error_log.get(url)
+                    should_log = last_log is None or now - last_log >= 60.0
+                    if should_log:
+                        self._art_error_log[url] = now
+                        if len(self._art_error_log) > 16:
+                            oldest = min(self._art_error_log, key=self._art_error_log.get)
+                            self._art_error_log.pop(oldest, None)
+                if should_log:
+                    print(f"display: artwork load failed: {exc}", flush=True)
+
+    def _consume_art_result(self):
+        with self.lock:
+            result = self._art_result
+            self._art_result = None
+        if result is None:
+            return
+        generation, url, data = result
+        surface = pygame.image.fromstring(data, (ART_SIZE, ART_SIZE), "RGB")
+        with self.lock:
+            if generation == self.art_generation and url == self.art_requested_url:
+                self.art_surface = surface
+                self.art_cache_url = url
+                self.art_failed_at = 0.0
 
     # ── Spotify polling ─────────────────────────────────────
 
@@ -176,13 +264,26 @@ class SpotifyVinyl:
                 resp = requests.get(f"{SERVER_URL}/api/now-playing", timeout=5)
                 if resp.status_code == 200:
                     data = resp.json()
+                    if not isinstance(data, dict) or not isinstance(data.get("item"), dict):
+                        raise ValueError("now-playing response is not an active playback object")
                     self._update_state(data)
-            except Exception:
-                pass
+                elif resp.status_code == 204:
+                    self._update_state(None)
+                else:
+                    self._log_poll_error(f"HTTP {resp.status_code}")
+            except (requests.RequestException, ValueError) as exc:
+                # Retain the last-known screen during a transient network error.
+                self._log_poll_error(str(exc))
             time.sleep(POLL_INTERVAL)
 
+    def _log_poll_error(self, detail):
+        now = time.monotonic()
+        if not self.last_poll_error_log or now - self.last_poll_error_log >= 30.0:
+            print(f"display: playback poll failed: {detail}", flush=True)
+            self.last_poll_error_log = now
+
     def _update_state(self, data):
-        if not data or not data.get("item"):
+        if not isinstance(data, dict) or not isinstance(data.get("item"), dict):
             with self.lock:
                 self.track_id = None
                 self.is_playing = False
@@ -193,26 +294,42 @@ class SpotifyVinyl:
             return
 
         track = data["item"]
+        album = track.get("album") if isinstance(track.get("album"), dict) else {}
+        images = album.get("images") if isinstance(album.get("images"), list) else []
+        art_url = ""
+        if images and isinstance(images[0], dict) and isinstance(images[0].get("url"), str):
+            art_url = images[0]["url"]
+        try:
+            progress_ms = max(0, int(data.get("progress_ms") or 0))
+        except (TypeError, ValueError, OverflowError):
+            progress_ms = 0
+        try:
+            duration_ms = max(1, int(track.get("duration_ms") or 1))
+        except (TypeError, ValueError, OverflowError):
+            duration_ms = 1
+        artists = track.get("artists") if isinstance(track.get("artists"), list) else []
+        artist_names = [
+            artist.get("name", "")
+            for artist in artists
+            if isinstance(artist, dict) and isinstance(artist.get("name"), str)
+        ]
+        new_id = track.get("id") if isinstance(track.get("id"), str) else None
         with self.lock:
-            self.is_playing = data.get("is_playing", False)
-            self.progress_ms = data.get("progress_ms", 0)
-            self.duration_ms = track.get("duration_ms", 1)
-            self.last_update = time.time()
+            was_playing = self.is_playing
+            self.is_playing = data.get("is_playing") is True
+            if was_playing and not self.is_playing:
+                self.last_activity = time.monotonic()
+            self.progress_ms = progress_ms
+            self.duration_ms = duration_ms
+            self.last_update = time.monotonic()
 
-            new_id = track.get("id")
             if new_id != self.track_id:
                 self.track_id = new_id
-                self.track_name = track.get("name", "")
-                artists = track.get("artists", [])
-                self.artist_name = ", ".join(a["name"] for a in artists)
-
-            images = track.get("album", {}).get("images", [])
-            art_url = images[0]["url"] if images else ""
-            if art_url and art_url != self.art_cache_url:
-                self.art_cache_url = art_url
-                threading.Thread(
-                    target=self._load_art, args=(art_url,), daemon=True
-                ).start()
+                self.track_name = track.get("name") if isinstance(track.get("name"), str) else ""
+                self.artist_name = ", ".join(filter(None, artist_names))
+                if art_url != self.art_cache_url:
+                    self.art_surface = None
+        self._queue_art(art_url)
 
     # ── Touch handling ──────────────────────────────────────
 
@@ -220,10 +337,26 @@ class SpotifyVinyl:
         sx, sy = pos
         ox = (self.display_w - self.render_size) // 2
         oy = (self.display_h - self.render_size) // 2
-        return int((sx - ox) / self.scale), int((sy - oy) / self.scale)
+        if not (ox <= sx < ox + self.render_size and oy <= sy < oy + self.render_size):
+            return None
+        point = int((sx - ox) / self.scale), int((sy - oy) / self.scale)
+        if math.hypot(point[0] - CENTER, point[1] - CENTER) > CENTER:
+            return None
+        return point
 
     def _handle_touch(self, pos):
-        x, y = self._screen_to_canvas(pos)
+        self.last_activity = time.monotonic()
+        if self.dimmed:
+            self.dimmed = False
+            return
+        point = self._screen_to_canvas(pos)
+        if point is None:
+            return
+        x, y = point
+        with self.lock:
+            has_track = self.track_id is not None
+        if not has_track:
+            return
         px = x - PILL_X
         py = y - PILL_Y
 
@@ -231,23 +364,62 @@ class SpotifyVinyl:
             pill_cx = PILL_WIDTH // 2
             if CONTROLS_Y - 25 < py < CONTROLS_Y + 25:
                 if abs(px - (pill_cx - 80)) < 30:
-                    self._api("POST", "/control/previous")
+                    self._queue_api("POST", "/control/previous")
                     return
                 elif abs(px - pill_cx) < 35:
-                    self._api("POST", "/control/play-pause")
+                    self._queue_api("POST", "/control/play-pause")
                     return
                 elif abs(px - (pill_cx + 80)) < 30:
-                    self._api("POST", "/control/next")
+                    self._queue_api("POST", "/control/next")
                     return
-            self._api("POST", "/control/play-pause")
+            self._queue_api("POST", "/control/play-pause")
             return
 
-        self._api("POST", "/control/play-pause")
+        # A full-disc tap is too easy to trigger while cleaning/adjusting the
+        # display. Only the explicit pill and center label are controls.
+        if math.hypot(x - CENTER, y - CENTER) <= LABEL_RADIUS + 20:
+            self._queue_api("POST", "/control/play-pause")
 
-    def _api(self, method, path):
+    def _queue_api(self, method, path, payload=None):
         try:
-            requests.request(method, f"{SERVER_URL}/api{path}", timeout=3)
-        except Exception:
+            self._control_queue.put_nowait((method, path, payload))
+        except queue.Full:
+            print("display: control queue full; dropping tap", flush=True)
+
+    def _control_loop(self):
+        """Keep network control latency off the pygame render/event thread."""
+        while self.running:
+            try:
+                job = self._control_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if job is None:
+                return
+            method, path, payload = job
+            try:
+                response = requests.request(
+                    method,
+                    f"{SERVER_URL}/api{path}",
+                    json=payload,
+                    timeout=3,
+                )
+                if response.status_code >= 400:
+                    print(
+                        f"display: control {path} failed HTTP {response.status_code}",
+                        flush=True,
+                    )
+            except requests.RequestException as exc:
+                print(f"display: control {path} failed: {exc}", flush=True)
+
+    def close(self):
+        self.running = False
+        try:
+            self._art_queue.put_nowait(None)
+        except queue.Full:
+            pass
+        try:
+            self._control_queue.put_nowait(None)
+        except queue.Full:
             pass
 
     # ── Drawing helpers ─────────────────────────────────────
@@ -267,9 +439,7 @@ class SpotifyVinyl:
         pygame.draw.arc uses radians, counterclockwise from 3 o'clock.
         So we convert: start at pi/2 (12 o'clock), sweep clockwise.
         """
-        # Arc rect — centered, sized for the ring
         inset = CENTER - RING_RADIUS
-        arc_rect = pygame.Rect(inset, inset, RING_RADIUS * 2, RING_RADIUS * 2)
 
         # Background track (subtle ring around the label)
         pygame.draw.circle(self.canvas, (60, 60, 60),
@@ -333,7 +503,7 @@ class SpotifyVinyl:
         clock = pygame.time.Clock()
 
         while self.running:
-            now = time.time()
+            now = time.monotonic()
             self.last_frame_time = now
 
             for event in pygame.event.get():
@@ -341,8 +511,17 @@ class SpotifyVinyl:
                     self.running = False
                 elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                     self.running = False
+                elif event.type == pygame.FINGERDOWN:
+                    self.last_finger_at = now
+                    self._handle_touch(
+                        (event.x * self.display_w, event.y * self.display_h)
+                    )
                 elif event.type == pygame.MOUSEBUTTONDOWN:
-                    self._handle_touch(event.pos)
+                    # SDL may synthesize a mouse event after FINGERDOWN.
+                    if now - self.last_finger_at > 0.25:
+                        self._handle_touch(event.pos)
+
+            self._consume_art_result()
 
             # ── Draw ──
             self.canvas.fill(BG)
@@ -353,9 +532,15 @@ class SpotifyVinyl:
                 playing = self.is_playing
                 progress = self.progress_ms
                 if self.is_playing:
-                    progress += (time.time() - self.last_update) * 1000
+                    progress += (time.monotonic() - self.last_update) * 1000
                 progress = min(progress, self.duration_ms)
                 duration = self.duration_ms
+
+            self.dimmed = bool(
+                DIM_AFTER_SECONDS
+                and not playing
+                and now - self.last_activity >= DIM_AFTER_SECONDS
+            )
 
             if has_track and art:
                 # Artwork
@@ -388,17 +573,24 @@ class SpotifyVinyl:
             self.screen.fill(BG)
             ox = (self.display_w - self.render_size) // 2
             oy = (self.display_h - self.render_size) // 2
-            if self.render_size == SCREEN_SIZE:
-                self.screen.blit(self.canvas, (ox, oy))
-            else:
-                self.screen.blit(
-                    pygame.transform.scale(self.canvas, (self.render_size, self.render_size)),
-                    (ox, oy),
-                )
+            if not self.dimmed:
+                if self.render_size == SCREEN_SIZE:
+                    self.screen.blit(self.canvas, (ox, oy))
+                else:
+                    self.screen.blit(
+                        pygame.transform.smoothscale(
+                            self.canvas, (self.render_size, self.render_size)
+                        ),
+                        (ox, oy),
+                    )
 
             pygame.display.flip()
-            clock.tick(FPS)
+            target_fps = FPS if playing else (PAUSED_FPS if has_track else IDLE_FPS)
+            if self.dimmed:
+                target_fps = IDLE_FPS
+            clock.tick(target_fps)
 
+        self.close()
         pygame.quit()
 
 

@@ -1,17 +1,37 @@
 [Unit]
-Description=Spotify Pi Display — Flask Server
+Description=Spotify Pi Display — production web server
 After=network-online.target
 Wants=network-online.target
-StartLimitIntervalSec=0
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
-User=admin
-WorkingDirectory=/home/admin/circle-pi-display
-ExecStart=/home/admin/circle-pi-display/venv/bin/python server.py
-Restart=always
+User=@APP_USER@
+Group=@APP_GROUP@
+SupplementaryGroups=spotify-backlight
+WorkingDirectory="@PROJECT_DIR@"
+ExecStart="@PROJECT_DIR@/serve.sh"
+Restart=on-failure
 RestartSec=5
+TimeoutStopSec=15
 Environment=PYTHONUNBUFFERED=1
+Environment=DISPLAY_HOST=0.0.0.0
+Environment=DISPLAY_PORT=@DISPLAY_PORT@
+Environment=PORT=@DISPLAY_PORT@
+Environment=SPOTIFY_STATE_FILE=/run/spotify-display/spotify-state.json
+UMask=0007
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths="@PROJECT_DIR@" /run/spotify-display
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 
 [Install]
 WantedBy=multi-user.target

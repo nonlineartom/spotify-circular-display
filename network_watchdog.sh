@@ -1,102 +1,135 @@
 #!/usr/bin/env bash
-# Restart the Spotify display stack when the network comes back.
-#
-# Spotify Connect receivers can survive a Wi-Fi drop in a half-connected state:
-# the process stays "active", but the device no longer appears in Spotify until
-# the receiver is restarted. This watchdog only acts on network transitions.
+# Debounced network-transition recovery for the Spotify receiver.
 
 set -u
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CHECK_INTERVAL="${CHECK_INTERVAL:-20}"
-STATE_FILE="${STATE_FILE:-/tmp/spotify-state.json}"
+TRANSITION_SAMPLES="${TRANSITION_SAMPLES:-2}"
 ROUTE_TARGET="${ROUTE_TARGET:-1.1.1.1}"
+KIOSK_USER="${KIOSK_USER:-${SUDO_USER:-admin}}"
+export SPOTIFY_STATE_FILE="${SPOTIFY_STATE_FILE:-/run/spotify-display/spotify-state.json}"
 
 log() {
     echo "spotify-network-watchdog: $*"
 }
 
 has_network() {
-    ip route get "$ROUTE_TARGET" >/dev/null 2>&1
+    ip route get "$ROUTE_TARGET" 2>/dev/null | grep -qE 'dev [^ ]+'
 }
 
-# The Wi-Fi profile name (active OR not). NM keeps the same profile across an
-# outage, so cache it once. Never hardcodes an SSID.
-WIFI_CONN_CACHE=""
-wifi_conn() {
-    if [ -z "$WIFI_CONN_CACHE" ] && command -v nmcli >/dev/null 2>&1; then
-        WIFI_CONN_CACHE="$(nmcli -t -f NAME,TYPE connection show 2>/dev/null \
-            | awk -F: '$2 ~ /wireless/ {print $1; exit}')"
+wifi_device() {
+    command -v nmcli >/dev/null 2>&1 || return 1
+    local route_device
+    route_device="$(ip route show default 2>/dev/null | awk '{print $5; exit}')"
+    if [ -n "$route_device" ] \
+            && nmcli -t -f DEVICE,TYPE device status 2>/dev/null \
+                | awk -F: -v device="$route_device" \
+                    '$1 == device && $2 == "wifi" {found=1} END {exit !found}'; then
+        printf '%s' "$route_device"
+        return 0
     fi
-    printf '%s' "$WIFI_CONN_CACHE"
+    nmcli -t -f DEVICE,TYPE device status 2>/dev/null \
+        | awk -F: '$2 == "wifi" {print $1; exit}'
+}
+
+clear_user_wifi_prompts() {
+    local uid
+    uid="$(id -u "$KIOSK_USER" 2>/dev/null || true)"
+    [ -n "$uid" ] || return 0
+    # Scope cleanup to the kiosk user and known NetworkManager UI processes.
+    pkill -u "$uid" -x nm-connection-editor 2>/dev/null || true
+    pkill -u "$uid" -x nm-applet 2>/dev/null || true
+}
+
+reconnect_wifi() {
+    command -v nmcli >/dev/null 2>&1 || return 0
+    local device
+    device="$(wifi_device || true)"
+    [ -n "$device" ] || return 0
+    clear_user_wifi_prompts
+    nmcli -w 12 device connect "$device" >/dev/null 2>&1 || true
 }
 
 mark_display_idle() {
-    local tmp_file
-    tmp_file="${STATE_FILE}.tmp"
-    printf '{"event":"network_down","timestamp":%s,"is_playing":false}\n' "$(date +%s)" > "$tmp_file"
-    chmod 0644 "$tmp_file"
-    mv "$tmp_file" "$STATE_FILE"
+    PLAYER_EVENT=network_down TRACK_ID='' DURATION_MS='' POSITION_MS='' VOLUME='' \
+        "$SCRIPT_DIR/onevent.sh" \
+        || log "warning: could not publish network-down playback state"
 }
 
-restart_spotify_stack() {
-    if systemctl list-unit-files go-librespot.service --no-legend 2>/dev/null | grep -q '^go-librespot.service'; then
-        systemctl restart go-librespot || true
-    else
-        systemctl restart raspotify || true
+go_librespot_healthy() {
+    systemctl is-active --quiet go-librespot.service \
+        && curl --silent --show-error --fail --max-time 2 \
+            http://127.0.0.1:3678/status >/dev/null 2>&1
+}
+
+recover_receiver() {
+    if systemctl list-unit-files go-librespot.service --no-legend 2>/dev/null \
+            | grep -q '^go-librespot.service'; then
+        log "network recovered; restarting go-librespot"
+        systemctl restart go-librespot.service || true
+        local attempt
+        for attempt in 1 2 3 4 5; do
+            if go_librespot_healthy; then
+                systemctl stop raspotify.service >/dev/null 2>&1 || true
+                log "go-librespot is healthy"
+                return 0
+            fi
+            sleep 2
+        done
+        log "go-librespot failed its local health check"
     fi
-    systemctl restart spotify-display || true
-    systemctl try-restart spotify-kiosk || true
+
+    # Legacy fallback is based on receiver health, not mere unit-file presence.
+    if systemctl list-unit-files raspotify.service --no-legend 2>/dev/null \
+            | grep -q '^raspotify.service'; then
+        log "starting legacy raspotify fallback"
+        systemctl stop go-librespot.service >/dev/null 2>&1 || true
+        systemctl restart raspotify.service || true
+    else
+        log "no healthy Spotify receiver and no raspotify fallback is installed"
+        return 1
+    fi
 }
 
-# A stray NetworkManager secret-agent dialog — the Wi-Fi password box pre-filled
-# with masked dots — survives a kiosk restart because it belongs to a different
-# process (the desktop panel / nm-applet), not Chromium. So `try-restart
-# spotify-kiosk` never clears it, and the device sits on the prompt until a power
-# cycle. Kill any standalone agent that drew one (best-effort backstop).
-kill_secret_dialogs() {
-    pkill -f 'nm-connection-editor' 2>/dev/null || true
-    pkill -x 'nm-applet' 2>/dev/null || true
-    pkill -f 'polkit-gnome-authentication-agent' 2>/dev/null || true
-}
-
-# Force a clean Wi-Fi re-activation. `nmcli connection up` (a) uses the
-# system-owned PSK so it never prompts, (b) clears the autoconnect-blocked state
-# NM falls into when a mid-association dropout makes it ask an agent for a "new"
-# key and none answers — autoconnect-retries=0 does NOT clear that block, only an
-# explicit `connection up` does — and (c) makes NM cancel that outstanding secret
-# request, which dismisses any dialog an agent had drawn over the kiosk. Bounded
-# wait so a still-absent AP just fails fast and we retry next loop.
-reconnect_wifi() {
-    kill_secret_dialogs
-    command -v nmcli >/dev/null 2>&1 || return 0
-    local conn
-    conn="$(wifi_conn)"
-    [ -n "$conn" ] && nmcli -w 25 connection up "$conn" >/dev/null 2>&1 || true
-}
-
-network_state="unknown"
+if has_network; then
+    network_state="up"
+else
+    network_state="down"
+    mark_display_idle
+fi
+candidate_state="$network_state"
+candidate_count=0
+log "initial network state=$network_state; no boot-time restart performed"
 
 while true; do
     if has_network; then
-        if [ "$network_state" != "up" ]; then
-            log "network is up; clearing any stuck Wi-Fi prompt and restarting Spotify display services"
-            kill_secret_dialogs
-            restart_spotify_stack
-            network_state="up"
-        fi
+        observed="up"
     else
-        if [ "$network_state" != "down" ]; then
-            log "network is down; marking display idle"
-            mark_display_idle
-            network_state="down"
-        fi
-        # While the network is down, keep nudging NetworkManager back up. A
-        # nightly router reboot can leave NM blocked on a no-secrets failure
-        # (it mis-reads the brief mid-association dropout as a bad key, asks a
-        # session agent for a new one, and gives up when none answers). Without
-        # this the Pi sits on dead Wi-Fi — and a stray password prompt — until a
-        # manual power cycle. reconnect_wifi also dismisses any such prompt.
+        observed="down"
+    fi
+
+    if [ "$observed" = "$candidate_state" ]; then
+        candidate_count=$((candidate_count + 1))
+    else
+        candidate_state="$observed"
+        candidate_count=1
+    fi
+
+    if [ "$observed" = "down" ]; then
         reconnect_wifi
+    fi
+
+    if [ "$observed" != "$network_state" ] \
+            && [ "$candidate_count" -ge "$TRANSITION_SAMPLES" ]; then
+        network_state="$observed"
+        if [ "$network_state" = "down" ]; then
+            log "network-down transition confirmed; marking display idle"
+            mark_display_idle
+        else
+            clear_user_wifi_prompts
+            recover_receiver || true
+        fi
     fi
 
     sleep "$CHECK_INTERVAL"

@@ -1,15 +1,29 @@
 [Unit]
-Description=Spotify Pi Display - Network Recovery Watchdog
-After=network-online.target NetworkManager.service
-Wants=network-online.target NetworkManager.service
+Description=Spotify Pi Display — debounced network recovery
+After=network-online.target NetworkManager.service spotify-display.service
+Wants=network-online.target NetworkManager.service spotify-display.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/home/admin/circle-pi-display
-ExecStart=/home/admin/circle-pi-display/network_watchdog.sh
-Restart=always
-RestartSec=10
+Group=@APP_GROUP@
+WorkingDirectory="@PROJECT_DIR@"
+ExecStart="@PROJECT_DIR@/network_watchdog.sh"
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=15
+Environment=KIOSK_USER=@APP_USER@
+Environment=SPOTIFY_STATE_FILE=/run/spotify-display/spotify-state.json
+UMask=0007
+PrivateTmp=true
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 
 [Install]
 WantedBy=multi-user.target

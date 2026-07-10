@@ -6,27 +6,32 @@ over UDP DRGB at a few Hz. The buffer is a gradient interpolated across the
 extracted album-art palette, with a small "dim band" whose position along the
 strip reflects how far through the track we are.
 
-When playback is paused, the same gradient keeps drifting at a slower cadence
-but the dim band freezes. When truly idle (no track, or Spotify disconnected),
+When playback is paused, the gradient decelerates smoothly and then holds while
+the progress band freezes. When truly idle (no track, or Spotify disconnected),
 this service stops sending packets entirely — WLED's realtime mode times out
 after `realtime_timeout_seconds` and reverts to whatever the user configured
 on the device itself.
 
-Configuration is re-read from `config.json` every loop tick, so changes made
-via the kiosk's WLED setup UI take effect on the next render without a service
-restart.
+Configuration is re-read from `config.json` every two seconds, so changes made
+via the kiosk's WLED setup UI take effect without a service restart.
 """
+
+from __future__ import annotations
 
 import colorsys
 import io
+import ipaddress
 import json
 import os
+import re
 import socket
 import struct
 import sys
+import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from collections import OrderedDict
+from dataclasses import dataclass
 
 import numpy as np
 import requests
@@ -54,6 +59,60 @@ CROSSFADE_SECONDS = 1.0
 # gradient mirrors that ramp so the lights spin in lockstep with the
 # record (1:1 spin-up on play, spin-down on pause).
 SPIN_RAMP_SECONDS = 4.0
+PLAYBACK_FAILURE_GRACE_SECONDS = float(
+    os.environ.get("WLED_PLAYBACK_FAILURE_GRACE_SECONDS", "8")
+)
+STATUS_FILE = os.environ.get(
+    "WLED_STATUS_FILE", "/run/spotify-display/wled-status.json"
+)
+
+MAX_DEVICES = 16
+MAX_PIXELS_PER_DEVICE = 2048
+MAX_DEVICE_NAME_LENGTH = 64
+MAX_HOST_LENGTH = 253
+_VALID_HOST = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _bounded_int(value, default, minimum, maximum):
+    try:
+        value = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return max(minimum, min(maximum, value))
+
+
+def _bounded_float(value, default, minimum, maximum):
+    try:
+        value = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    if not np.isfinite(value):
+        return default
+    return max(minimum, min(maximum, value))
+
+
+def _safe_text(value, default, maximum):
+    if not isinstance(value, str):
+        return default
+    value = value.strip()
+    return value[:maximum] or default
+
+
+def _valid_host(value):
+    """Accept IPv4 addresses and ordinary DNS/mDNS names, never URLs/paths."""
+    host = _safe_text(value, "", MAX_HOST_LENGTH)
+    if not host or not _VALID_HOST.fullmatch(host):
+        return ""
+    if host.startswith((".", "-")) or host.endswith((".", "-")) or ".." in host:
+        return ""
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        if not (address.is_private or address.is_link_local or address.is_loopback):
+            return ""
+    return host
 
 
 def _ease_in_out(t):
@@ -77,29 +136,53 @@ def _normalize_devices(wled):
 
     Empty / missing → empty list.
     """
+    if not isinstance(wled, dict):
+        return []
     raw = wled.get("devices")
     out = []
     if isinstance(raw, list) and raw:
-        for entry in raw:
+        seen_hosts = set()
+        for entry in raw[:MAX_DEVICES]:
             if not isinstance(entry, dict):
                 continue
-            host = (entry.get("host") or "").strip()
-            if not host:
+            host = _valid_host(entry.get("host"))
+            if not host or host.lower() in seen_hosts:
                 continue
+            seen_hosts.add(host.lower())
             out.append({
                 "host": host,
-                "name": (entry.get("name") or host).strip(),
-                "pixel_count": max(1, int(entry.get("pixel_count") or 46)),
+                "name": _safe_text(entry.get("name"), host, MAX_DEVICE_NAME_LENGTH),
+                "pixel_count": _bounded_int(
+                    entry.get("pixel_count"), 46, 1, MAX_PIXELS_PER_DEVICE
+                ),
+                "reverse": entry.get("reverse") is True,
+                "phase_offset": _bounded_float(
+                    entry.get("phase_offset"), 0.0, -1.0, 1.0
+                ) % 1.0,
+                "brightness": _bounded_float(
+                    entry.get("brightness"), 1.0, 0.05, 1.0
+                ),
+                "gamma": _bounded_float(entry.get("gamma"), 1.0, 0.5, 3.0),
             })
         return out
 
     # Legacy single-device fallback.
-    legacy_host = (wled.get("host") or "").strip()
+    legacy_host = _valid_host(wled.get("host"))
     if legacy_host:
         out.append({
             "host": legacy_host,
-            "name": (wled.get("name") or legacy_host).strip(),
-            "pixel_count": max(1, int(wled.get("pixel_count") or 46)),
+            "name": _safe_text(wled.get("name"), legacy_host, MAX_DEVICE_NAME_LENGTH),
+            "pixel_count": _bounded_int(
+                wled.get("pixel_count"), 46, 1, MAX_PIXELS_PER_DEVICE
+            ),
+            "reverse": wled.get("reverse") is True,
+            "phase_offset": _bounded_float(
+                wled.get("phase_offset"), 0.0, -1.0, 1.0
+            ) % 1.0,
+            "brightness": _bounded_float(
+                wled.get("brightness"), 1.0, 0.05, 1.0
+            ),
+            "gamma": _bounded_float(wled.get("gamma"), 1.0, 0.5, 3.0),
         })
     return out
 
@@ -108,27 +191,37 @@ def load_config():
     try:
         with open(CONFIG_FILE, "r") as f:
             data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    if not isinstance(data, dict):
         data = {}
     wled = data.get("wled") or {}
+    if not isinstance(wled, dict):
+        wled = {}
     return {
-        "enabled": bool(wled.get("enabled", False)),
+        "enabled": wled.get("enabled") is True,
         "devices": _normalize_devices(wled),
-        "palette_colors": max(2, int(wled.get("palette_colors") or 3)),
-        "saturation_boost": float(wled.get("saturation_boost") or 1.3),
+        "palette_colors": _bounded_int(wled.get("palette_colors"), 3, 2, 8),
+        "saturation_boost": _bounded_float(
+            wled.get("saturation_boost"), 1.3, 0.25, 3.0
+        ),
         # 1.8 s/rev = 33⅓ RPM — matches the vinyl record on the display.
-        "gradient_drift_seconds": float(wled.get("gradient_drift_seconds") or 1.8),
-        "dim_band_width": max(0, int(wled.get("dim_band_width") or 3)),
-        "play_fps": max(1, int(wled.get("play_fps") or 30)),
-        "pause_fps": max(1, int(wled.get("pause_fps") or 1)),
+        "gradient_drift_seconds": _bounded_float(
+            wled.get("gradient_drift_seconds"), 1.8, 0.5, 60.0
+        ),
+        "dim_band_width": _bounded_int(wled.get("dim_band_width"), 3, 0, 256),
+        "play_fps": _bounded_int(wled.get("play_fps"), 30, 1, 60),
+        "pause_fps": _bounded_int(wled.get("pause_fps"), 1, 1, 30),
         # Explicit None check so the user can set this to 0 to disable
         # release-on-pause without `or` collapsing it to the default.
-        "pause_release_seconds": max(
+        "pause_release_seconds": _bounded_int(
+            60 if wled.get("pause_release_seconds") is None else wled["pause_release_seconds"],
+            60,
             0,
-            int(60 if wled.get("pause_release_seconds") is None else wled["pause_release_seconds"]),
+            86400,
         ),
-        "realtime_timeout_seconds": max(
-            1, min(255, int(wled.get("realtime_timeout_seconds") or 2))
+        "realtime_timeout_seconds": _bounded_int(
+            wled.get("realtime_timeout_seconds"), 2, 1, 255
         ),
     }
 
@@ -136,35 +229,57 @@ def load_config():
 # ── Now-playing fetch ────────────────────────────────────────
 
 
+@dataclass(frozen=True)
+class PlaybackFetch:
+    """Tri-state result: active playback, explicit idle, or fetch failure."""
+
+    state: str
+    snapshot: dict | None = None
+    error: str | None = None
+
+
 def fetch_now_playing():
-    """Return a snapshot dict or None if nothing is playing / unreachable."""
+    """Fetch and validate playback without conflating idle with failure."""
     try:
         resp = requests.get(NOW_PLAYING_URL, timeout=1.5)
-    except requests.RequestException:
-        return None
+    except requests.RequestException as exc:
+        return PlaybackFetch("error", error=f"request failed: {exc}")
     if resp.status_code == 204:
-        return None
+        return PlaybackFetch("idle")
     if resp.status_code != 200:
-        return None
+        return PlaybackFetch("error", error=f"HTTP {resp.status_code}")
     try:
         data = resp.json()
-    except ValueError:
-        return None
+    except ValueError as exc:
+        return PlaybackFetch("error", error=f"invalid JSON: {exc}")
 
+    if not isinstance(data, dict):
+        return PlaybackFetch("error", error="response is not an object")
     item = data.get("item") or {}
+    if not isinstance(item, dict):
+        return PlaybackFetch("error", error="item is not an object")
+    track_id = _safe_text(item.get("id"), "", 256)
+    if not track_id:
+        return PlaybackFetch("idle")
     album = item.get("album") or {}
+    if not isinstance(album, dict):
+        album = {}
     images = album.get("images") or []
-    art_url = images[0].get("url") if images else None
-    return {
+    art_url = None
+    if isinstance(images, list) and images and isinstance(images[0], dict):
+        candidate = images[0].get("url")
+        if isinstance(candidate, str) and candidate.startswith(("https://", "http://")):
+            art_url = candidate[:2048]
+    snap = {
         "is_playing": bool(data.get("is_playing")),
-        "progress_ms": int(data.get("progress_ms") or 0),
-        "track_id": item.get("id"),
-        "duration_ms": int(item.get("duration_ms") or 0),
+        "progress_ms": _bounded_int(data.get("progress_ms"), 0, 0, 86_400_000),
+        "track_id": track_id,
+        "duration_ms": _bounded_int(item.get("duration_ms"), 0, 0, 86_400_000),
         "art_url": art_url,
-        # 45 Mode: singles rotate the gradient at 45 RPM, matching the kiosk.
         "is_single": (album.get("album_type") or "") == "single",
-        "wall_time": time.time(),
+        "monotonic_time": time.monotonic(),
     }
+    return PlaybackFetch("active", snapshot=snap)
 
 
 # ── Color extraction ─────────────────────────────────────────
@@ -270,47 +385,102 @@ class PaletteWorker:
     waiting on Spotify's CDN.
     """
 
-    RETRY_BACKOFF_SECONDS = 5.0  # min gap between fetches for the same key
+    RETRY_BACKOFF_SECONDS = 30.0
+    ERROR_LOG_INTERVAL_SECONDS = 300.0
+    CACHE_LIMIT = 32
+    ATTEMPT_LIMIT = 64
 
     def __init__(self):
-        self._lock = threading.Lock()
-        self._cache = {}              # cache_key -> palette
-        self._inflight = set()        # cache_keys currently being fetched
-        self._last_attempt = {}       # cache_key -> wall time of last fetch
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="palette")
+        self._condition = threading.Condition()
+        self._cache = OrderedDict()
+        self._last_attempt = OrderedDict()
+        self._last_error_log = OrderedDict()
+        self._active_key = None
+        self._pending = None
+        self._stop = False
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name="palette-worker"
+        )
+        self._thread.start()
+
+    @staticmethod
+    def cache_key(track_id, art_url, n, saturation_boost):
+        return (track_id, art_url, n, round(saturation_boost, 3))
 
     def get_or_fetch(self, track_id, art_url, n, saturation_boost):
-        key = (track_id, n, round(saturation_boost, 2))
-        now = time.time()
-        with self._lock:
+        key = self.cache_key(track_id, art_url, n, saturation_boost)
+        now = time.monotonic()
+        with self._condition:
             cached = self._cache.get(key)
             if cached is not None:
+                self._cache.move_to_end(key)
                 return cached
-            if key in self._inflight or not art_url:
+            if not art_url or key == self._active_key:
                 return None
-            if now - self._last_attempt.get(key, 0.0) < self.RETRY_BACKOFF_SECONDS:
+            previous_attempt = self._last_attempt.get(key)
+            if (
+                previous_attempt is not None
+                and now - previous_attempt < self.RETRY_BACKOFF_SECONDS
+            ):
                 return None
-            self._inflight.add(key)
             self._last_attempt[key] = now
-        self._executor.submit(self._fetch, key, art_url)
+            self._last_attempt.move_to_end(key)
+            while len(self._last_attempt) > self.ATTEMPT_LIMIT:
+                self._last_attempt.popitem(last=False)
+            # One pending slot means rapid skips replace obsolete queued art.
+            self._pending = (key, art_url)
+            self._condition.notify()
         return None
 
+    def _run(self):
+        while True:
+            with self._condition:
+                while self._pending is None and not self._stop:
+                    self._condition.wait()
+                if self._stop:
+                    return
+                key, art_url = self._pending
+                self._pending = None
+                self._active_key = key
+            self._fetch(key, art_url)
+            with self._condition:
+                self._active_key = None
+
     def _fetch(self, key, art_url):
-        track_id, n, saturation_boost = key
+        track_id, _art_url, n, saturation_boost = key
         try:
             resp = requests.get(art_url, timeout=5)
             if resp.status_code != 200:
-                print(f"wled_sync: art fetch HTTP {resp.status_code} for {track_id}", flush=True)
+                self._log_fetch_error(
+                    key, f"art fetch HTTP {resp.status_code} for {track_id}"
+                )
                 return
             palette = extract_palette(resp.content, n, saturation_boost)
-            with self._lock:
+            with self._condition:
                 self._cache[key] = palette
-            print(f"wled_sync: palette for {track_id} = {palette}", flush=True)
+                self._cache.move_to_end(key)
+                while len(self._cache) > self.CACHE_LIMIT:
+                    self._cache.popitem(last=False)
+            print(f"wled_sync: palette ready for {track_id}", flush=True)
         except (requests.RequestException, OSError, ValueError) as e:
-            print(f"wled_sync: palette fetch failed for {track_id}: {e}", flush=True)
-        finally:
-            with self._lock:
-                self._inflight.discard(key)
+            self._log_fetch_error(key, f"palette fetch failed for {track_id}: {e}")
+
+    def _log_fetch_error(self, key, message):
+        now = time.monotonic()
+        with self._condition:
+            previous = self._last_error_log.get(key, 0.0)
+            if previous and now - previous < self.ERROR_LOG_INTERVAL_SECONDS:
+                return
+            self._last_error_log[key] = now
+            self._last_error_log.move_to_end(key)
+            while len(self._last_error_log) > self.ATTEMPT_LIMIT:
+                self._last_error_log.popitem(last=False)
+        print(f"wled_sync: {message}", flush=True)
+
+    def stop(self):
+        with self._condition:
+            self._stop = True
+            self._condition.notify()
 
 
 # ── Frame rendering ──────────────────────────────────────────
@@ -340,6 +510,21 @@ def _crossfade_palettes(old, new, t):
     return out
 
 
+def _start_palette_crossfade(current, target, started_at, new_target, now):
+    """Start from the palette visibly rendered now, never the pre-fade source."""
+    if current is None or target is None:
+        return new_target, new_target, 0.0
+    progress = min(1.0, max(0.0, (now - started_at) / CROSSFADE_SECONDS)) \
+        if started_at else 1.0
+    visible = _crossfade_palettes(current, target, progress)
+    return visible, new_target, now
+
+
+def _render_fps(config, is_playing, spin_speed, spin_target, crossfade_t):
+    settling = spin_speed != spin_target or crossfade_t < 1.0
+    return config["play_fps"] if is_playing or settling else config["pause_fps"]
+
+
 def _complement_rgb(rgb):
     """Return the hue-opposite of an RGB tuple, forced to full brightness."""
     r, g, b = (c / 255.0 for c in rgb)
@@ -361,7 +546,18 @@ def _palette_complement(palette):
     return out
 
 
-def build_frame(palette, pixel_count, phase, progress_frac, band_width, _unused_dim_value=None):
+def build_frame(
+    palette,
+    pixel_count,
+    phase,
+    progress_frac,
+    band_width,
+    _unused_dim_value=None,
+    *,
+    reverse=False,
+    brightness=1.0,
+    gamma=1.0,
+):
     """Build a (pixel_count * 3) byte buffer.
 
     Base layer: palette gradient interpolated across the strip, slowly drifting
@@ -413,6 +609,12 @@ def build_frame(palette, pixel_count, phase, progress_frac, band_width, _unused_
 
     cov = coverage[:, None]
     out = grad * (1.0 - cov) + grad_comp * cov
+    if gamma != 1.0:
+        out = 255.0 * np.power(np.clip(out / 255.0, 0.0, 1.0), gamma)
+    if brightness != 1.0:
+        out *= brightness
+    if reverse:
+        out = out[::-1]
     return np.clip(np.rint(out), 0, 255).astype(np.uint8).tobytes()
 
 
@@ -424,9 +626,13 @@ class WledSender:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._warn_log = {}  # host -> last_warn_time
         self._sent_count = 0
+        self._failed_count = 0
         self._first_sent_hosts = set()
         self._last_log_count = 0
         self._last_log_time = 0.0
+        self._log_interval = _bounded_float(
+            os.environ.get("WLED_STATS_LOG_SECONDS"), 300.0, 30.0, 3600.0
+        )
 
     def send(self, host, frame, timeout_seconds):
         if not host:
@@ -442,58 +648,136 @@ class WledSender:
                 if self._last_log_time == 0.0:
                     self._last_log_time = now
                     self._last_log_count = self._sent_count
-            elif now - self._last_log_time >= 10:
+            elif now - self._last_log_time >= self._log_interval:
                 window = now - self._last_log_time
                 delta = self._sent_count - self._last_log_count
-                hosts = max(1, len(self._first_sent_hosts))
-                # delta counts packets across all hosts — divide by host count
-                # to get the per-host frame rate (which is what the user sees).
-                fps = delta / window / hosts
                 print(
-                    f"wled_sync: {fps:.1f} FPS per host "
-                    f"({delta} packets to {hosts} host(s) in {window:.1f}s, total {self._sent_count})",
+                    f"wled_sync: local UDP send summary: {delta} datagrams queued "
+                    f"in {window:.0f}s ({self._failed_count} local send errors total); "
+                    "UDP delivery is not acknowledged by WLED",
                     flush=True,
                 )
                 self._last_log_time = now
                 self._last_log_count = self._sent_count
             return True
         except OSError as e:
+            self._failed_count += 1
             now = time.monotonic()
             last_warn = self._warn_log.get(host, 0.0)
-            if now - last_warn > 30:
+            if not last_warn or now - last_warn > 30:
                 print(f"wled_sync: send to {host}:{WLED_UDP_PORT} failed: {e}", flush=True)
                 self._warn_log[host] = now
             return False
+
+    def diagnostics(self):
+        return {
+            "udp_datagrams_queued": self._sent_count,
+            "udp_local_send_errors": self._failed_count,
+            "hosts_seen": sorted(self._first_sent_hosts),
+        }
 
 
 # ── Snapshot tracking ────────────────────────────────────────
 
 
 class PlaybackTracker:
-    """Polls /api/now-playing on a background thread and exposes the latest snapshot."""
+    """Keep a last-good snapshot through brief API failures, but not true idle."""
 
-    def __init__(self):
+    def __init__(self, failure_grace_seconds=PLAYBACK_FAILURE_GRACE_SECONDS):
         self._lock = threading.Lock()
         self._snapshot = None
+        self._state = "starting"
+        self._last_error = None
+        self._consecutive_failures = 0
+        self._last_poll_at = None
+        self._last_success_at = None
+        self._failure_grace_seconds = max(0.0, failure_grace_seconds)
         self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name="playback-tracker"
+        )
 
     def start(self):
         self._thread.start()
 
     def stop(self):
         self._stop.set()
+        self._thread.join(timeout=2.0)
 
     def _run(self):
+        previous_state = None
         while not self._stop.is_set():
-            snap = fetch_now_playing()
-            with self._lock:
-                self._snapshot = snap
+            try:
+                result = fetch_now_playing()
+            except Exception as exc:
+                # A malformed response must never kill the tracker thread.
+                result = PlaybackFetch("error", error=f"unexpected fetch error: {exc}")
+            now = time.monotonic()
+            state, error = self._apply_result(result, now)
+            if state != previous_state:
+                suffix = f" ({error})" if error else ""
+                print(f"wled_sync: playback tracker state={state}{suffix}", flush=True)
+                previous_state = state
             self._stop.wait(NOW_PLAYING_POLL_SECONDS)
+
+    def _apply_result(self, result, now=None):
+        """Apply one poll result; split out for deterministic state-machine tests."""
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            self._last_poll_at = now
+            if result.state == "active":
+                self._snapshot = result.snapshot
+                self._state = "active"
+                self._last_error = None
+                self._consecutive_failures = 0
+                self._last_success_at = now
+            elif result.state == "idle":
+                self._snapshot = None
+                self._state = "idle"
+                self._last_error = None
+                self._consecutive_failures = 0
+                self._last_success_at = now
+            else:
+                self._consecutive_failures += 1
+                self._last_error = (
+                    result.error or "unknown playback fetch failure"
+                )[:256]
+                success_age = (
+                    now - self._last_success_at
+                    if self._last_success_at is not None
+                    else float("inf")
+                )
+                if success_age > self._failure_grace_seconds:
+                    self._snapshot = None
+                    self._state = "unavailable"
+                else:
+                    self._state = "degraded"
+            return self._state, self._last_error
 
     def latest(self):
         with self._lock:
             return self._snapshot
+
+    def diagnostics(self):
+        now = time.monotonic()
+        with self._lock:
+            return {
+                "state": self._state,
+                "thread_alive": self._thread.is_alive(),
+                "consecutive_failures": self._consecutive_failures,
+                "last_error": self._last_error,
+                "last_poll_age_seconds": (
+                    round(now - self._last_poll_at, 3)
+                    if self._last_poll_at is not None
+                    else None
+                ),
+                "last_success_age_seconds": (
+                    round(now - self._last_success_at, 3)
+                    if self._last_success_at is not None
+                    else None
+                ),
+                "failure_grace_seconds": self._failure_grace_seconds,
+            }
 
 
 def effective_progress_ms(snap):
@@ -501,50 +785,62 @@ def effective_progress_ms(snap):
         return 0
     base = snap["progress_ms"]
     if snap["is_playing"]:
-        base += int((time.time() - snap["wall_time"]) * 1000)
+        base += int((time.monotonic() - snap["monotonic_time"]) * 1000)
     return base
+
+
+def _write_status(payload):
+    """Publish bounded machine-readable health without unsafe shared temp names."""
+    if not STATUS_FILE:
+        return
+    directory = os.path.dirname(STATUS_FILE)
+    try:
+        os.makedirs(directory, mode=0o770, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(prefix=".wled-status-", dir=directory)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, separators=(",", ":"), sort_keys=True)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(tmp_path, 0o640)
+            os.replace(tmp_path, STATUS_FILE)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except OSError:
+        # /run may not exist in local development. Journald still has state
+        # transition logs, so status-file failure is deliberately non-fatal.
+        return
 
 
 # ── Main loop ────────────────────────────────────────────────
 
 
 def main():
-    print("wled_sync: starting")
+    print("wled_sync: starting", flush=True)
+    config = load_config()
+    if not config["enabled"] or not config["devices"]:
+        print("wled_sync: disabled or no valid devices; exiting until config changes", flush=True)
+        return
     sender = WledSender()
     tracker = PlaybackTracker()
     tracker.start()
     palette_worker = PaletteWorker()
 
-    config = load_config()
     config_loaded_at = time.monotonic()
-
-    if not config["enabled"]:
-        print("wled_sync: disabled in config (wled.enabled=false). Idling.")
-    elif not config["devices"]:
-        print("wled_sync: enabled but no devices configured. Waiting for setup via kiosk UI.")
-    else:
-        print(f"wled_sync: enabled with {len(config['devices'])} device(s): "
-              + ", ".join(f"{d['name']}@{d['host']} ({d['pixel_count']}px)" for d in config["devices"]))
-        # Surface the effective render cadence so it's obvious from the logs
-        # whether the configured FPS matches the user's expectation.
-        max_pixels = max((d["pixel_count"] for d in config["devices"]), default=0)
-        recommended = max(1, int(round(max_pixels / max(0.5, config["gradient_drift_seconds"]))))
-        print(
-            f"wled_sync: target {config['play_fps']} FPS while playing "
-            f"({1000.0 / config['play_fps']:.1f} ms/frame), "
-            f"{config['pause_fps']} FPS while paused. "
-            f"Smooth-drift threshold for longest strip ({max_pixels} px) is "
-            f"~{recommended} FPS.",
-            flush=True,
-        )
+    config_signature = None
 
     current_palette = None  # active palette in use
     target_palette = None   # palette we are crossfading toward
-    target_track_id = None
+    target_palette_key = None
     crossfade_start = 0.0
 
     last_send = 0.0
-    paused_since = None     # wall time when is_playing first observed False
+    last_status_write = 0.0
+    paused_since = None
     released_during_pause = False  # currently in "long pause = release" state
 
     # Vinyl-mirroring spin state — phase is a running float in [0, 1) that
@@ -565,141 +861,205 @@ def main():
     RPM_EASE_SECONDS = 0.45
     rpm_factor = 1.0
 
-    while True:
-        # Monotonic clock for everything render-timing-related: it can't jump
-        # backward on NTP corrections, which would otherwise stall the loop
-        # for whatever the jump distance was. Wall clock (time.time()) is
-        # still used in fetch_now_playing/effective_progress_ms — those need
-        # to stay aligned with Spotify's reported progress.
-        now = time.monotonic()
+    try:
+        while True:
+            now = time.monotonic()
 
-        if now - config_loaded_at >= CONFIG_RELOAD_SECONDS:
-            config = load_config()
-            config_loaded_at = now
+            if now - config_loaded_at >= CONFIG_RELOAD_SECONDS:
+                config = load_config()
+                config_loaded_at = now
 
-        if not config["enabled"] or not config["devices"]:
-            time.sleep(1.0)
-            continue
+            new_signature = json.dumps(config, sort_keys=True, separators=(",", ":"))
+            if new_signature != config_signature:
+                config_signature = new_signature
+                if not config["enabled"]:
+                    print("wled_sync: disabled in config; idling", flush=True)
+                elif not config["devices"]:
+                    print("wled_sync: enabled but no valid devices configured", flush=True)
+                else:
+                    device_summary = ", ".join(
+                        f"{d['name']}@{d['host']} ({d['pixel_count']}px)"
+                        for d in config["devices"]
+                    )
+                    print(
+                        f"wled_sync: config loaded: {device_summary}; "
+                        f"{config['play_fps']} play FPS/{config['pause_fps']} pause FPS",
+                        flush=True,
+                    )
 
-        snap = tracker.latest()
-        if not snap or not snap.get("track_id"):
-            # True idle — stop sending so WLED's realtime mode times out
-            # and the device reverts to whatever the user has configured.
-            time.sleep(0.5)
-            continue
+            if now - last_status_write >= 10.0:
+                status = {
+                    "schema_version": 1,
+                    "updated_unix": int(time.time()),
+                    "enabled": config["enabled"],
+                    "configured_devices": len(config["devices"]),
+                    "rendering": bool(last_send and now - last_send < 5.0),
+                    "spin_speed": round(spin_speed, 4),
+                    "playback": tracker.diagnostics(),
+                }
+                status.update(sender.diagnostics())
+                _write_status(status)
+                last_status_write = now
 
-        # Palette: re-extract on track change, then crossfade. Fetch is async —
-        # while we wait, the loop keeps rendering with whatever palette we
-        # already have so the strip never freezes on a slow Spotify CDN.
-        if snap["track_id"] != target_track_id:
-            new_palette = palette_worker.get_or_fetch(
+            if not config["enabled"] or not config["devices"]:
+                print("wled_sync: config disabled/emptied; releasing WLED and exiting", flush=True)
+                return
+
+            snap = tracker.latest()
+            if not snap or not snap.get("track_id"):
+                # Explicit idle, or failure beyond the grace period. Reset all
+                # motor integration timestamps so the next track cannot jump.
+                phase = 0.0
+                phase_updated_at = now
+                spin_speed = 0.0
+                spin_target = 0
+                spin_start_time = now
+                spin_start_speed = 0.0
+                rpm_factor = 1.0
+                paused_since = None
+                released_during_pause = False
+                last_send = 0.0
+                time.sleep(0.5)
+                continue
+
+            requested_palette_key = palette_worker.cache_key(
                 snap["track_id"],
                 snap.get("art_url"),
                 config["palette_colors"],
                 config["saturation_boost"],
             )
-            if new_palette:
-                target_palette = new_palette
-                target_track_id = snap["track_id"]
-                crossfade_start = now
-                if current_palette is None:
-                    current_palette = target_palette
+            if requested_palette_key != target_palette_key:
+                new_palette = palette_worker.get_or_fetch(
+                    snap["track_id"],
+                    snap.get("art_url"),
+                    config["palette_colors"],
+                    config["saturation_boost"],
+                )
+                if new_palette:
+                    # If a third track/config arrives mid-crossfade, begin the
+                    # new fade from the color actually on the LEDs now.
+                    current_palette, target_palette, crossfade_start = (
+                        _start_palette_crossfade(
+                            current_palette,
+                            target_palette,
+                            crossfade_start,
+                            new_palette,
+                            now,
+                        )
+                    )
+                    target_palette_key = requested_palette_key
 
-        if target_palette is None or current_palette is None:
-            time.sleep(0.2)
-            continue
+            if target_palette is None or current_palette is None:
+                time.sleep(0.2)
+                continue
 
-        # Crossfade current → target
-        t = min(1.0, (now - crossfade_start) / CROSSFADE_SECONDS) if crossfade_start else 1.0
-        rendered_palette = _crossfade_palettes(current_palette, target_palette, t)
-        if t >= 1.0:
-            current_palette = target_palette
+            crossfade_t = (
+                min(1.0, (now - crossfade_start) / CROSSFADE_SECONDS)
+                if crossfade_start
+                else 1.0
+            )
+            rendered_palette = _crossfade_palettes(
+                current_palette, target_palette, crossfade_t
+            )
+            if crossfade_t >= 1.0:
+                current_palette = target_palette
+                crossfade_start = 0.0
 
-        # Pause tracking: record when pause began, clear when playback resumes.
-        is_playing = bool(snap["is_playing"])
-        if is_playing:
-            if paused_since is not None:
-                if released_during_pause:
-                    print("wled_sync: playback resumed — re-engaging WLED", flush=True)
+            is_playing = bool(snap["is_playing"])
+            if is_playing:
+                if paused_since is not None and released_during_pause:
+                    print("wled_sync: playback resumed; re-engaging WLED", flush=True)
                 paused_since = None
                 released_during_pause = False
-        elif paused_since is None:
-            paused_since = now
+            elif paused_since is None:
+                paused_since = now
 
-        # Spin state mirrors the kiosk vinyl: setSpinTarget(1) on play,
-        # setSpinTarget(0) on pause; speed eases over SPIN_RAMP_SECONDS.
-        new_target = 1 if is_playing else 0
-        if new_target != spin_target:
-            spin_target = new_target
-            spin_start_time = now
-            spin_start_speed = spin_speed
-        if spin_speed != spin_target:
-            elapsed = now - spin_start_time
-            t = min(elapsed / SPIN_RAMP_SECONDS, 1.0)
-            eased = _ease_in_out(t)
-            spin_speed = spin_start_speed + (spin_target - spin_start_speed) * eased
-            if t >= 1.0:
-                spin_speed = float(spin_target)
+            new_target = 1 if is_playing else 0
+            if new_target != spin_target:
+                spin_target = new_target
+                spin_start_time = now
+                spin_start_speed = spin_speed
+            if spin_speed != spin_target:
+                spin_t = min((now - spin_start_time) / SPIN_RAMP_SECONDS, 1.0)
+                spin_speed = spin_start_speed + (
+                    spin_target - spin_start_speed
+                ) * _ease_in_out(spin_t)
+                if spin_t >= 1.0:
+                    spin_speed = float(spin_target)
 
-        # Integrate gradient phase by elapsed time × current spin speed.
-        # Done every loop iteration (not just on send) so the integration
-        # captures the easing accurately rather than sampling at send time.
-        drift_period = max(0.5, config["gradient_drift_seconds"])
-        dt = max(0.0, now - phase_updated_at)
-        rpm_target = RPM_SINGLE_FACTOR if snap.get("is_single") else 1.0
-        if rpm_factor != rpm_target:
-            rpm_factor += (rpm_target - rpm_factor) * min(1.0, dt / RPM_EASE_SECONDS)
-            if abs(rpm_factor - rpm_target) < 0.001:
-                rpm_factor = rpm_target
-        phase = (phase + spin_speed * rpm_factor * dt / drift_period) % 1.0
-        phase_updated_at = now
+            drift_period = config["gradient_drift_seconds"]
+            dt = max(0.0, now - phase_updated_at)
+            rpm_target = RPM_SINGLE_FACTOR if snap.get("is_single") else 1.0
+            if rpm_factor != rpm_target:
+                rpm_factor += (rpm_target - rpm_factor) * min(
+                    1.0, dt / RPM_EASE_SECONDS
+                )
+                if abs(rpm_factor - rpm_target) < 0.001:
+                    rpm_factor = rpm_target
+            phase = (phase + spin_speed * rpm_factor * dt / drift_period) % 1.0
+            phase_updated_at = now
 
-        # Long pause = treat as idle: stop sending so WLED's realtime mode
-        # times out and the device reverts to whatever preset is configured
-        # locally. `pause_release_seconds = 0` disables this behaviour and
-        # restores the legacy "drive indefinitely while paused" mode.
-        pause_release = config["pause_release_seconds"]
-        if not is_playing and paused_since is not None and pause_release > 0:
-            if now - paused_since >= pause_release:
+            pause_release = config["pause_release_seconds"]
+            if (
+                not is_playing
+                and paused_since is not None
+                and pause_release > 0
+                and now - paused_since >= pause_release
+            ):
                 if not released_during_pause:
                     print(
-                        f"wled_sync: paused for {now - paused_since:.0f}s — releasing WLED",
+                        f"wled_sync: paused for {now - paused_since:.0f}s; releasing WLED",
                         flush=True,
                     )
                     released_during_pause = True
                 time.sleep(0.5)
                 continue
 
-        # Pick cadence and decide whether it's time to send.
-        fps = config["play_fps"] if is_playing else config["pause_fps"]
-        interval = 1.0 / fps
-        if now - last_send < interval:
-            # Sleep exactly until the next frame is due. No artificial cap —
-            # config reload (2 s) and track polling (independent thread, 2 s)
-            # don't need sub-50 ms wake-ups, and at low FPS the cap forced
-            # extra loop iterations that did nothing but burn CPU.
-            time.sleep(max(0.0, interval - (now - last_send)))
-            continue
-
-        # Progress fraction for the dim band — only advances while playing.
-        duration_ms = max(1, snap["duration_ms"])
-        progress_ms = effective_progress_ms(snap)
-        progress_frac = max(0.0, min(1.0, progress_ms / duration_ms))
-
-        # Render and send to every configured device. Each strip gets the same
-        # palette + phase + progress fraction, scaled to its own pixel count,
-        # so a 30-LED strip and a 100-LED strip stay visually in sync as one
-        # piece of "house lighting."
-        for device in config["devices"]:
-            frame = build_frame(
-                rendered_palette,
-                device["pixel_count"],
-                phase,
-                progress_frac,
-                config["dim_band_width"],
+            # Keep the high cadence throughout the motor ramp and palette fade;
+            # switching to 1 FPS immediately on pause caused a four-frame stop.
+            fps = _render_fps(
+                config, is_playing, spin_speed, spin_target, crossfade_t
             )
-            sender.send(device["host"], frame, config["realtime_timeout_seconds"])
-        last_send = now
+            interval = 1.0 / fps
+            if now - last_send < interval:
+                time.sleep(max(0.0, interval - (now - last_send)))
+                continue
+
+            duration_ms = max(1, snap["duration_ms"])
+            progress_frac = max(
+                0.0, min(1.0, effective_progress_ms(snap) / duration_ms)
+            )
+
+            # Reuse frames for devices with identical rendering parameters.
+            frame_cache = {}
+            for device in config["devices"]:
+                frame_key = (
+                    device["pixel_count"],
+                    device["reverse"],
+                    device["phase_offset"],
+                    device["brightness"],
+                    device["gamma"],
+                )
+                frame = frame_cache.get(frame_key)
+                if frame is None:
+                    frame = build_frame(
+                        rendered_palette,
+                        device["pixel_count"],
+                        (phase + device["phase_offset"]) % 1.0,
+                        progress_frac,
+                        config["dim_band_width"],
+                        reverse=device["reverse"],
+                        brightness=device["brightness"],
+                        gamma=device["gamma"],
+                    )
+                    frame_cache[frame_key] = frame
+                sender.send(
+                    device["host"], frame, config["realtime_timeout_seconds"]
+                )
+            last_send = now
+    finally:
+        tracker.stop()
+        palette_worker.stop()
 
 
 if __name__ == "__main__":

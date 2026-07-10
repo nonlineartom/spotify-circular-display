@@ -1,16 +1,32 @@
 [Unit]
-Description=Spotify Pi Display — GPIO Buttons
+Description=Spotify Pi Display — optional GPIO buttons
 After=spotify-display.service
 Wants=spotify-display.service
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/home/admin/circle-pi-display
-ExecStart=/home/admin/circle-pi-display/venv/bin/python gpio_buttons.py
-Restart=always
-RestartSec=5
+User=@APP_USER@
+Group=@APP_GROUP@
+SupplementaryGroups=gpio
+WorkingDirectory="@PROJECT_DIR@"
+ExecStart="@PROJECT_DIR@/venv/bin/python" "@PROJECT_DIR@/gpio_buttons.py"
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=10
 Environment=PYTHONUNBUFFERED=1
+Environment=SPOTIFY_DISPLAY_URL=http://127.0.0.1:@DISPLAY_PORT@
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]
 WantedBy=multi-user.target

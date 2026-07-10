@@ -1,41 +1,75 @@
 # Troubleshooting and QoL notes
 
-## Display brightness / backlight (this panel can't be dimmed in software)
+## Display brightness / hardware backlight
 
-The display is a **Waveshare "7inch 1080×1080 LCD" (HDMI Round)** — EDID model
-`WS070Round`, USB touch controller `0712:000A` ("Waveshare-079-HD"). We
-investigated software backlight control thoroughly and the answer is: **there
-is no software path on this model.** Findings, all verified on the device:
+The Waveshare **7inch 1080×1080 LCD (HDMI Round)**—EDID model `WS070Round`,
+USB touch controller `0712:000a` ("Waveshare-079-HD")—does support Linux
+backlight control. It is not exposed through `/sys/class/backlight` or DDC/CI;
+it uses a vendor output report on the same Touch USB HID device.
 
-- **Kernel backlight (`/sys/class/backlight`)** — empty. Only exists for
-  DSI/SPI panels the SoC drives directly; an HDMI panel's backlight is on its
-  own controller, invisible to Linux.
-- **DDC/CI over HDMI** (`ddcutil setvcp 10`) — panel reports it does **not**
-  support DDC/CI (I²C addr 0x37 unresponsive).
-- **USB-HID** — the mechanism Waveshare's HDMI displays normally use, BUT their
-  tools (`RPi-USB-Brightness`, `Brightness-HDMI`) target the eGalax controller
-  (`0EEF:*`) and **reject this panel's `0712:000A` as "no connectable device"**.
-  The sibling-model report (`04 AA 01 00 00 00 <0-100> …` to `/dev/hidraw0`)
-  was tested here and did nothing. No GitHub project drives this controller's
-  brightness (exhaustively searched). The panel exposes a vendor HID channel
-  (report ID 9, usage page 0xFF00) but no published command maps to backlight.
-- **Waveshare's own spec sheet** lists `Backlight Adjustment: "Button backlight
-  adjustment"` — i.e. brightness on this model is a **physical button on the
-  driver board**, not software, despite looser marketing copy.
+The Linux hidraw write is five bytes, including the report ID:
 
-So the idle "dimmer" is a CSS overlay only; it darkens the picture and pauses
-rendering (saves SoC/GPU heat) but the backlight stays at 100%. For a true
-power-down the only remaining lever is DPMS output-off via `wlopm`/`wlr-randr`
-(`wlopm --off HDMI-A-1`, restore with `--on`) — whether that actually cuts
-*this* panel's backlight is **unconfirmed** (left as a future test). `wlopm`,
-`wlr-randr` and `swayidle` are all installed on the Pi.
+```text
+09 08 F7 LL CC
+```
+
+- `09` is HID report ID 9.
+- `LL` is the physical brightness byte: `round(percent × 2.5)`, normally
+  `0x00`–`0xFA` for 0–100%.
+- `CC` is `LL XOR 0xFF`.
+
+The application discovers the current `/dev/hidraw*` node by USB VID/PID,
+writes only that report, and rediscovers after `ENODEV`/USB re-enumeration. Do
+not send the demo controller's `5A A5 FF 00` boot/test packets, and do not flash
+firmware intended for a different Waveshare display.
+
+`setup.sh` installs the exact-device rule
+`/etc/udev/rules.d/70-spotify-display-backlight.rules`, which grants mode `0660`
+to group `spotify-backlight`; the service receives that as a supplementary
+group. There is intentionally no `chmod 777` fallback. The rule is retriggered
+during setup and automatically reapplied on every reconnect.
+
+On the current Pi 5's 3 A supply, the controller has previously re-enumerated
+during a large brightness jump. The shipped policy therefore maps logical
+0–100 brightness onto a maximum of 80% physical output and ramps in 10-point
+logical steps every 150 ms. The first command on startup/reconnect is capped at
+logical 10%; requests made during a ramp are coalesced onto the latest target.
+The controller also polls the resolved HID contact identity, so a reset from
+an instance such as `.0002` to `.0003` is noticed even when the kernel reuses
+the same `hidraw0` basename. Idle uses at most logical 10%, and wake restores
+the remembered active level through the same ramp. Do not enable
+`usb_max_current_enable=1` or raise
+`safe_max_percent` while retaining this supply. This is a conservative operating
+limit, not a substitute for adequate power: if `dmesg` reports USB over-current
+or touch drops out, use the panel's dedicated 5 V Power USB-C input or a
+correctly detected Pi 5 5 A supply.
+
+Three-finger vertical drag controls brightness and shows the radial bar on the
+left rim; two-finger vertical drag remains volume on the right. The idle dimmer
+now lowers the hardware backlight as well as fading the UI.
+
+If brightness is unavailable, check detection and permissions:
+
+```bash
+lsusb -d 0712:000a
+getent group spotify-backlight
+stat -c '%A %U %G %n' /dev/hidraw*
+sudo udevadm control --reload-rules
+sudo udevadm trigger --action=change --subsystem-match=hidraw
+sudo systemctl restart spotify-display
+curl -s http://127.0.0.1:5000/api/backlight | jq
+sudo journalctl -u spotify-display -n 100 --no-pager
+```
+
+An absent `/sys/class/backlight` remains expected for this HDMI panel; it does
+not indicate that vendor HID control is unavailable.
 
 ## Multi-touch gestures aren't recognized (single taps/swipes work)
 
-If two-finger gestures (twist-seek, pinch, two-finger tap) do nothing while
-single-finger taps and swipes work fine, the compositor is almost certainly
-converting touch into emulated mouse input — one pointer only, the second
-finger silently dropped.
+If multi-finger gestures (twist-seek, pinch, volume, three-finger brightness or
+two-finger tap) do nothing while single-finger taps and swipes work fine, the
+compositor is almost certainly converting touch into emulated mouse input—one
+pointer only, with the additional fingers silently dropped.
 
 On labwc (Raspberry Pi OS Wayland) check `~/.config/labwc/rc.xml` and
 `/etc/xdg/labwc/rc.xml` for your touch device:
@@ -150,16 +184,26 @@ sudo systemctl restart NetworkManager
 
 ## Spotify Connect disappears until reboot
 
-This is usually the Spotify Connect receiver getting stuck after a network
-transition. The included `spotify-network-watchdog` service restarts
-`go-librespot` (or `raspotify` on older installs), `spotify-display`, and the
-kiosk when the default route comes back. That is much lighter than rebooting the
-Pi.
+This is usually the Spotify Connect receiver failing to re-advertise after a
+confirmed network transition. The remediated `spotify-network-watchdog`
+debounces route state, reactivates the selected Wi-Fi device while offline and
+restarts **only the receiver** after the route has recovered. It performs no
+boot-time restart and does not kill/restart the healthy Flask or graphical
+session. A legacy Raspotify fallback is attempted only when installed and the
+go-librespot health check actually fails.
 
 Manual recovery:
 
 ```bash
-sudo systemctl restart go-librespot spotify-display spotify-kiosk
+sudo systemctl restart go-librespot
+curl -fsS http://127.0.0.1:3678/status | jq
+
+# Only if the API itself is unhealthy:
+sudo systemctl restart spotify-display
+curl -fsS http://127.0.0.1:5000/api/health | jq
+
+# Kiosk is a graphical user unit, not a system unit:
+systemctl --user restart spotify-kiosk
 ```
 
 Useful logs:
@@ -170,28 +214,43 @@ sudo journalctl -u spotify-network-watchdog -f
 sudo journalctl -u spotify-display -f
 ```
 
+The watchdog's first journal line should say that the initial state was
+observed without a boot-time restart. Repeated recovery with no real route
+transition indicates a bad route target, driver issue or NetworkManager profile,
+not a reason to shorten the debounce.
+
 ## Record keeps spinning after playback stops
 
-The display now prefers go-librespot's live local API. Older Raspotify installs
-fall back to `/tmp/spotify-state.json`, which is written by Raspotify's
-`--onevent` hook. If a stop/end event is missed, the server stops trusting a
-"playing" event after the expected track end plus a small grace period.
+The display prefers go-librespot's live local API. An explicitly enabled older
+Raspotify installation writes schema-bounded fallback state through its
+`--onevent` hook. Current runtime state is under `/run/spotify-display`; the old
+`/tmp/spotify-state.json` is read only for migration compatibility. If a
+stop/end event is missed, the server stops trusting a "playing" event after the
+expected track end plus a small grace period.
 
 Check the raw event state:
 
 ```bash
 curl http://localhost:5000/api/health
 curl http://localhost:3678/status
-cat /tmp/spotify-state.json
+cat /run/spotify-display/spotify-state.json | jq
+sudo journalctl -u go-librespot -u spotify-display -n 100 --no-pager
 ```
+
+An HTTP/receiver error is not treated as a real idle event in the browser or
+WLED renderer. The UI retains the last valid track with an offline indication;
+WLED retains its last active snapshot for eight seconds before releasing. A
+confirmed network-down transition published by the watchdog is deliberately a
+real idle state.
 
 ## WLED bar animation looks choppy or stepped
 
-The gradient drift is rendered server-side and streamed to WLED at `wled.play_fps`
-(default 30). If you see discrete jumps instead of continuous motion, the strip
-is moving more than ~1 LED per frame. Raise `play_fps` until it smooths out —
-rule of thumb is `play_fps ≥ pixel_count / gradient_drift_seconds`. For a
-100-LED strip with the default 1.8 s rotation period you want ≥ 56 FPS.
+The gradient drift is rendered server-side and streamed to WLED at
+`wled.play_fps` (default 30, bounded to 60). If you see discrete jumps, either
+raise `play_fps` gradually or lengthen `gradient_drift_seconds`; very long strips
+cannot move by less than one LED per frame at the default drift period. The
+renderer reuses frames for identical strip shapes, but each unique device shape
+still costs work and network bandwidth.
 
 Check the actual packet cadence on the Pi:
 
@@ -201,15 +260,56 @@ sudo tcpdump -i any -n 'udp port 21324' -c 60
 
 Inter-packet gaps should be roughly `1000 / play_fps` milliseconds.
 
-## Good QoL upgrades
+Also inspect renderer health and logs:
 
-- Add a small physical restart button that runs
-  `sudo systemctl restart go-librespot spotify-display spotify-kiosk`.
-- Add Ethernet if the display is fixed in one place. Spotify Connect discovery
-  is much calmer on wired network.
-- Add a local admin page with service status, Wi-Fi SSID, IP address, and buttons
-  to restart Raspotify/kiosk.
-- Add a boot splash or "network reconnecting" state so Wi-Fi loss looks
-  intentional instead of frozen.
-- Move secrets out of `config.json` into an environment file readable only by
-  the service user.
+```bash
+cat /run/spotify-display/wled-status.json | jq
+sudo journalctl -u spotify-wled -n 150 --no-pager
+```
+
+If pause is choppy, do not raise `pause_fps` first. The four-second motor ramp
+should retain the playing cadence while settling and switch to the paused rate
+only afterwards. A premature cadence drop indicates the new service is not the
+one running or the configuration failed to reload.
+
+## Configuration is reported malformed or write-protected
+
+The API deliberately refuses to replace an existing malformed, oversized,
+wrong-shaped or unreadable `config.json`. This prevents a transient read error
+or bad edit from destroying credentials.
+
+```bash
+curl -s http://127.0.0.1:5000/api/health | jq '.config'
+stat -c '%a %U %G %n' config.json
+cp -a config.json "config.json.bad.$(date +%s)"
+jq empty config.json
+```
+
+Repair a copy at the console, validate it with `jq`, preserve mode `0600`, then
+atomically move it into place and restart only `spotify-display`. Never use a
+WLED or OAuth API call as a way to “repair” a corrupt file.
+
+## Owner route returns 401
+
+Loopback owner trust requires both a loopback peer and literal loopback Host.
+This is why `curl http://127.0.0.1:5000/api/crate` works locally while the Pi's
+LAN hostname does not automatically become owner-authorized. For remote owner
+work, configure a long `security.owner_token` and use a bearer header or signed
+owner session. Pairing additionally requires one canonical `public_base_url`
+and the exact same-origin `/callback` Spotify redirect.
+
+Do not weaken the loopback/Host check or blindly trust `X-Forwarded-Host` to fix
+a reverse-proxy mistake. Configure the public origin explicitly as described in
+`docs/SECURITY.md`.
+
+## Candidate future upgrades
+
+- Add the documented QR-based graphical owner portal for pairing/status/logout.
+- Add an ambient-light sensor or local night schedule after defining the desired
+  hardware and minimum wake brightness.
+- Split the large kiosk template into versioned JS/CSS modules after capturing a
+  production visual baseline.
+- Prefer wired Ethernet for a fixed installation and place owner endpoints on a
+  deliberately filtered appliance network.
+- Export redacted health counters to a local monitor, without exporting tokens,
+  private library content or Wi-Fi credentials.

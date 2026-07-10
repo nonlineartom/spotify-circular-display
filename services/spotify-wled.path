@@ -1,0 +1,10 @@
+[Unit]
+Description=Spotify Pi Display — activate WLED renderer when config changes
+Before=spotify-wled.service
+
+[Path]
+PathChanged="@PROJECT_DIR@/config.json"
+Unit=spotify-wled.service
+
+[Install]
+WantedBy=multi-user.target

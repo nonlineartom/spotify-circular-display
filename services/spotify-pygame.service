@@ -1,18 +1,21 @@
 [Unit]
-Description=Spotify Pi Display — Chromium kiosk
+Description=Spotify Pi Display — lightweight pygame fallback
 PartOf=graphical-session.target
-Conflicts=spotify-pygame.service
+Conflicts=spotify-kiosk.service
 StartLimitIntervalSec=120
 StartLimitBurst=5
 
 [Service]
 Type=simple
-ExecStart="@PROJECT_DIR@/display-launch.sh" chromium
+ExecStart="@PROJECT_DIR@/display-launch.sh" pygame
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=15
 Environment=DISPLAY_PORT=@DISPLAY_PORT@
 Environment=XDG_RUNTIME_DIR=%t
+Environment=SPOTIFY_DISPLAY_IDLE_FPS=1
+Environment=SPOTIFY_DISPLAY_PAUSED_FPS=5
+Environment=SPOTIFY_DISPLAY_DIM_SECONDS=300
 
 [Install]
 WantedBy=graphical-session.target

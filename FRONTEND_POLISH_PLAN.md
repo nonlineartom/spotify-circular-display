@@ -1,5 +1,11 @@
 # Front-End Polish Plan — "Premium Pass"
 
+> **Historical record.** This document describes the July 2026 visual-design
+> pass and is retained for its design rationale. Its old preview, service and
+> rollback commands are superseded by `README.md`, `docs/REMEDIATION.md` and
+> `docs/DEPLOYMENT.md`. Do not deploy or reset the current appliance from this
+> file.
+
 A phased plan to raise the perceived quality of the kiosk UI ([templates/index.html](templates/index.html)).
 Each phase is independently shippable, verifiable on the preview instance before touching the
 live kiosk, and ordered so later phases build on earlier ones.
@@ -23,14 +29,14 @@ live kiosk, and ordered so later phases build on earlier ones.
 1. Develop locally, commit to `main`.
 2. Deploy to the Pi preview instance (`git fetch + reset`, second Flask instance on **:5001**)
    and check on the round panel itself.
-3. Regression sweep (checklist below), then promote: restart `spotify-display` **and**
-   `spotify-kiosk` (Jinja caches templates; Chromium caches the page).
+3. Regression sweep (checklist below), then promote with the staged deployment
+   guide. `spotify-display` is a system unit; `spotify-kiosk` is a graphical
+   **user** unit.
 
-**Local fake-playback harness:** playback-dependent changes (lyrics, accent, ring) can be
-verified on a dev Mac without a receiver — in the browser console, override `window.fetch`
-to serve a fake `/api/now-playing` (with a canvas-generated data-URL cover) and fake
-`/api/lyrics` LRC. The whole pipeline runs: palette sampling, label render, accent
-propagation, synced lyrics. Used successfully for Phases 1–2.
+**Current local fake-playback harness:** run
+`MOCK_DISPLAY_PORT=5105 python3 scripts/run_mock_display.py`, then open
+`http://127.0.0.1:5105/?diag=1`. Deterministic state endpoints are documented in
+the README; browser-console fetch overrides are no longer required.
 
 **Regression sweep (run after every phase):**
 - [ ] Track skip → flip animation clean, art swaps at the hidden 90° point
@@ -199,7 +205,7 @@ restores controls within a frame. Long titles legible without ellipsis truncatio
 
 ---
 
-## Phase 6 — Flagship flourishes ✅ implemented, ALL DEFAULT OFF (2026-07-01)
+## Phase 6 — Flagship flourishes ✅ historical trial (2026-07-01)
 
 *Shipped as flagged prototypes; the three survivors were **defaulted ON 2026-07-02** for a
 multi-day live trial. Each can be disabled via kiosk URL if the trial argues against it:
@@ -237,13 +243,10 @@ touches the same code, or as a standalone efficiency pass.
       from `.crate-card`; `layoutCrate` now promotes only cards inside the visible window
       (|d| ≤ 720px) and demotes parked ones to `auto`. Verified at runtime: 4 promoted /
       rest demoted on a 6-card section. Was ~19 MB of GPU layers on a 50-item section.
-- [ ] **Section switch decodes every cover.** `buildCrate()` assigns `background-image` to
-      every item in the section up front, so all covers fetch + decode on a section switch
-      even for cards never scrolled to. Fix: assign the image lazily in `layoutCrate` when a
-      card first comes within the visible window (+2 of lookahead).
-- [ ] **Pre-warm set is unbounded.** `preloadCrateImages()` warms every cover in every
-      section (can be 100+ images). The pinch-in reveal only shows ~5 cards. Fix: cap the
-      warm to the first ~12 per section; the lazy-assign above covers the rest on approach.
+- [x] **Section switch decoded every cover.** The remediation pass now assigns/warms
+      visible and near-visible covers lazily with bounded lookahead.
+- [x] **Pre-warm set was unbounded.** The remediation pass caps and deduplicates warming;
+      later cards load on approach.
 - [ ] **Grooves canvas backing store.** `#grooves` is a 1080×1080 RGBA canvas (~4.5 MB) for
       soft concentric lines. Acceptable (single static layer), but if RAM pressure shows up:
       render at 540×540 and upscale via CSS — the grooves are low-frequency and tolerate it.
@@ -251,34 +254,18 @@ touches the same code, or as a standalone efficiency pass.
       crate is up (~11 MB GPU). They're `animation-play-state: paused` + `visibility: hidden`
       when off-screen, which *should* release the layers — confirm in `chrome://gpu` /
       DevTools layers panel on the Pi rather than assuming.
-- [ ] **`tracklistCache` grows unbounded** (albumId → track arrays). Text-only, so tiny —
-      cap at ~30 albums LRU only if being thorough.
+- [x] **`tracklistCache` was unbounded.** It is now a 12-album insertion-order LRU.
 - [x] **Fonts** — variable face + `unicode-range` subsets shipped in Phase 0: fewer font
       faces in RAM than the previous three Google-hosted static weights, zero network
       dependency.
 
 ## Rollback
 
-Two annotated tags bracket the whole polish effort:
-
-- **`pre-polish`** — the last commit before any polish work (296a877)
-- **`polish-v1`** — the completed Phases 0–6 state
-
-**Full rollback to the pre-polish display:**
-```bash
-ssh admin@pi5.local
-cd ~/circle-pi-display
-git fetch --tags origin
-git reset --hard pre-polish
-sudo systemctl restart spotify-display spotify-kiosk
-```
-`reset --hard` removes the polish-era tracked files (static/fonts, plan doc) cleanly;
-config.json and other gitignored state are untouched. Roll forward again with
-`git reset --hard polish-v1` (or `origin/main`) + the same restarts.
-
-**Partial rollback:** each phase is one commit — `git log --oneline` and reset to the last
-good one. Phase 6 features need no rollback at all: they're OFF unless the kiosk URL
-carries their flag.
+The old tag/reset procedure has been retired because the appliance now has
+versioned services, runtime paths, locked dependencies, OAuth state and optional
+hardware policy that must roll back together. Use the non-destructive, backed-up
+procedure in `docs/DEPLOYMENT.md`; never run `git reset --hard` against a working
+appliance with unreviewed local changes.
 
 ## Suggested sequencing
 

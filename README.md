@@ -1,8 +1,13 @@
 # Spotify Circular Display
 
-A vinyl-inspired Spotify player for circular screens, built for the Raspberry Pi. Album artwork fills a spinning vinyl record with grooves, a center label with a circular progress ring, synced scrolling lyrics, and track info — all rendered in the browser at 60fps.
+A 1080 x 1080 vinyl-inspired Spotify Connect display for Raspberry Pi. Album
+art becomes a spinning record with procedural labels, grooves, progress,
+lyrics, a browsable record crate, synchronized WLED lighting and physical
+multi-touch controls.
 
-**Zero-config for guests** — anyone on your network can open Spotify, select "Pi Display", and their music appears on the display. No login or authentication required.
+Spotify Connect playback remains zero-configuration: a guest selects **Pi
+Display** in Spotify and the screen follows their music. OAuth is optional and
+is used only for an owner-approved, time-limited personalized crate.
 
 <p align="center">
   <img src="demo.gif" alt="Spotify Circular Display demo" width="400">
@@ -10,267 +15,303 @@ A vinyl-inspired Spotify player for circular screens, built for the Raspberry Pi
 
 | The Crate | The Pressing | 45 Mode |
 |:--:|:--:|:--:|
-| <img src="screenshots/record-shelf.png" alt="The record crate — playing album minimized to a cover parked up top, records fanned below over an ambient lava-lamp glow in the album's colours" width="270"> | <img src="screenshots/the-pressing.png" alt="Procedural record label generated from the album art" width="270"> | <img src="screenshots/45-mode.png" alt="A single spinning at 45 RPM with the 7-inch big-hole label" width="270"> |
-| Pinch in to riffle the crate over a lava-lamp glow | Every album gets its own pressed label | Singles spin at 45 RPM as a 7" |
+| <img src="screenshots/record-shelf.png" alt="Record crate" width="270"> | <img src="screenshots/the-pressing.png" alt="Procedural record label" width="270"> | <img src="screenshots/45-mode.png" alt="45 RPM single mode" width="270"> |
+| Browse saved and curated records | Artwork-derived labels and colour | Conservative single/EP detection |
 
-<p align="center">
-  <img src="screenshots/pressing-label-detail.png" alt="Label close-up — curved type, side marker, year, RPM marque, dead-wax etching" width="300"><br>
-  <em>The label up close: artwork-tinted paper, curved type, side A/B marker, release year, and a dead-wax etching in the run-out.</em>
-</p>
+## Highlights
 
-## Features
+- Delta-time 33⅓/45 RPM rotation with four-second motor ramps, artwork flips,
+  return-to-zero pause and frame-time-based quality reduction.
+- Single-, two- and three-finger gestures for skip, pause, seek, volume, crate,
+  tracklist and hardware display brightness.
+- Versioned artwork/palette loading, server-sent playback signals and a
+  non-overlapping polling fallback that preserves the last valid state through
+  brief outages.
+- Synced LRCLIB lyrics with bounded caching, correct fractional LRC timestamps,
+  offsets, multiple timestamps and explicit loading/error states.
+- A bounded, lazy-loaded private/house record crate and album track picker.
+- WLED rendering at vinyl speed with smooth pause ramp, failure grace, bounded
+  configuration and per-device direction, phase, brightness and gamma.
+- Owner-approved Spotify pairing with OAuth state, PKCE, one-use links and
+  expiring guest library grants.
+- Hidden diagnostics (`D` or `?diag=1`) for browser timing, transport, receiver,
+  crate, WLED, lyrics, temperature, load and disk state.
+- Reduced-motion, keyboard, semantic-control and modal focus support.
+- A repaired low-rate Pygame fallback for systems that cannot run Chromium.
 
-- **Zero-config playback** — No OAuth login needed. Anyone on the network selects "Pi Display" in Spotify and it just works
-- **Local touch controls** — Swipe/tap controls go through the on-device Spotify Connect receiver, not a personal Spotify Web API token
-- **Multi-touch gestures** — Two-finger twist scrubs through the track DJ-style (the platter follows your fingers, one turn = 60s); two-finger vertical drag rides the volume like a fader; two-finger tap toggles play/pause; pinch in shrinks the spinning record into its original square album cover parked at the top and brings up the crate (layers receding in z, iOS-style); pinch out sinks the spinning record back (shrink + blur) and raises this album's tracklist, pinch in again to return
-- **Album tracklist** — Pinch out during playback to sink the still-spinning record back with a shrink + blur (iOS-style depth) and riffle a center-focused list of the album's tracks (scroll with momentum and snap, the centered track sitting in a soft selection slot). Tap a track to play the album from there — it keeps going through the rest of the record; pinch back in or tap aside to return to the player. Tracklists come from the app's own client-credentials token, so no user login is needed
-- **Spinning vinyl record** — Album art fills a rotating platter at 33&#8531; RPM with smooth CSS GPU-accelerated animation
-- **45 Mode** — Singles speed the platter up to 45 RPM with a 7" big-hole-adapter label; albums stay at 33&#8531;. The WLED gradient follows the same speed
-- **Procedural record labels** — Every album gets a generated center label tinted from its artwork: curved title/artist type, RPM marque, record company, release year, an A/B side marker that alternates with each record flip, and a faint dead-wax etching in the run-out
-- **The Crate** — When idle (or after pinching out of the player), riffle through a draggable crate of records with momentum and snap: your playlists (up to 50), your saved albums, albums the display has recently spun (remembered locally), "Deeper cuts" dug from those artists' discographies, and the curated house picks. The focused record turns face-on and lifts — tap it to put it on. Covers are pre-warmed into cache so the reveal is never blank
-- **Ambient lava-lamp background** — Behind the crate, super-diffused gradient blobs in the *playing* record's sampled colours drift like a lava lamp. Pure-CSS, compositor-only motion (no blur filter, no per-frame JS), paused whenever the crate is off-screen
-- **Eased spin-up/spin-down** — 4-second cubic ease-in-out ramp when playback starts/stops, with return-to-zero when paused
-- **Vinyl grooves** — Canvas-rendered concentric groove lines overlaid on the artwork
-- **Circular progress ring** — Canvas arc on the center label with an animated dot tip, warm-to-white gradient
-- **Synced scrolling lyrics** — Time-synced lyrics from LRCLIB scroll in the top half of the display, with the active line highlighted
-- **Track info** — Song title, artist name, and elapsed/remaining time
-- **Premium transitions** — Track skips flip the record, metadata crossfades, and the bottom time bar updates smoothly
-- **Screen dimmer** — Fades to near-black after extended idle (default 5 min, tunable via `?dim=<seconds>`). The first touch on a dimmed screen only wakes it — it never triggers a control underneath — and all rendering pauses while dimmed to idle the GPU. (Note: this is a software overlay; it does not dim the LCD backlight — see TROUBLESHOOTING.md)
-- **Spotify Connect** — Acts as a Spotify Connect speaker via go-librespot, with Raspotify kept as a fallback
-- **GPIO volume buttons** — Physical buttons for volume up/down via amixer (optional)
-- **Auto-start kiosk** — Boots straight into fullscreen Chromium displaying the player
-- **1080x1080** — Designed specifically for square/circular displays
+## Controls
 
-## How It Works (For Users)
+| Input | Action |
+|---|---|
+| Center tap / Space | Play or pause |
+| Left/right edge tap, swipe or arrow key | Previous/next |
+| Two-finger twist | Seek; one full turn is 60 seconds |
+| Two-finger vertical drag | Playback volume |
+| Two-finger tap | Play or pause |
+| Pinch in | Open/close the record crate |
+| Pinch out | Open the current album tracklist |
+| Three-finger vertical drag | Hardware panel brightness |
+| `D` | Toggle diagnostics |
+| Escape | Close the active modal, tracklist or crate |
 
-1. **Open Spotify** on your phone or computer
-2. **Tap the devices icon** (bottom of now-playing screen)
-3. **Select "Pi Display"**
-4. **Play music** — the display shows your artwork, lyrics, and progress instantly
+The compositor must deliver native multi-touch pointer events. See
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md) if gestures arrive as a single mouse
+pointer.
 
-That's it. No accounts to create, no QR codes to scan, no passwords.
+## Architecture
+
+```mermaid
+flowchart TD
+    spotify["Spotify app"] -->|"Spotify Connect"| receiver["go-librespot"]
+    receiver -->|"loopback state/control API"| server["Waitress + Flask"]
+    server -->|"HTML, API and SSE"| kiosk["Chromium kiosk"]
+    server -->|"bounded metadata/lyrics requests"| external["Spotify API / LRCLIB"]
+    server -->|"safe HID reports"| panel["Waveshare backlight"]
+    server --> state["/run/spotify-display"]
+    server --> wled["WLED renderer"]
+    wled -->|"UDP DRGB"| strips["Up to 16 WLED devices"]
+    buttons["Optional Pi 5 GPIO buttons"] --> server
+```
+
+The primary playback path is local. The old Raspotify event file is supported
+only as an explicitly installed legacy fallback. Browser playback updates are
+normally signalled by `/api/events`; a 2-second single-flight poll takes over if
+SSE is unavailable.
+
+## Trust model
+
+The project is a home-LAN appliance, not an Internet-facing service.
+
+- Public LAN routes expose now-playing state and intentional playback controls.
+- Private crate data, OAuth administration, WLED configuration and detailed
+  diagnostics require the loopback kiosk or owner authorization.
+- A remote owner can authenticate with `Authorization: Bearer`,
+  `X-Owner-Token`, or `POST /api/auth/owner` when `OWNER_TOKEN` or
+  `security.owner_token` is configured.
+- Browser mutations enforce same-origin checks and bounded rate limits.
+- Do not port-forward the Flask/Waitress port. Use HTTPS and one configured
+  public origin for any remote OAuth callback.
+
+See [docs/SECURITY.md](docs/SECURITY.md) for the full boundary and
+[docs/REMEDIATION.md](docs/REMEDIATION.md) for the audit implementation record.
 
 ## Hardware
 
 | Component | Recommended |
-|-----------|------------|
-| **Single-board computer** | Raspberry Pi 5 (4GB+) |
-| **Display** | 1080x1080 circular HDMI display |
-| **Audio** | Built-in audio jack, USB DAC, or HDMI audio |
-| **Buttons** (optional) | Momentary push buttons wired to GPIO |
+|---|---|
+| Computer | Raspberry Pi 5, 4 GB+, 64-bit Raspberry Pi OS |
+| Display | Waveshare 7inch 1080 x 1080 HDMI Round |
+| Touch/backlight USB | `0712:000a` Waveshare controller |
+| Audio | HDMI audio or a USB DAC |
+| Lighting | Optional WLED/WS2812 strip or bar |
+| Buttons | Optional momentary GPIO buttons |
 
-> **Note:** A Pi 4 (2GB+) or Pi 5 is recommended for smooth Chromium rendering. A pygame-based fallback (`display.py`) is included for lower-powered devices.
+Raspberry Pi 5 has no built-in analogue audio jack. The browser renderer is the
+primary mode; `display.py` is a deliberately simpler fallback.
 
-### 3D-printed enclosure
+The supplied backlight policy is conservative for the existing 3 A
+installation: logical 0–100 maps to at most 80% physical output and every
+startup, reconnect, idle and wake transition ramps through ten-point steps. If
+USB over-current or touch reconnection appears in `dmesg`, power the panel from
+its dedicated input or use a correctly detected Pi 5 5 A supply.
 
-A parametric Fusion 360 "record disc" case (Ø250 mm, fits a Bambu X1/X1C bed) houses the Waveshare 7" round display + Pi 5, sits on a turntable platter via a centre spindle hole, and has a hidden WLED cove that drives the [`wled_sync.py`](wled_sync.py) lighting. Design state, files, key dimensions and how to resume the CAD are documented in **[`CASE_DESIGN.md`](CASE_DESIGN.md)**.
+## Installation
 
-## Architecture
+### 1. Configure Spotify metadata access
 
-```
-┌─────────────────────────────────────────────────┐
-│  Any Spotify App (phone/computer)               │
-│  Select "Pi Display" as output device           │
-└──────────────┬──────────────────────────────────┘
-               │ Spotify Connect
-┌──────────────▼──────────────────────────────────┐
-│  Raspberry Pi                                   │
-│                                                 │
-│  ┌─────────────┐                                │
-│  │go-librespot │── local API ─► playback state  │
-│  │ (audio out) │   (track, position, controls)  │
-│  └─────────────┘                                │
-│                   ┌──────────────────────────┐  │
-│                   │ Flask Server (server.py)  │  │
-│  localhost:3678 ► │ - Reads local state       │  │
-│                   │ - Track metadata lookup   │  │
-│                   │   (client credentials)    │  │
-│                   │ - Lyrics proxy (LRCLIB)   │  │
-│                   │ - Serves web UI           │  │
-│                   └──────────┬───────────────┘  │
-│                              │ localhost:5000    │
-│  ┌───────────────────────────▼───────────────┐  │
-│  │ Chromium Kiosk (fullscreen)               │  │
-│  │ - HTML/CSS/JS vinyl display               │  │
-│  │ - 60fps CSS rotation                      │  │
-│  │ - Canvas progress ring                    │  │
-│  │ - Synced lyrics                           │  │
-│  └───────────────────────────────────────────┘  │
-│                                                 │
-│  ┌───────────────────────────────────────────┐  │
-│  │ GPIO Buttons (optional)                   │  │
-│  │ BCM 23=vol-, 24=vol+ (via amixer)         │  │
-│  └───────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────┘
-```
-
-### How metadata works without user login
-
-1. **go-librespot** receives audio via Spotify Connect and exposes local playback state/control endpoints on `127.0.0.1:3678`
-2. **Flask server** reads the local receiver API first, falling back to the old Raspotify `/tmp/spotify-state.json` event file on older installs
-3. **Touch controls** call the local receiver through Flask, so skip/pause does not need per-user Spotify Web API OAuth
-4. **Frontend** polls `/api/now-playing` every 2 seconds and renders the vinyl display
-
-## Quick Start
-
-### 1. Clone the repository
+Create an application in the Spotify Developer Dashboard, then:
 
 ```bash
 git clone https://github.com/nonlineartom/spotify-circular-display.git
 cd spotify-circular-display
-```
-
-### 2. Create a Spotify App
-
-1. Go to the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard)
-2. Create a new app
-3. Note your **Client ID** and **Client Secret**
-
-> No redirect URI is needed for the main display controls. OAuth is only needed
-> if you enable the optional phone sign-in / personalized playlist flow.
-
-### 3. Configure
-
-```bash
 cp config.example.json config.json
+chmod 600 config.json
 ```
 
-Edit `config.json` with your Spotify app credentials:
+Set `client_id` and `client_secret` in `config.json`. These application
+credentials enrich metadata and album tracklists; guests do not log in to play
+music.
 
-```json
-{
-  "client_id": "YOUR_SPOTIFY_CLIENT_ID",
-  "client_secret": "YOUR_SPOTIFY_CLIENT_SECRET",
-  "public_base_url": "",
-  "redirect_uri": ""
-}
-```
-
-For optional Spotify sign-in, Spotify requires the redirect URI sent by the app
-to exactly match a URI in the Spotify Developer Dashboard. Set one of these:
-
-- `redirect_uri`: exact full callback URI, for example `https://your-domain.example/callback`
-- `public_base_url`: base URL for the display, used to build `/callback` and `/join`
-
-Spotify currently requires HTTPS for non-loopback redirects. A plain LAN URL
-like `http://192.168.1.50:5000/callback` may be rejected for newly created
-Spotify apps. Use an HTTPS tunnel/domain for phone sign-in, or leave OAuth off
-and keep using the zero-config local Spotify Connect controls.
-
-### 4. Deploy to Raspberry Pi
-
-Copy the project to your Pi and run the setup script:
+### 2. Install the candidate on the Pi
 
 ```bash
-scp -r . admin@your-pi-ip:~/circle-pi-display/
-ssh admin@your-pi-ip
-cd ~/circle-pi-display
 chmod +x setup.sh
-./setup.sh
+INSTALL_TEST_DEPS=1 ./setup.sh
 ```
 
-The setup script will:
-- Install system dependencies (Python, Chromium, unclutter)
-- Install and configure go-librespot as the primary Spotify Connect receiver
-- Install Raspotify as a disabled fallback receiver for older setups
-- Create a Python virtual environment and install packages
-- Prompt for Spotify API credentials (if not already in config.json)
-- Install systemd services for auto-start
-- Configure HDMI output for 1080x1080
-- Harden Wi-Fi for unattended operation (system-owned PSK, infinite autoconnect
-  retries, powersave off) **and** install a network watchdog that re-connects the
-  Wi-Fi during an outage — together they stop a nightly router reboot from leaving
-  the Linux Wi-Fi password prompt over the kiosk — see [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
+`INSTALL_TEST_DEPS=1` adds hash-locked pytest dependencies and Node.js so the
+full release gate can run on the appliance; they consume disk only and are not
+loaded by production services. Omit it for a minimal install after an already
+validated release. By default setup installs and enables candidate units but
+does not reboot or stop the running receiver/kiosk. On an existing appliance,
+use `STAGED_INSTALL=1`: it preserves service enablement, graphical-session
+links, Wi-Fi settings and display power policy until the documented cutover.
 
-### 5. Reboot and enjoy
+### 3. Validate before reboot/cutover
+
+For an audited install, run:
 
 ```bash
+bash scripts/validate.sh
+sudo systemd-analyze verify \
+  /etc/systemd/system/go-librespot.service \
+  /etc/systemd/system/spotify-display.service \
+  /etc/systemd/system/spotify-network-watchdog.service \
+  /etc/systemd/system/spotify-wled.service \
+  /etc/systemd/system/spotify-wled.path
 sudo reboot
 ```
 
-After reboot, open Spotify on your phone, select **"Pi Display"** as the output device, and play music. The display updates instantly.
+The validation script automatically uses `venv/bin/python` when setup has
+created it. It compiles Python, runs the regression suite, checks project shell
+scripts and embedded JavaScript, and renders every service/path/tmpfiles
+template. Follow [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) instead of rebooting
+immediately when upgrading a live installation.
 
-## Systemd Services
+The installer:
 
-| Service | Description |
-|---------|------------|
-| `spotify-display` | Flask server — metadata lookup and web UI |
-| `spotify-kiosk` | Chromium in fullscreen kiosk mode |
-| `spotify-buttons` | GPIO button handler (optional) |
-| `spotify-network-watchdog` | Re-connects Wi-Fi during an outage (e.g. a nightly router reboot), then clears any stuck password prompt and restarts Spotify services once it returns |
-| `spotify-wled` | WLED ambient lighting + progress dim-band (optional) |
-| `go-librespot` | Spotify Connect audio receiver + local state/control API |
-| `raspotify` | Disabled fallback Spotify Connect receiver + onevent |
+- verifies the go-librespot v0.7.4 archive and pip bootstrap checksums;
+- installs the hash-locked Python environment from `requirements.lock`;
+- optionally installs the separately hash-locked release-test toolchain;
+- merges credentials without replacing existing WLED/security settings;
+- renders hardened system services for the actual user, path and port;
+- installs the Chromium or Pygame graphical user service;
+- creates the shared `/run/spotify-display` runtime directory;
+- installs exact-device HID permissions for the Waveshare backlight;
+- enables cheap path activation for optional WLED;
+- hardens NetworkManager recovery without killing unrelated desktop processes;
+- leaves GPIO and Raspotify disabled unless explicitly requested.
 
-Useful commands:
+Useful installer options:
 
 ```bash
-sudo systemctl status spotify-display
-sudo systemctl status go-librespot
-sudo systemctl restart spotify-kiosk
-sudo journalctl -u spotify-display -f
-sudo journalctl -u go-librespot -f
-curl http://localhost:5000/api/health
+ENABLE_GPIO_BUTTONS=1 ./setup.sh       # buttons are wired
+DISPLAY_BACKEND=pygame ./setup.sh      # lightweight renderer
+DISPLAY_PORT=5050 ./setup.sh           # non-default HTTP port
+INSTALL_TEST_DEPS=1 ./setup.sh         # pytest + Node release gate
+STAGED_INSTALL=1 ./setup.sh            # preserve live service/host policy state
 ```
 
-## Display Configuration
+Raspotify fallback installation is deliberately opt-in and requires the
+operator to provide the expected installer checksum.
 
-The setup script configures HDMI for a 1080x1080 square display. If your display has different specs, edit `/boot/firmware/config.txt`:
+Read [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) before upgrading a running Pi; it
+contains staged rollout and rollback instructions.
 
-```ini
-hdmi_force_hotplug=1
-hdmi_group=2
-hdmi_mode=87
-hdmi_cvt=1080 1080 60 1 0 0 0
+## Services
+
+| Unit | Role |
+|---|---|
+| `go-librespot.service` | Spotify Connect receiver and audio |
+| `spotify-display.service` | Waitress/Flask API and web assets |
+| `spotify-kiosk.service` | Chromium graphical user service |
+| `spotify-pygame.service` | Alternative graphical user service |
+| `spotify-network-watchdog.service` | Debounced link recovery |
+| `spotify-wled.path` | Activates WLED when configuration changes |
+| `spotify-wled.service` | Optional LED renderer |
+| `spotify-buttons.service` | Optional non-root Pi 5 GPIO handler |
+
+Common diagnostics:
+
+```bash
+curl -i http://127.0.0.1:5000/api/health
+curl -i http://127.0.0.1:5000/api/now-playing
+sudo systemctl status spotify-display go-librespot spotify-wled
+sudo journalctl -u spotify-display -u go-librespot -u spotify-wled -n 200 --no-pager
 ```
 
-## GPIO Pinout (optional)
+The kiosk units live in the graphical user's systemd manager:
 
-Wire momentary buttons between these BCM GPIO pins and GND:
+```bash
+systemctl --user status spotify-kiosk
+systemctl --user restart spotify-kiosk
+```
 
-| Pin | Function |
-|-----|----------|
-| 23 | Volume down (amixer) |
-| 24 | Volume up (amixer) |
+## Optional personalized crate and pairing
 
-> Play/pause, next, and previous controls can be routed through the local go-librespot API. Volume buttons still use `amixer`.
+Playback needs no OAuth. To expose a Spotify account's private playlists and
+saved albums in the shared crate, use one HTTPS origin for both the display and
+callback, and register that exact callback with Spotify:
 
-Internal pull-up resistors are enabled — no external resistors needed.
+```json
+{
+  "public_base_url": "https://display.example",
+  "redirect_uri": "https://display.example/callback",
+  "guest_session_hours": 12,
+  "security": {
+    "owner_token": "GENERATE_A_LONG_RANDOM_TOKEN"
+  }
+}
+```
 
-## WLED ambient lighting (optional)
+Generate a token with `python3 -c 'import secrets; print(secrets.token_urlsafe(32))'`.
+`config.json` must remain mode `0600`.
 
-A nearby WLED-controlled WS2812b light bar can mirror the album-art palette and show track progress as a sliding dim band. The Pi streams pixels directly over UDP DRGB while a track is playing; when nothing is playing the Pi stops streaming and WLED reverts to whatever preset is configured on the device.
+Until the optional graphical owner page is added, a remote owner can mint and
+share a one-use, ten-minute guest pairing URL with:
 
-### Set up devices from the kiosk
+```bash
+BASE=https://display.example
+curl -sS -c /tmp/display-owner.cookie \
+  -H 'Content-Type: application/json' \
+  --data '{"token":"YOUR_OWNER_TOKEN"}' \
+  "$BASE/api/auth/owner"
+curl -sS -b /tmp/display-owner.cookie -X POST "$BASE/api/auth/pairing"
+rm -f /tmp/display-owner.cookie
+```
 
-1. Power on one or more WLED devices on the same LAN as the Pi.
-2. With nothing playing on Spotify, the kiosk sits in its idle state.
-3. A "WLED device(s) found — tap to set up" chip appears at the top of the display once devices are discovered via the LAN scan (every 30 s).
-4. Tap it — the modal lists every discovered device alongside any you've already added. Tap each one to add or remove it, and they're written into `config.json` immediately. Tap "Disable WLED" to release all strips entirely.
+Consuming the URL permits exactly one guest OAuth initiation within five
+minutes. The resulting shared grant expires after 12 hours by default and
+replaces the preceding personalized account. Disconnect with
+`POST /api/auth/disconnect` from an owner session.
 
-The chip only appears when (a) the player is idle and (b) at least one discovered device isn't already in the configured list. New devices that come online later show up the next time the player goes idle.
+## Hardware backlight
 
-### Multi-device
+Three-finger vertical drag controls the real backlight on the exact
+`0712:000a` Waveshare controller. The backend discovers its current hidraw node,
+accepts no raw HID input through HTTP, limits physical brightness, serializes
+writes and rediscovers after USB re-enumeration. Idle lowers both pixels and
+backlight; the first touch restores the active setting without activating a
+control underneath.
 
-You can add as many WLED strips as you like — every configured device receives the **same animation** synchronised: one palette extracted from the current artwork, stretched across each strip's own pixel count, with the progress band at the same fractional position on every strip. Add a bar in the living room and a strip behind the TV and they'll feel like a single piece of house lighting.
+The policy lives in `config.json`:
 
-### What you'll see
+```json
+"backlight": {
+  "enabled": true,
+  "initial_percent": 100,
+  "idle_percent": 10,
+  "safe_max_percent": 80,
+  "ramp_interval_ms": 150,
+  "retry_interval_seconds": 2
+}
+```
 
-- **Album-art palette** — three vivid accent colors picked from the artwork. The picker scores candidates by chroma × √frequency × value, enforces a 30° minimum hue gap between picks, and floors saturation + value so even muddy / monochrome artwork comes out punchy on LEDs.
-- **Vinyl-rate drift** — the palette is interpolated across each strip's pixels and phase-shifted at **33⅓ RPM** (one full cycle every 1.8 s, matching the vinyl on the display) so the lights spin in time with the record. With multiple strips the phase is shared so they all look like one piece of lighting. Override `gradient_drift_seconds` if you want a slower ambient feel.
-- **Smooth progress band** — a 3-pixel-wide cluster (configurable) slides left → right over the course of the track on every strip simultaneously. Rendered as the **hue-opposite** of the underlying gradient color at each pixel (cyan band over a red gradient, magenta over green, etc.) at full brightness — stays visible through diffusion that would swallow a dim band. Subpixel coverage = continuous motion, no integer steps. Freezes in place when paused.
-- **Idle = hands off** — when Spotify disconnects, or when playback has been paused for 60 s (configurable via `pause_release_seconds`, set to 0 to disable), the Pi stops streaming to every configured strip. WLED's realtime mode times out about 2 s later and each device reverts to whatever preset is configured on it. Press play and the Pi re-engages all strips on the next tick.
+See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for the report format, permissions
+and power diagnostics.
 
-### Manual config (optional)
+## WLED
 
-You can pre-populate the `wled` block in `config.json` instead of going through the kiosk UI:
+The kiosk requests WLED discovery only while idle. Its single-flight scanner is
+dormant without recent setup demand, caps each LAN batch at 512 total probes and
+retains a short TTL cache. Configuration accepts at most 16 devices and 2,048
+pixels per device. The renderer distinguishes active, genuine idle and temporary
+backend failure; brief failures retain the last frame, while real idle releases
+WLED realtime mode.
 
 ```json
 "wled": {
   "enabled": true,
   "devices": [
-    {"host": "192.168.1.67", "name": "Living room bar", "pixel_count": 46},
-    {"host": "192.168.1.42", "name": "TV strip",        "pixel_count": 100}
+    {
+      "host": "192.168.1.67",
+      "name": "Record halo",
+      "pixel_count": 120,
+      "reverse": false,
+      "phase_offset": 0.0,
+      "brightness": 0.8,
+      "gamma": 1.0
+    }
   ],
   "palette_colors": 3,
   "saturation_boost": 1.3,
@@ -283,32 +324,64 @@ You can pre-populate the `wled` block in `config.json` instead of going through 
 }
 ```
 
-The progress band is always rendered as the complement of the gradient color at each pixel — the legacy `dim_band_value` field is accepted but ignored. Legacy single-device configs (`wled.host` / `wled.name` / `wled.pixel_count` at the top level) keep working and are migrated to the `devices` array on the next UI action.
+Per-device bounds are `phase_offset` -1..1 turns, `brightness` 0.05..1 and
+`gamma` 0.5..3. The service builds one frame per unique rendering shape, not
+once per identical strip. Runtime health is published atomically as schema v1
+at `/run/spotify-display/wled-status.json`.
 
-**`play_fps` rule of thumb:** for smooth-looking gradient drift, set `play_fps ≥ pixel_count / gradient_drift_seconds`. With the defaults (`gradient_drift_seconds: 1.8`) that's ≈ 17 FPS for a 30-LED strip, ≈ 33 FPS for a 60-LED strip, ≈ 56 FPS for 100 LEDs. The default of 30 covers most reasonable strip sizes; bump higher if you have a long strip or notice the gradient looks stepped. WLED on ESP32 handles 60+ FPS comfortably; ESP8266 caps closer to 30.
+## GPIO
 
-`wled_sync.py` re-reads `config.json` every couple of seconds — no service restart needed when these values change.
+`rpi-lgpio` provides Pi 5-compatible RPi.GPIO semantics. Buttons are wired from
+BCM pin to ground with internal pull-ups:
 
-### Useful commands
+| BCM | Action |
+|---:|---|
+| 17 | Previous |
+| 27 | Play/pause |
+| 22 | Next |
+| 23 | Volume down |
+| 24 | Volume up |
+
+All actions go through the local receiver API; no hard-coded ALSA `Master`
+control is used.
+
+## Development and verification
 
 ```bash
-sudo systemctl status spotify-wled
-sudo journalctl -u spotify-wled -f
-curl http://localhost:5000/api/wled/discovered
-curl http://localhost:5000/api/wled/status
+# after setup, or in an environment containing both lock files:
+venv/bin/python -m pytest -q
+venv/bin/python scripts/check_inline_js.py templates/index.html templates/join.html templates/connect.html
+./scripts/validate.sh
 ```
 
-## Tech Stack
+For deterministic browser checks without a Spotify account or receiver:
 
-- **Backend:** Python / Flask — local receiver API proxy, fallback state reader, Spotify client credentials for metadata, LRCLIB lyrics proxy
-- **Metadata/Controls:** go-librespot local API, with Raspotify `--onevent` fallback support
-- **Frontend:** Vanilla HTML/CSS/JS — no build tools or frameworks
-- **Animation:** CSS `transform: rotate()` with `will-change` for GPU compositing
-- **Progress:** Canvas-based circular arc with warm-to-white gradient
-- **Lyrics:** [LRCLIB](https://lrclib.net) — free time-synced lyrics API
-- **Audio:** [go-librespot](https://github.com/devgianlu/go-librespot) (librespot-based Spotify Connect)
-- **Fonts:** [Montserrat](https://fonts.google.com/specimen/Montserrat) via Google Fonts
+```bash
+MOCK_DISPLAY_PORT=5105 python3 scripts/run_mock_display.py
+# open http://127.0.0.1:5105/?diag=1 at a 1080 x 1080 viewport
+curl -X POST http://127.0.0.1:5105/__mock/state/next
+curl -X POST http://127.0.0.1:5105/__mock/state/idle
+```
 
-## License
+Fixture states are `playing`, `paused`, `next`, `noart`, `badart`, `idle` and
+`error`.
+This harness is development-only and deliberately uses Flask's loopback
+development server; production continues to use Waitress via `serve.sh`.
 
-MIT
+CI runs the hash-locked runtime plus `requirements-test.lock` on Python 3.11
+and 3.13. Update `requirements.lock` with pip-tools only when intentionally
+changing `requirements.txt`; update the small test lock when changing pytest,
+and review every transitive/hash change.
+
+The remaining target-only acceptance checks are recorded in
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md): systemd parsing, actual HID/GPIO/WLED,
+network recovery, 1080 x 1080 frame timing, thermals and throttling.
+
+## Further documentation
+
+- [Audit remediation and residual work](docs/REMEDIATION.md)
+- [Security and trust model](docs/SECURITY.md)
+- [Deployment and rollback](docs/DEPLOYMENT.md)
+- [Troubleshooting](TROUBLESHOOTING.md)
+- [Case design](CASE_DESIGN.md)
+- [Changelog](CHANGELOG.md)

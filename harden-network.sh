@@ -39,12 +39,25 @@ step() { echo -e "\n${GREEN}▸ $1${NC}"; }
 warn() { echo -e "${YELLOW}  $1${NC}"; }
 err()  { echo -e "${RED}  $1${NC}"; }
 
-KIOSK_USER="${KIOSK_USER:-admin}"
-KIOSK_UID="$(id -u "$KIOSK_USER" 2>/dev/null || echo 1000)"
+KIOSK_USER="${KIOSK_USER:-${SUDO_USER:-$(id -un)}}"
+if ! KIOSK_UID="$(id -u "$KIOSK_USER" 2>/dev/null)"; then
+    err "Kiosk user '$KIOSK_USER' does not exist. Set KIOSK_USER explicitly."
+    exit 1
+fi
+KIOSK_HOME="$(getent passwd "$KIOSK_USER" | cut -d: -f6)"
+[ -n "$KIOSK_HOME" ] || { err "Could not determine home for '$KIOSK_USER'."; exit 1; }
 
 # Use sudo only when not already root, so the script works either way.
 SUDO=""
 if [ "$(id -u)" -ne 0 ]; then SUDO="sudo"; fi
+
+as_kiosk() {
+    if [ "$(id -un)" = "$KIOSK_USER" ]; then
+        "$@"
+    else
+        sudo -u "$KIOSK_USER" -- "$@"
+    fi
+}
 
 # ── 0. Preconditions ────────────────────────────────────────
 if ! command -v nmcli >/dev/null 2>&1; then
@@ -128,17 +141,18 @@ $SUDO nmcli connection modify "$CONN" 802-11-wireless.powersave 2 2>/dev/null \
 # re-edited via the desktop wizard (which can reset psk-flags back to 1) we
 # don't want a live agent able to draw a dialog over Chromium.
 step "Neutralizing desktop NetworkManager secret agents in the kiosk session…"
-AUTOSTART="/home/${KIOSK_USER}/.config/lxsession/LXDE-pi/autostart"
+AUTOSTART="${KIOSK_HOME}/.config/lxsession/LXDE-pi/autostart"
 if [ -f "$AUTOSTART" ] && grep -q 'nm-applet' "$AUTOSTART" 2>/dev/null; then
-    sed -i '/nm-applet/d' "$AUTOSTART" && warn "Removed nm-applet from lxsession autostart."
+    as_kiosk sed -i '/nm-applet/d' "$AUTOSTART" \
+        && warn "Removed nm-applet from lxsession autostart."
 fi
-$SUDO -u "$KIOSK_USER" XDG_RUNTIME_DIR="/run/user/${KIOSK_UID}" \
+as_kiosk env XDG_RUNTIME_DIR="/run/user/${KIOSK_UID}" \
     systemctl --user mask nm-applet.service >/dev/null 2>&1 || true
-$SUDO -u "$KIOSK_USER" XDG_RUNTIME_DIR="/run/user/${KIOSK_UID}" \
+as_kiosk env XDG_RUNTIME_DIR="/run/user/${KIOSK_UID}" \
     pkill -x nm-applet >/dev/null 2>&1 || true
-$SUDO -u "$KIOSK_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${KIOSK_UID}/bus" \
+as_kiosk env DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${KIOSK_UID}/bus" \
     gsettings set org.gnome.nm-applet disable-connected-notifications true >/dev/null 2>&1 || true
-$SUDO -u "$KIOSK_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${KIOSK_UID}/bus" \
+as_kiosk env DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${KIOSK_UID}/bus" \
     gsettings set org.gnome.nm-applet disable-disconnected-notifications true >/dev/null 2>&1 || true
 warn "Standalone agents masked/killed; notifications silenced where supported."
 warn "NOTE: on Bookworm/labwc the panel (wf-panel-pi) can also act as a secret agent."
