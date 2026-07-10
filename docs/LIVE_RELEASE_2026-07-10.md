@@ -9,7 +9,7 @@ failed, and the production API is served by Waitress with the
 
 | Item | Released value |
 |---|---|
-| GitHub branch | `codex/multiphase-remediation` |
+| GitHub branches | `main` (promoted after acceptance) and `codex/multiphase-remediation` |
 | Accepted source commit | `a575359c5c45b6712b28a3c56f1dd3d5971e771f` |
 | Pi release directory | `/home/admin/spotify-circular-display-remediation-dd6a4d7` |
 | Preserved old installation | `/home/admin/circle-pi-display` |
