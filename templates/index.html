@@ -2341,11 +2341,9 @@
 
   function applyVinylTransform(now) {
     // Flip is a single rigid rotation about the VERTICAL centre axis
-    // (rotateY) so it matches the horizontal skip swipe — a "next" swipe
-    // (right→left) turns the record over to the left like a page, and a
-    // "previous" swipe (left→right) turns it the other way. The vinyl spin
-    // is frozen for the duration so the flip reads as one clean motion.
-    // `flipDirection` carries the swipe's sign.
+    // (rotateY). Semantic next/previous actions turn in opposite directions;
+    // the vinyl spin is frozen so the flip reads as one clean motion.
+    // `flipDirection` carries that transport direction.
     let flipAngle = 0;
     let sheen = 0;
 
@@ -4754,6 +4752,12 @@
     return Math.max(96, viewport.clientWidth * 0.1);
   }
 
+  function swipeActionForDelta(dx) {
+    // Preserve the panel's established physical gesture after correcting its
+    // formerly inverted X axis: swipe right for next, left for previous.
+    return dx > 0 ? "next" : "previous";
+  }
+
   function clearSwipeFeedback() {
     for (const el of [skipPrev, skipNext]) {
       el.classList.remove("dragging");
@@ -4763,8 +4767,8 @@
 
   function showSwipeFeedback(dx) {
     if (!state.trackId) return;
-    const target = dx > 0 ? skipPrev : skipNext;
-    const other = dx > 0 ? skipNext : skipPrev;
+    const target = swipeActionForDelta(dx) === "next" ? skipNext : skipPrev;
+    const other = target === skipNext ? skipPrev : skipNext;
     const strength = Math.min(Math.abs(dx) / swipeThreshold(), 1);
 
     other.classList.remove("dragging");
@@ -4828,11 +4832,12 @@
 
   function cancelSwipe() {
     if (!swipeGesture) return;
-    clearSwipeFeedback();
-    if (swipeGesture.captured && viewport.releasePointerCapture) {
-      try { viewport.releasePointerCapture(swipeGesture.pointerId); } catch (e) {}
-    }
+    const gesture = swipeGesture;
     swipeGesture = null;
+    clearSwipeFeedback();
+    if (gesture.captured && viewport.releasePointerCapture) {
+      try { viewport.releasePointerCapture(gesture.pointerId); } catch (e) {}
+    }
   }
 
   function startMtGesture() {
@@ -5150,7 +5155,7 @@
       velocity >= SWIPE_MIN_VELOCITY;
 
     if (shouldSkip) {
-      const action = dx < 0 ? "next" : "previous";
+      const action = swipeActionForDelta(dx);
       lastSwipeAt = now;
       suppressTapUntil = now + 650;
       clearSwipeFeedback();
@@ -5171,10 +5176,11 @@
       clearSwipeFeedback();
     }
 
-    if (swipeGesture.captured && viewport.releasePointerCapture) {
+    const completedGesture = swipeGesture;
+    swipeGesture = null;
+    if (completedGesture.captured && viewport.releasePointerCapture) {
       viewport.releasePointerCapture(e.pointerId);
     }
-    swipeGesture = null;
   }, { passive: false });
 
   viewport.addEventListener("pointercancel", e => {
@@ -5193,16 +5199,15 @@
     if (activePointers.size === 0) multiTouchDrain = false;
   });
   viewport.addEventListener("lostpointercapture", e => {
-    activePointers.delete(e.pointerId);
-    if (brightnessGesture && brightnessGesture.ids.includes(e.pointerId)) {
-      finishBrightnessGesture(true);
-      multiTouchDrain = activePointers.size > 0;
-    } else if (mtGesture && mtGesture.ids.includes(e.pointerId)) {
-      abortMtGesture();
-      multiTouchDrain = activePointers.size > 0;
+    // setPointerCapture(viewport) transfers Chromium's implicit touch capture
+    // from the touched child. That child's lostpointercapture bubbles through
+    // viewport. Capture loss is not contact loss: pointercancel, blur and
+    // visibility changes own actual aborts. Deleting the pointer here used to
+    // cancel a swipe during that normal child-to-viewport transfer.
+    if (e.target !== viewport) return;
+    if (swipeGesture && e.pointerId === swipeGesture.pointerId) {
+      swipeGesture.captured = false;
     }
-    if (swipeGesture && e.pointerId === swipeGesture.pointerId) cancelSwipe();
-    if (activePointers.size === 0) multiTouchDrain = false;
   });
 
   function abortAllInput() {

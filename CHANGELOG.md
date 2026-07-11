@@ -58,6 +58,9 @@ numbers, so audit remediation is recorded under `Unreleased`.
   producing server errors.
 - Corrected the Waveshare touchscreen's inverted absolute axes with an
   exact-device libinput calibration rule rather than browser-coordinate hacks.
+- Restored single-finger track swipes after touch calibration by preserving the
+  panel's physical left/right transport mapping and ignoring normal bubbled
+  pointer-capture transfers instead of treating them as cancelled contacts.
 
 ### Added
 

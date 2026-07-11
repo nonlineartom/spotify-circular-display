@@ -87,6 +87,37 @@ def test_cancelled_primary_pointer_does_not_finalize_gesture():
     assert "setBrightness(gesture.base" in INDEX
 
 
+def test_single_finger_swipe_survives_capture_transfer_and_keeps_physical_direction():
+    source = "\n".join((
+        _js_function("swipeActionForDelta"),
+        "if (swipeActionForDelta(200) !== 'next') throw new Error('right swipe no longer skips next');",
+        "if (swipeActionForDelta(-200) !== 'previous') throw new Error('left swipe no longer skips previous');",
+    ))
+    _run_node(source)
+    pointer_move = INDEX.split(
+        'viewport.addEventListener("pointermove"', 1
+    )[1].split("function releasePointer", 1)[0]
+    assert "viewport.setPointerCapture(e.pointerId)" in pointer_move
+
+    capture_loss = INDEX.split(
+        'viewport.addEventListener("lostpointercapture"', 1
+    )[1].split("});", 1)[0]
+    assert "if (e.target !== viewport) return" in capture_loss
+    assert "swipeGesture.captured = false" in capture_loss
+    assert "activePointers.delete" not in capture_loss
+    assert "cancelSwipe" not in capture_loss
+    assert "abortMtGesture" not in capture_loss
+    assert "finishBrightnessGesture" not in capture_loss
+
+    pointer_up = INDEX.split(
+        'viewport.addEventListener("pointerup"', 1
+    )[1].split('viewport.addEventListener("pointercancel"', 1)[0]
+    assert "swipeActionForDelta(dx)" in pointer_up
+    assert pointer_up.index("swipeGesture = null") < pointer_up.index(
+        "viewport.releasePointerCapture(e.pointerId)"
+    )
+
+
 def test_three_finger_backlight_gesture_has_a_mirrored_radial_hud():
     controls = _controls()
     for element_id in (
