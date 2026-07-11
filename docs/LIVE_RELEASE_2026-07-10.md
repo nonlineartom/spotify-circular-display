@@ -114,3 +114,51 @@ or a real router outage and were not fabricated remotely:
 
 The backup and old release must be retained until those checks have passed in
 normal use.
+
+## Receiver-profile and touch follow-up — 2026-07-11
+
+The receiver-aware profile and Waveshare touch-calibration release is live and
+survived reboot. The original release and both protected backup directories
+remain in place.
+
+| Item | Released value |
+|---|---|
+| Accepted source commit | `413dfffcd0e9e889387f08f6d2c1793194ad2c39` |
+| Pi release directory | `/home/admin/spotify-circular-display-auth-touch-413dfff` |
+| Backup/evidence directory | `/home/admin/spotify-display-backups/auth-touch-20260711-112614` |
+| Pre-cutover manifest SHA-256 | `070167f71aa5f71ef94d34b1cf0da954aa721e72f04a97cf1b3587bd9d2c5791` |
+| Post-reboot boot ID | `a266912c-ddaf-41f4-a69f-6173cf750822` |
+| Post-reboot screenshot SHA-256 | `b989ed220c2e74eac04f1f959c652f1a19c1b73c6dcb4cbc8b4b6ca053c1fd50` |
+
+Both the host and Pi release gates passed 190 tests, Python compilation, shell
+syntax, inline JavaScript syntax, service rendering and target systemd unit
+verification. The guarded cutover passed receiver, Waitress, watchdog, WLED
+and kiosk health gates. After reboot, the system and user managers were running
+with zero failed units and no receiver/display priority-warning entries;
+temperature was 58.2°C and `get_throttled` remained `0x0`.
+
+The existing legacy refresh grant migrated only after its Web API identity
+matched the active receiver. The live store now contains one profile and one
+receiver alias, and the unbound legacy grant has been removed. The linked crate
+returned private playlists and albums locally while LAN requests to owner
+status, pairing and crate routes returned 401; remote backlight mutation
+returned 403 and the public idle response contained House picks without a
+one-use token.
+
+A controlled receiver outage changed `linked` to `no_receiver`, reduced the
+crate to its `house` section and rejected a stale launch with HTTP 409. Restart
+restored the saved profile with a new epoch. This exercises the fail-closed and
+automatic-recovery path without fabricating a second Spotify account.
+
+The exact `0712:000a` touchscreen is now assigned libinput calibration matrix
+`-1 0 1 0 -1 1`; `libinput list-devices` retained the matrix after reboot. The
+1080×1080 screenshot showed the personalized crate correctly composed. A real
+finger-direction check is still required because remote inspection cannot
+physically touch the panel.
+
+Phone pairing is intentionally not claimed as live. The preserved configuration
+still uses `http://127.0.0.1:5000` and the Pi has no HTTPS proxy or tunnel, so a
+phone would redirect to itself. Enabling new listeners requires a stable HTTPS
+origin, the exact `/callback` URI in the Spotify dashboard and the intended
+Spotify users on that application. The existing linked profile and casting
+continue to work without that external prerequisite.
