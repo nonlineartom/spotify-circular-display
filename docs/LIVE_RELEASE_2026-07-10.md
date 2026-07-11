@@ -162,3 +162,29 @@ phone would redirect to itself. Enabling new listeners requires a stable HTTPS
 origin, the exact `/callback` URI in the Spotify dashboard and the intended
 Spotify users on that application. The existing linked profile and casting
 continue to work without that external prerequisite.
+
+## Single-finger swipe follow-up — 2026-07-11
+
+Commit `3ab9f42bc65d19dc7cdba813643c925683365686` is live in the same
+versioned release directory. The update passed 191 tests on both the host and
+Pi, plus the complete compile, shell, inline-JavaScript and service-rendering
+gate. Its rollback evidence is retained at
+`/home/admin/spotify-display-backups/swipe-20260711-161246`; the final evidence
+manifest SHA-256 is
+`e536821588e1023bff8af760951ae7a3eec670c859134a56e17a4e343225c9ba`.
+
+Two issues combined to make the established next-track swipe look broken after
+the axis correction. The calibrated X axis made the old physical rightward
+gesture resolve to `previous`, which normally restarts the current track.
+Separately, Chromium's implicit touch-capture transfer emitted a bubbling
+`lostpointercapture` that the page incorrectly treated as contact cancellation.
+The kiosk now maps physical rightward to next and leftward to previous, ignores
+capture-transfer notifications as contact termination, and clears intentional
+capture state before release.
+
+An end-to-end Wayland probe created one temporary direct-touch device, began a
+rightward single-contact swipe more than five seconds into a track and observed
+the receiver advance to a different track. The probe device was destroyed
+after the gesture. Display, receiver and kiosk remained active with zero failed
+system or user units, and the real Waveshare device retained calibration matrix
+`-1 0 1 0 -1 1`.
