@@ -443,7 +443,7 @@ not a substitute for the physical checks.
 | Gestures | Left/right and up/down touches land on the same physical side/direction; single swipe/tap, two-finger seek/volume/pinch and three-finger brightness all complete; pointer cancellation sends no action. |
 | Crate/tracklist/lyrics | Owner/private data is visible only in an owner context; empty account clears old cards; modal keyboard/focus/Escape behaviour is correct. |
 | Offline/error | Restart go-librespot and briefly remove the route; UI shows continuity/error rather than false idle, then recovers without a stale transition. |
-| Backlight | Confirm the correct `0712:000a` hidraw interface, 10% first-contact command, stepped ramp, idle/wake and rediscovery after a controlled USB reconnect. |
+| Backlight | Confirm the correct `0712:000a` hidraw interface, 10% first-contact command, smooth 1% internal ramp, idle/wake and rediscovery after a controlled USB reconnect. |
 | Power | Watch `dmesg` and `vcgencmd get_throttled`; 80% physical brightness must not cause USB reset, touch loss or undervoltage. |
 | WLED | Verify pixel count/direction/phase/gamma per strip, smooth 4-second pause ramp, 8-second transport grace, idle realtime release and status file. |
 | GPIO | When opted in, every BCM button produces one local API action and the non-root unit remains stable. |

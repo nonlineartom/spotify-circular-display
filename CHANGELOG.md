@@ -61,6 +61,9 @@ numbers, so audit remediation is recorded under `Unreleased`.
 - Restored single-finger track swipes after touch calibration by preserving the
   panel's physical left/right transport mapping and ignoring normal bubbled
   pointer-capture transfers instead of treating them as cancelled contacts.
+- Smoothed hardware-backlight idle and wake transitions with fine HID
+  interpolation while retaining ten-point user settings, the first-contact
+  ceiling, total transition time and conservative physical power limit.
 
 ### Added
 

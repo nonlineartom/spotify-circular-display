@@ -48,6 +48,22 @@ def test_safe_mapping_builds_only_fixed_report_and_complement():
     assert (physical, level) == (8, 20)
     assert report == bytes((0x09, 0x08, 0xF7, 0x14, 0xEB))
 
+    # Internal ramp interpolation uses the panel's finer HID resolution while
+    # public settings remain snapped to ten-point values.
+    physical, level, report = backlight._logical_to_command(11, 80)
+    assert (physical, level) == (9, 22)
+    assert report == bytes((0x09, 0x08, 0xF7, 0x16, 0xE9))
+    assert backlight._quantize_logical(73) == 70
+
+
+def test_smooth_ramp_preserves_legacy_total_slew_rate():
+    controller = backlight.BacklightController({"ramp_interval_ms": 150})
+
+    assert controller.ramp_interval_seconds == pytest.approx(0.150)
+    assert controller.ramp_write_interval_seconds == pytest.approx(0.015)
+    assert controller.status()["step_percent"] == 10
+    assert controller.status()["ramp_step_percent"] == 1
+
 
 def test_three_amp_ceiling_cannot_be_raised_by_config():
     controller = backlight.BacklightController({"safe_max_percent": 100})
@@ -94,8 +110,8 @@ def test_worker_ramps_first_contact_and_writes_exact_reports(tmp_path):
         controller.stop()
 
     # Unknown/re-enumerated hardware starts at logical 10 (physical 8), then
-    # advances in bounded logical steps rather than one high-draw jump.
-    assert [report[3] for report in reports] == list(range(20, 201, 20))
+    # advances in one-point substeps rather than visible ten-point jumps.
+    assert [report[3] for report in reports] == list(range(20, 201, 2))
     assert all(report[:3] == bytes((0x09, 0x08, 0xF7)) for report in reports)
     assert all(report[4] == report[3] ^ 0xFF for report in reports)
     assert opened == [str(dev / "hidraw3")] * len(reports)
@@ -143,7 +159,89 @@ def test_worker_coalesces_requests_arriving_during_a_write(tmp_path):
 
     # The worker honors only the latest request, then reaches it through safe
     # ramp steps; the superseded targets do not cause extra writes.
-    assert [report[3] for report in reports] == [20, 40, 60, 80]
+    assert [report[3] for report in reports] == list(range(20, 81, 2))
+
+
+def test_known_contact_idle_and_wake_are_smooth_in_both_directions(tmp_path):
+    sysfs = tmp_path / "sys" / "class" / "hidraw"
+    dev = tmp_path / "dev"
+    dev.mkdir(parents=True)
+    _add_hidraw(sysfs, "hidraw9")
+    (dev / "hidraw9").touch()
+    reports = []
+    controller = backlight.BacklightController(
+        {"initial_percent": 100, "idle_percent": 10, "ramp_interval_ms": 100},
+        sysfs_root=str(sysfs),
+        dev_root=str(dev),
+        opener=lambda _path, _flags: 36,
+        writer=lambda _fd, report: reports.append(report) or len(report),
+        closer=lambda _fd: None,
+    )
+    try:
+        controller.start()
+        assert _wait_for(lambda: controller.status()["pending"] is False)
+        reports.clear()
+
+        controller.set_idle()
+        assert _wait_for(lambda: controller.status()["pending"] is False)
+        downward = [report[3] for report in reports]
+        reports.clear()
+
+        controller.set_active()
+        assert _wait_for(lambda: controller.status()["pending"] is False)
+        upward = [report[3] for report in reports]
+    finally:
+        controller.stop()
+
+    assert downward == list(range(198, 19, -2))
+    assert upward == list(range(22, 201, 2))
+
+
+def test_wake_reverses_an_inflight_idle_ramp_without_stale_steps(tmp_path):
+    sysfs = tmp_path / "sys" / "class" / "hidraw"
+    dev = tmp_path / "dev"
+    dev.mkdir(parents=True)
+    _add_hidraw(sysfs, "hidraw10")
+    (dev / "hidraw10").touch()
+    reports = []
+    block_next_write = threading.Event()
+    blocked_write_entered = threading.Event()
+    release_blocked_write = threading.Event()
+
+    def writer(_fd, report):
+        reports.append(report)
+        if block_next_write.is_set():
+            block_next_write.clear()
+            blocked_write_entered.set()
+            assert release_blocked_write.wait(1)
+        return len(report)
+
+    controller = backlight.BacklightController(
+        {"initial_percent": 100, "idle_percent": 10, "ramp_interval_ms": 100},
+        sysfs_root=str(sysfs),
+        dev_root=str(dev),
+        opener=lambda _path, _flags: 37,
+        writer=writer,
+        closer=lambda _fd: None,
+    )
+    try:
+        controller.start()
+        assert _wait_for(lambda: controller.status()["pending"] is False)
+        reports.clear()
+
+        block_next_write.set()
+        controller.set_idle()
+        assert blocked_write_entered.wait(1)
+        controller.set_active()
+        release_blocked_write.set()
+        assert _wait_for(lambda: controller.status()["pending"] is False)
+    finally:
+        release_blocked_write.set()
+        controller.stop()
+
+    # The accepted 99% idle step completes, then the latest active target wins
+    # immediately. No stale downward command is emitted after the wake intent.
+    assert [report[3] for report in reports] == [198, 200]
 
 
 def test_idle_preserves_active_percent_and_active_restores_it():
@@ -219,8 +317,8 @@ def test_reconnect_uses_first_contact_ceiling_then_resumes_ramp(tmp_path):
         controller.stop()
 
     # The failed 100-logical report is not accepted. Rediscovery restarts from
-    # logical 10 and resumes bounded ten-point ramping.
-    assert reconnect_levels == list(range(20, 201, 20))
+    # logical 10 and resumes bounded one-point ramping.
+    assert reconnect_levels == list(range(20, 201, 2))
 
 
 def _reenumerate_same_hidraw(sysfs, name):
@@ -254,7 +352,7 @@ def test_silent_same_basename_reenumeration_is_safe_before_upward_request(tmp_pa
     finally:
         controller.stop()
 
-    assert levels == list(range(20, 201, 20))
+    assert levels == list(range(20, 201, 2))
 
 
 def test_at_rest_reenumeration_automatically_reapplies_desired_brightness(tmp_path):
@@ -282,7 +380,7 @@ def test_at_rest_reenumeration_automatically_reapplies_desired_brightness(tmp_pa
     finally:
         controller.stop()
 
-    assert levels == list(range(20, 201, 20))
+    assert levels == list(range(20, 201, 2))
 
 
 def test_missing_hardware_keeps_desired_state_without_raising(tmp_path):

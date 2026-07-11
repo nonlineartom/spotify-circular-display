@@ -113,8 +113,9 @@ Raspberry Pi 5 has no built-in analogue audio jack. The browser renderer is the
 primary mode; `display.py` is a deliberately simpler fallback.
 
 The supplied backlight policy is conservative for the existing 3 A
-installation: logical 0–100 maps to at most 80% physical output and every
-startup, reconnect, idle and wake transition ramps through ten-point steps. If
+installation: logical 0–100 maps to at most 80% physical output. Public
+brightness choices remain ten-point values, while startup, reconnect, idle and
+wake transitions interpolate through one-point HID steps. If
 USB over-current or touch reconnection appears in `dmesg`, power the panel from
 its dedicated input or use a correctly detected Pi 5 5 A supply.
 
@@ -356,6 +357,11 @@ The policy lives in `config.json`:
   "retry_interval_seconds": 2
 }
 ```
+
+`ramp_interval_ms` retains its original meaning as the duration for each ten
+logical percentage points. The controller divides that interval into one-point
+substeps (15 ms with the default), preserving the established transition time
+and power slope without visible brightness jumps.
 
 See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for the report format, permissions
 and power diagnostics.

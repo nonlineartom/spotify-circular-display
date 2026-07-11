@@ -31,9 +31,10 @@ during setup and automatically reapplied on every reconnect.
 
 On the current Pi 5's 3 A supply, the controller has previously re-enumerated
 during a large brightness jump. The shipped policy therefore maps logical
-0–100 brightness onto a maximum of 80% physical output and ramps in 10-point
-logical steps every 150 ms. The first command on startup/reconnect is capped at
-logical 10%; requests made during a ramp are coalesced onto the latest target.
+0–100 brightness onto a maximum of 80% physical output. Public choices remain
+10-point values, but the HID worker interpolates transitions in 1-point steps
+every 15 ms by default. The first command on startup/reconnect is still capped
+at logical 10%; requests made during a ramp are coalesced onto the latest target.
 The controller also polls the resolved HID contact identity, so a reset from
 an instance such as `.0002` to `.0003` is noticed even when the kernel reuses
 the same `hidraw0` basename. Idle uses at most logical 10%, and wake restores

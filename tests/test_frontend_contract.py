@@ -196,6 +196,20 @@ def test_wake_landing_is_drained_until_every_contact_is_released():
     assert 'dimmer.classList.remove("wake-drain")' in INDEX
     assert 'dimmer.addEventListener("pointercancel", finishWakeContact)' in INDEX
     assert 'dimmer.addEventListener("lostpointercapture", finishWakeContact)' in INDEX
+    wake = INDEX.split("function wakeScreen", 1)[1].split(
+        "function finishWakeContact", 1
+    )[0]
+    assert wake.index('dimmer.classList.add("wake-drain")') < wake.index(
+        "setScreenDimmed(false)"
+    )
+    finish = INDEX.split("function finishWakeContact", 1)[1].split(
+        "function clearWakeContactDrain", 1
+    )[0]
+    assert "if (wakeContactPointers.size) return" in finish
+    dim = INDEX.split("function setScreenDimmed", 1)[1].split(
+        "function observeFrame", 1
+    )[0]
+    assert "if (screenDimmed === dimmed) return" in dim
 
 
 def test_lrc_fraction_is_normalized_to_milliseconds():
