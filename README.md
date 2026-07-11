@@ -35,7 +35,8 @@ the last account that authorized the display.
 - WLED rendering at vinyl speed with smooth pause ramp, failure grace, bounded
   configuration and per-device direction, phase, brightness and gamma.
 - Owner-approved Spotify pairing with exact receiver binding, OAuth state,
-  PKCE, one-use links, isolated profile grants and expiring guest access.
+  PKCE, one-use links, isolated household profiles and optional expiring guest
+  access.
 - Hidden diagnostics (`D` or `?diag=1`) for browser timing, transport, receiver,
   crate, WLED, lyrics, temperature, load and disk state.
 - Reduced-motion, keyboard, semantic-control and modal focus support.
@@ -281,13 +282,25 @@ ssh admin@pi5.local \
   'curl -sS -X POST http://127.0.0.1:5000/api/auth/pairing'
 ```
 
-Consuming the URL permits exactly one guest OAuth initiation within five
-minutes. The Spotify account being authorized must match the account currently
-controlling the receiver. Guest grants expire after 12 hours by default
-(`guest_session_hours` is bounded to 1–168); other linked profiles remain
-isolated and intact. Owner status lists redacted profile metadata, and an owner
-can disconnect the active profile or pass an `account_id` to
-`POST /api/auth/disconnect`.
+Consuming the URL permits exactly one OAuth initiation within five minutes.
+The Spotify account being authorized must match the account currently
+controlling the receiver. By default this creates a persistent household
+profile: it returns automatically on later Connect handoffs and remains until
+it is disconnected, Spotify revokes it, or its six-month reauthorization is
+due. Other linked profiles remain isolated and intact. Owner status lists
+redacted profile metadata, and an owner can disconnect the active profile or
+pass an `account_id` to `POST /api/auth/disconnect`.
+
+For a genuinely temporary visitor, the owner can explicitly request a bounded
+guest link; these grants expire after 12 hours by default
+(`guest_session_hours` is bounded to 1–168):
+
+```bash
+ssh admin@pi5.local \
+  "curl -sS -X POST -H 'Content-Type: application/json' \
+  --data '{\"profile_kind\":\"guest\"}' \
+  http://127.0.0.1:5000/api/auth/pairing"
+```
 
 The crate uses playlists, saved albums and a deduplicated **Your rotation**
 derived from the listener's medium-term top tracks. Spotify's Web API does not
@@ -300,9 +313,9 @@ falls back to House picks until it is linked again.
 
 The last authenticated receiver session remains selected while playback is
 stopped so its listener can choose the next record from the crate. For a shared
-venue, keep `guest_session_hours` short and disconnect profiles that should no
-longer remain available; receiver outage, session disconnect or invalid
-identity clears to House picks immediately.
+venue, use explicit guest links for visitors and disconnect household profiles
+that should no longer remain available; receiver outage, session disconnect or
+invalid identity clears to House picks immediately.
 
 The TLS reverse proxy **must** preserve the public Host header (for nginx,
 `proxy_set_header Host $host`) and should allow only `/pair/`, `/join`,
@@ -311,6 +324,16 @@ unless remote administration is a deliberate, separately tested choice: a
 proxy that sends its backend Host as `127.0.0.1` is indistinguishable from the
 trusted local kiosk. Verify the public origin returns 401 or 404—not 200—for
 `/api/auth/status` without an owner token.
+
+An auditable LAN-only nginx implementation is included at
+[`deploy/nginx/spotify-display-lan-https.conf.template`](deploy/nginx/spotify-display-lan-https.conf.template).
+It binds one RFC1918 address (never a wildcard), admits one RFC1918 client
+subnet, proxies Waitress only over loopback, exposes only the five phone routes
+and Montserrat font assets, and returns 404 for every `/api` route. It has no
+HTTP listener, ACME client, tunnel or WAN path. Follow the staged procedure in
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md#4a-lan-only-https-pairing-ingress);
+rendering is the default and live activation always requires an explicit
+`--activate`.
 
 ## Hardware backlight
 

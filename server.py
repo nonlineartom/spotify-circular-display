@@ -52,6 +52,7 @@ from spotify_profiles import (
     normalize_store as normalize_profile_store,
     profile_for_alias,
     public_profile,
+    reauthorization_deadline,
     remove_profile,
     upsert_profile,
 )
@@ -211,7 +212,13 @@ _lyrics_breaker_until = 0.0
 _lyrics_lock = threading.Lock()
 _lyrics_inflight = set()
 _pairing_tokens = BoundedTTLCache(32, 10 * 60)
-_kiosk_pairing = {"url": None, "digest": None, "expires_at": 0, "profile_epoch": None}
+_kiosk_pairing = {
+    "url": None,
+    "digest": None,
+    "expires_at": 0,
+    "profile_epoch": None,
+    "profile_kind": None,
+}
 _pairing_lock = threading.Lock()
 
 # Receiver identities are opaque, process-local observations. Epochs are
@@ -362,9 +369,11 @@ def _normalize_config(config):
         wled["enabled"] = False
 
     spotify_session = normalized.get("spotify_session", {})
-    if "kind" in spotify_session and spotify_session["kind"] not in ("guest", "owner"):
+    if "kind" in spotify_session and spotify_session["kind"] not in (
+        "guest", "owner", "household"
+    ):
         spotify_session["kind"] = "invalid"
-    for key in ("connected_at", "expires_at"):
+    for key in ("connected_at", "expires_at", "authorized_at", "reauthorize_at"):
         value = spotify_session.get(key)
         if value is not None and (
             isinstance(value, bool)
@@ -440,14 +449,33 @@ def _oauth_scopes(config=None):
 
 
 def _grant_is_expired(profile, now=None):
+    """Return whether a retained grant has reached its local cutoff.
+
+    New household grants have no local expiry, but version-1 owner/household
+    records could carry one that the previous server enforced. Preserve that
+    stricter migration boundary instead of silently widening access.
+    """
     profile = normalize_profile(profile)
     if not profile:
         return True
     now = time.time() if now is None else now
     expires_at = profile.get("expires_at")
-    if profile.get("kind") == "guest":
-        return expires_at is None or now >= expires_at
     return expires_at is not None and now >= expires_at
+
+
+def _grant_reauthorization_due(profile, now=None):
+    """Return whether Spotify's six-calendar-month authorization is due.
+
+    Version-1 profiles have no trustworthy issuance timestamp. Their deadline
+    remains unknown until the next explicit authorization; provider
+    ``invalid_grant`` still fails closed and removes only that account.
+    """
+    profile = normalize_profile(profile)
+    if not profile:
+        return True
+    now = time.time() if now is None else now
+    reauthorize_at = profile.get("reauthorize_at")
+    return reauthorize_at is not None and now >= reauthorize_at
 
 
 def _legacy_grant(config=None):
@@ -458,7 +486,11 @@ def _legacy_grant(config=None):
         return None
     grant = config.get("spotify_session")
     grant = grant if isinstance(grant, dict) else {}
-    kind = grant.get("kind") if grant.get("kind") in ("guest", "owner") else "owner"
+    kind = (
+        grant.get("kind")
+        if grant.get("kind") in ("guest", "owner", "household")
+        else "owner"
+    )
     expires_at = grant.get("expires_at")
     if kind == "guest" and not isinstance(expires_at, (int, float)):
         return None
@@ -467,6 +499,10 @@ def _legacy_grant(config=None):
         "kind": kind,
         "connected_at": grant.get("connected_at") if isinstance(grant.get("connected_at"), (int, float)) else 0,
         "expires_at": expires_at if isinstance(expires_at, (int, float)) else None,
+        "authorized_at": grant.get("authorized_at")
+        if isinstance(grant.get("authorized_at"), (int, float)) else None,
+        "reauthorize_at": grant.get("reauthorize_at")
+        if isinstance(grant.get("reauthorize_at"), (int, float)) else None,
     }
 
 
@@ -1207,6 +1243,11 @@ def crate_payload(context=None):
             if cache["payload"]:
                 return _safe_crate_payload(cache["payload"], context)
             return _safe_crate_payload({"sections": [], "building": True}, context)
+        # Another cold request can finish after our optimistic cache read but
+        # before we claim the global build slot. Re-read while holding the
+        # condition lock so we never build again from stale state.
+        if cache["payload"]:
+            return _safe_crate_payload(cache["payload"], context)
         _crate_building = True
         _crate_building_key = cache_key
         build_generation = _crate_generation(context)
@@ -1227,7 +1268,7 @@ def crate_payload(context=None):
                 # Never return or cache library data from the disconnected or
                 # replaced account after its generation has been invalidated.
                 result = _decorate_crate_payload(
-                    cache["payload"] or {"sections": [], "building": True},
+                    {"sections": [], "building": True},
                     _receiver_context(),
                 )
     finally:
@@ -1500,10 +1541,12 @@ def _receiver_context(config=None):
         "profile_state": "no_receiver",
         "profile_epoch": identity["epoch"],
         "profile_name": None,
+        "reauth_required": False,
         "account_id": None,
         "receiver_alias": None,
         "cache_key": "generic",
         "expired_account_id": None,
+        "reauthorize_account_id": None,
     }
     if not identity["active"] or not identity["alias"]:
         return base
@@ -1514,6 +1557,15 @@ def _receiver_context(config=None):
         return base
     if _grant_is_expired(profile):
         base["expired_account_id"] = profile["account_id"]
+        return base
+    if _grant_reauthorization_due(profile):
+        # Keep the durable alias mapping so a correct reauthorization replaces
+        # the same household profile. Private access remains unavailable until
+        # then, which makes stale tokens/caches fail closed.
+        base["profile_name"] = profile.get("display_name") or None
+        base["profile_state"] = "reauth_required"
+        base["reauth_required"] = True
+        base["reauthorize_account_id"] = profile["account_id"]
         return base
     base.update({
         "profile_state": "linked",
@@ -2116,12 +2168,17 @@ def _disconnect_user_account(account_id=None, expected_refresh_token=None):
     with _user_token_lock:
         context = _receiver_context()
         account_id = normalize_identifier(
-            account_id or context.get("account_id") or context.get("expired_account_id")
+            account_id
+            or context.get("account_id")
+            or context.get("expired_account_id")
+            or context.get("reauthorize_account_id")
         )
         if account_id:
             removed = _remove_profile_grant(account_id, expected_refresh_token)
             if removed and account_id in (
-                context.get("account_id"), context.get("expired_account_id")
+                context.get("account_id"),
+                context.get("expired_account_id"),
+                context.get("reauthorize_account_id"),
             ):
                 _bump_receiver_epoch(context["profile_epoch"])
         else:
@@ -2174,6 +2231,8 @@ def _maybe_migrate_legacy_profile(context):
     if expired_account_id:
         _disconnect_user_account(expired_account_id)
         context = _receiver_context()
+    if context.get("reauth_required"):
+        return context
     if context.get("profile_state") != "unlinked" or not context.get("receiver_alias"):
         return context
     config = load_config()
@@ -2218,6 +2277,11 @@ def _maybe_migrate_legacy_profile(context):
             "kind": legacy["kind"],
             "connected_at": legacy["connected_at"],
             "expires_at": legacy["expires_at"],
+            # Pre-profile grants do not carry a trustworthy OAuth issuance
+            # timestamp. Preserve the unknown lifecycle until provider
+            # invalid_grant or the listener explicitly reauthorizes.
+            "authorized_at": legacy.get("authorized_at"),
+            "reauthorize_at": legacy.get("reauthorize_at"),
             "scopes": _granted_scopes(data.get("scope")),
             "receiver_aliases": [],
         }
@@ -2273,6 +2337,9 @@ def get_user_token(account_id=None, profile_epoch=None):
         refresh_token = profile["refresh_token"]
         if _grant_is_expired(profile):
             _disconnect_user_account(account_id, refresh_token)
+            return None
+        if _grant_reauthorization_due(profile):
+            _user_tokens.pop(account_id, None)
             return None
         client_id = config.get("client_id", "")
         client_secret = config.get("client_secret", "")
@@ -2408,6 +2475,50 @@ def get_oauth_redirect_uri(config=None):
     ):
         raise OAuthOriginError("redirect_uri must be exactly public_base_url/callback")
     return str(redirect_uri)
+
+
+def _origin_hostname_is_loopback(hostname):
+    if not isinstance(hostname, str) or not hostname:
+        return False
+    folded = hostname.rstrip(".").casefold()
+    if folded == "localhost" or folded.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(folded)
+    except ValueError:
+        return False
+    if address.is_loopback:
+        return True
+    mapped = getattr(address, "ipv4_mapped", None)
+    return bool(mapped and mapped.is_loopback)
+
+
+def _phone_pairing_configuration(config=None):
+    """Return bounded syntactic configuration state for phone OAuth pairing.
+
+    This deliberately does not claim that DNS, TLS, proxy routing or Spotify's
+    dashboard registration is reachable. Exact reasons are owner-only.
+    """
+    config = load_config() if config is None else config
+    configured = os.environ.get("PUBLIC_BASE_URL") or config.get("public_base_url")
+    if not configured:
+        return {"configured": False, "reason": "public_origin_missing"}
+    try:
+        public_base = get_oauth_public_base_url(config)
+        parsed = urllib.parse.urlsplit(public_base)
+    except OAuthOriginError:
+        return {"configured": False, "reason": "public_origin_invalid"}
+    if _origin_hostname_is_loopback(parsed.hostname):
+        return {"configured": False, "reason": "loopback_origin"}
+    if parsed.scheme.lower() != "https":
+        return {"configured": False, "reason": "https_required"}
+    try:
+        get_oauth_redirect_uri(config)
+    except OAuthOriginError:
+        return {"configured": False, "reason": "redirect_uri_invalid"}
+    if not config.get("client_id") or not config.get("client_secret"):
+        return {"configured": False, "reason": "client_credentials_missing"}
+    return {"configured": True, "reason": None}
 
 
 def _request_uses_public_origin(public_base):
@@ -2661,8 +2772,15 @@ def oauth_initiation_required(fn):
             except (TypeError, ValueError):
                 permitted_until = 0
             epoch = pairing.get("profile_epoch")
+            # Missing kind is a pre-v2 bounded pairing; never broaden it during
+            # a rolling upgrade.
+            profile_kind = pairing.get("profile_kind", "guest")
             current = _receiver_identity_snapshot()
-            if time.time() < permitted_until and epoch:
+            if (
+                time.time() < permitted_until
+                and epoch
+                and profile_kind in ("household", "guest")
+            ):
                 if not (
                     current["active"]
                     and hmac.compare_digest(str(current["epoch"]), str(epoch))
@@ -2671,7 +2789,8 @@ def oauth_initiation_required(fn):
                         "Spotify receiver changed before authorization started",
                         code="profile_changed",
                     )
-                g.oauth_paired_guest = True
+                g.oauth_pairing_authorized = True
+                g.oauth_profile_kind = profile_kind
                 # Flask's signed cookie is readable by the browser. Keep raw
                 # receiver/account identifiers server-side; only this opaque
                 # random epoch crosses the cookie boundary.
@@ -2683,9 +2802,16 @@ def oauth_initiation_required(fn):
     return wrapped
 
 
-def _new_pairing_url(reuse=False, expected_epoch=None):
+def _new_pairing_url(reuse=False, expected_epoch=None, profile_kind="household"):
     with _pairing_lock:
         public_base = get_oauth_public_base_url()
+        if profile_kind not in ("household", "guest"):
+            raise ValueError("profile_kind must be household or guest")
+        pairing_config = _phone_pairing_configuration()
+        if not pairing_config["configured"]:
+            raise OAuthOriginError(
+                f"Phone pairing unavailable ({pairing_config['reason']})"
+            )
         context = _receiver_context()
         if context["profile_state"] == "no_receiver" or not context.get("receiver_alias"):
             raise ReceiverIdentityError(
@@ -2700,12 +2826,26 @@ def _new_pairing_url(reuse=False, expected_epoch=None):
             )
         if (
             reuse
+            and _kiosk_pairing.get("profile_epoch") == context["profile_epoch"]
+            and _kiosk_pairing.get("profile_kind") in ("household", "guest")
+        ):
+            # Token consumption must not reset an owner-selected bounded guest
+            # policy. Kiosk polling may rotate the one-use URL, but it retains
+            # the selected policy for this receiver epoch.
+            profile_kind = _kiosk_pairing["profile_kind"]
+        if (
+            reuse
             and _kiosk_pairing["url"]
             and _kiosk_pairing["expires_at"] > time.time() + 60
             and _kiosk_pairing.get("profile_epoch") == context["profile_epoch"]
             and _pairing_tokens.get(_kiosk_pairing["digest"]) is not None
         ):
+            # An explicit owner-selected guest link remains authoritative when
+            # the kiosk later asks to reuse its prompt.
             return _kiosk_pairing["url"]
+        previous_digest = _kiosk_pairing.get("digest")
+        if previous_digest:
+            _pairing_tokens.pop(previous_digest, None)
         # Twelve Crockford/base32 characters carry 60 bits of entropy while
         # remaining practical to type from the physical display into a phone.
         alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -2713,6 +2853,7 @@ def _new_pairing_url(reuse=False, expected_epoch=None):
         digest = hashlib.sha256(token.encode()).hexdigest()
         _pairing_tokens.set(digest, {
             "profile_epoch": context["profile_epoch"],
+            "profile_kind": profile_kind,
         }, ttl=10 * 60)
         url = f"{public_base}/pair/{token}"
         _kiosk_pairing.update({
@@ -2720,6 +2861,7 @@ def _new_pairing_url(reuse=False, expected_epoch=None):
             "digest": digest,
             "expires_at": time.time() + 10 * 60,
             "profile_epoch": context["profile_epoch"],
+            "profile_kind": profile_kind,
         })
         return url
 
@@ -2894,11 +3036,12 @@ def _consume_pairing_token(token):
         return jsonify({"error": "Pairing link is invalid, expired, or already used"}), 400
     with _pairing_lock:
         if _kiosk_pairing["digest"] == digest:
+            # Retain profile_epoch/profile_kind so a normal kiosk poll cannot
+            # replace an explicitly bounded guest link with a household link.
             _kiosk_pairing.update({
                 "url": None,
                 "digest": None,
                 "expires_at": 0,
-                "profile_epoch": None,
             })
     session["oauth_pairing"] = {
         **binding,
@@ -2915,7 +3058,7 @@ def pair(token):
 
 @app.route("/join")
 def join():
-    """Consume a legacy pairing query or show the guest OAuth handoff."""
+    """Consume a legacy pairing query or show the household OAuth handoff."""
     token = request.args.get("pair", "")
     if token:
         return _consume_pairing_token(token)
@@ -2930,7 +3073,10 @@ def login():
     client_id = config.get("client_id", "")
     if not client_id:
         return "Spotify client_id is missing from config.json", 500
-    guest = bool(getattr(g, "oauth_paired_guest", False))
+    paired = bool(getattr(g, "oauth_pairing_authorized", False))
+    profile_kind = getattr(g, "oauth_profile_kind", "household")
+    if profile_kind not in ("household", "guest"):
+        profile_kind = "household"
     # Playback normally stays inside the loopback receiver; Web API playback
     # authority is requested only when its legacy fallback is explicitly on.
     requested_scopes = _oauth_scopes(config)
@@ -2950,7 +3096,11 @@ def login():
         "state": state,
         "verifier": verifier,
         "created_at": time.time(),
-        "guest": guest,
+        "paired": paired,
+        "profile_kind": profile_kind,
+        # Kept for safe deserialisation by an in-flight browser during a
+        # rolling upgrade. New household pairings deliberately set False.
+        "guest": profile_kind == "guest",
         "requested_scopes": requested_scopes,
         "receiver_binding": getattr(g, "oauth_receiver_binding", None),
     }
@@ -2995,10 +3145,14 @@ def callback():
     if flow_age < 0 or flow_age > 10 * 60 or not hmac.compare_digest(supplied_state, expected_state):
         return jsonify({"error": "Invalid or expired OAuth state"}), 400
 
-    guest = bool(flow.get("guest"))
+    paired = bool(flow.get("paired", flow.get("guest")))
+    profile_kind = flow.get("profile_kind")
+    if profile_kind not in ("household", "guest"):
+        profile_kind = "guest" if flow.get("guest") else "household"
+    guest = profile_kind == "guest"
     binding = flow.get("receiver_binding")
-    if guest and not isinstance(binding, dict):
-        return jsonify({"error": "Guest OAuth is missing its receiver binding"}), 400
+    if paired and not isinstance(binding, dict):
+        return jsonify({"error": "Paired OAuth is missing its receiver binding"}), 400
     if isinstance(binding, dict) and not _receiver_binding_matches(binding, refresh=True):
         return jsonify({
             "error": "Spotify receiver changed during authorization",
@@ -3044,6 +3198,8 @@ def callback():
             }), 409
 
         connected_at = time.time()
+        authorized_at = connected_at
+        reauthorize_at = reauthorization_deadline(authorized_at)
         if guest:
             try:
                 hours = float(config.get("guest_session_hours", 12))
@@ -3072,9 +3228,11 @@ def callback():
                 "account_id": identity["account_id"],
                 "display_name": identity["display_name"],
                 "refresh_token": refresh_token,
-                "kind": "guest" if guest else "owner",
+                "kind": profile_kind,
                 "connected_at": connected_at,
                 "expires_at": expires_at,
+                "authorized_at": authorized_at,
+                "reauthorize_at": reauthorize_at,
                 "scopes": _granted_scopes(
                     data.get("scope"), flow.get("requested_scopes") or _oauth_scopes(config)
                 ),
@@ -3152,13 +3310,18 @@ def owner_login():
 @app.route("/api/auth/pairing", methods=["POST"])
 @owner_required
 def create_pairing_link():
-    """Create a one-use guest OAuth link valid for ten minutes."""
+    """Create a one-use household (or explicit bounded guest) OAuth link."""
     data = _request_json_object()
     if request.data and data is None:
         return jsonify({"error": "JSON object required"}), 400
     initial = _receiver_context()
     expected_epoch = data.get("profile_epoch") if data else initial["profile_epoch"]
-    join_url = _new_pairing_url(expected_epoch=expected_epoch)
+    profile_kind = data.get("profile_kind", "household") if data else "household"
+    if profile_kind not in ("household", "guest"):
+        return jsonify({"error": "profile_kind must be household or guest"}), 400
+    join_url = _new_pairing_url(
+        expected_epoch=expected_epoch, profile_kind=profile_kind
+    )
     context = _receiver_context()
     if context["profile_epoch"] != initial["profile_epoch"]:
         with _pairing_lock:
@@ -3169,6 +3332,7 @@ def create_pairing_link():
                     "digest": None,
                     "expires_at": 0,
                     "profile_epoch": None,
+                    "profile_kind": None,
                 })
         raise ReceiverIdentityError(
             "Spotify receiver changed while creating the pairing link",
@@ -3178,6 +3342,7 @@ def create_pairing_link():
         "join_url": join_url,
         "expires_in": 10 * 60,
         "profile_epoch": context["profile_epoch"],
+        "profile_kind": profile_kind,
     })
 
 
@@ -3187,18 +3352,26 @@ def auth_status():
     config = _prune_expired_profiles()
     store = _profile_store(config)
     context = _receiver_context(config)
-    active = _profile_by_id(context.get("account_id"), config)
-    profiles = [
-        public_profile(store["profiles"][account_id])
-        for account_id in sorted(store["profiles"])
-    ]
-    profiles = [profile for profile in profiles if profile]
+    selected = _profile_by_id(
+        context.get("account_id") or context.get("reauthorize_account_id"), config
+    )
+    profiles = []
+    for account_id in sorted(store["profiles"]):
+        stored = store["profiles"][account_id]
+        profile = public_profile(stored)
+        if profile:
+            profile["reauth_required"] = _grant_reauthorization_due(stored)
+            profiles.append(profile)
     return jsonify({
         "owner": True,
         "spotify_connected": bool(profiles or _legacy_grant(config)),
-        "session_kind": active.get("kind") if active else None,
-        "expires_at": active.get("expires_at") if active else None,
+        "session_kind": selected.get("kind") if selected else None,
+        "expires_at": selected.get("expires_at") if selected else None,
+        "authorized_at": selected.get("authorized_at") if selected else None,
+        "reauthorize_at": selected.get("reauthorize_at") if selected else None,
+        "reauth_required": bool(context.get("reauth_required")),
         "legacy_grant_pending": bool(_legacy_grant(config)),
+        "pairing": _phone_pairing_configuration(config),
         "profiles": profiles,
         **_public_profile_context(context, include_name=True),
     })
@@ -3251,6 +3424,8 @@ def health():
     go_available, go_state = read_go_librespot_state()
     state, state_path, state_error = _read_legacy_state_file()
     configuration = config_status()
+    pairing_config = _phone_pairing_configuration()
+    public_pairing = {"configured": pairing_config["configured"]}
 
     if state is None:
         healthy = go_available and configuration["ok"]
@@ -3258,6 +3433,7 @@ def health():
             "ok": healthy,
             "status": "config_error" if not configuration["ok"] else "healthy" if go_available else "unavailable",
             "config": configuration,
+            "pairing": public_pairing,
             "go_librespot": {
                 "available": go_available,
                 "active": go_state is not None,
@@ -3301,6 +3477,7 @@ def health():
         "ok": healthy,
         "status": "config_error" if not configuration["ok"] else "healthy" if healthy else "stale",
         "config": configuration,
+        "pairing": public_pairing,
         "go_librespot": {
             "available": go_available,
             "active": go_state is not None,
@@ -3449,33 +3626,45 @@ def idle_playlists():
         payload = idle_launcher_payload(include_private=False)
     pairing_error = None
     try:
-        public_join = f"{get_oauth_public_base_url()}/join"
-        join_url = (
-            _new_pairing_url(reuse=True, expected_epoch=context["profile_epoch"])
-            if _backlight_request_is_trusted_local() else public_join
-        )
-    except (OAuthOriginError, ReceiverIdentityError) as error:
+        if context["profile_state"] == "linked":
+            # A linked kiosk has no pairing prompt to show. Avoid minting a
+            # second authorization URL that could broaden an explicit guest.
+            join_url = None
+        else:
+            pairing_config = _phone_pairing_configuration()
+            if not pairing_config["configured"]:
+                raise OAuthOriginError(
+                    f"Phone pairing unavailable ({pairing_config['reason']})"
+                )
+            public_join = f"{get_oauth_public_base_url()}/join"
+            join_url = (
+                _new_pairing_url(reuse=True, expected_epoch=context["profile_epoch"])
+                if _backlight_request_is_trusted_local() else public_join
+            )
+    except (OAuthOriginError, ReceiverIdentityError):
         join_url = None
-        pairing_error = str(error)
-    latest_context = _receiver_context()
-    if latest_context["profile_epoch"] != context["profile_epoch"]:
-        with _pairing_lock:
-            if _kiosk_pairing.get("profile_epoch") == context["profile_epoch"]:
-                _pairing_tokens.pop(_kiosk_pairing.get("digest"), None)
-                _kiosk_pairing.update({
-                    "url": None,
-                    "digest": None,
-                    "expires_at": 0,
-                    "profile_epoch": None,
-                })
-        context = latest_context
+        pairing_error = "Spotify phone pairing is temporarily unavailable"
+    if not _crate_context_is_current(context):
+        previous_epoch = context["profile_epoch"]
+        context = _receiver_context()
         payload = idle_launcher_payload(include_private=False)
-        join_url = None
-        pairing_error = "Spotify receiver changed; refresh to create a new pairing link"
+        if context["profile_epoch"] != previous_epoch:
+            with _pairing_lock:
+                if _kiosk_pairing.get("profile_epoch") == previous_epoch:
+                    _pairing_tokens.pop(_kiosk_pairing.get("digest"), None)
+                    _kiosk_pairing.update({
+                        "url": None,
+                        "digest": None,
+                        "expires_at": 0,
+                        "profile_epoch": None,
+                        "profile_kind": None,
+                    })
+            join_url = None
+            pairing_error = "Spotify receiver changed; refresh to create a new pairing link"
     response = {
         "playlists": payload["playlists"],
         "title": payload["title"],
-        # Only the kiosk itself can mint the one-use guest authorization URL.
+        # Only the kiosk itself can mint the one-use household authorization URL.
         # A remote unauthenticated caller sees the informational join page.
         "join_url": join_url,
         "pairing_error": pairing_error,

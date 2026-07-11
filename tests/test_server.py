@@ -39,6 +39,7 @@ def client(tmp_path, monkeypatch):
         "digest": None,
         "expires_at": 0,
         "profile_epoch": None,
+        "profile_kind": None,
     })
     server._legacy_migration_attempts.clear()
     server._profile_prune_next = 0.0
@@ -93,6 +94,21 @@ def remote(address="192.168.68.40"):
     return {"REMOTE_ADDR": address}
 
 
+def phone_get(web, path):
+    return web.get(
+        path,
+        base_url="https://display.example",
+        environ_base=remote(),
+    )
+
+
+def enable_phone_pairing(config_path):
+    config = json.loads(config_path.read_text())
+    config["public_base_url"] = "https://display.example"
+    config["redirect_uri"] = "https://display.example/callback"
+    config_path.write_text(json.dumps(config))
+
+
 def receiver_status(username="receiver-user"):
     return {
         "username": username,
@@ -128,16 +144,27 @@ def spotify_get_for_identity(username="receiver-user", account_id="account-stabl
 def store_profile(config_path, account_id="account-stable", alias="receiver-user", token="refresh"):
     config = json.loads(config_path.read_text())
     profiles = config.setdefault("spotify_profiles", {}).setdefault("profiles", {})
+    authorized_at = time.time()
     profiles[account_id] = {
         "account_id": account_id,
         "display_name": account_id,
         "refresh_token": token,
-        "kind": "owner",
-        "connected_at": time.time(),
+        "kind": "household",
+        "connected_at": authorized_at,
         "expires_at": None,
+        "authorized_at": authorized_at,
+        "reauthorize_at": server.reauthorization_deadline(authorized_at),
         "scopes": ["user-library-read", "user-top-read"],
         "receiver_aliases": [alias],
     }
+    config_path.write_text(json.dumps(config))
+
+
+def mark_profile_reauth_due(config_path, account_id="account-stable"):
+    config = json.loads(config_path.read_text())
+    profile = config["spotify_profiles"]["profiles"][account_id]
+    profile["authorized_at"] = time.time() - 200 * 24 * 60 * 60
+    profile["reauthorize_at"] = time.time() - 1
     config_path.write_text(json.dumps(config))
 
 
@@ -264,13 +291,15 @@ def test_mutation_routes_reject_wrong_scalar_types(client, path, body):
     assert web.post(path, json=body).status_code == 400
 
 
-def test_oauth_uses_state_and_pkce_and_stores_expiring_guest(client, monkeypatch):
+def test_oauth_uses_state_and_pkce_and_stores_persistent_household_profile(client, monkeypatch):
     web, config_path = client
+    enable_phone_pairing(config_path)
     server._observe_receiver_identity("receiver-user")
     pairing = web.post("/api/auth/pairing").get_json()
+    assert pairing["profile_kind"] == "household"
     parsed_pairing = urlsplit(pairing["join_url"])
-    assert web.get(parsed_pairing.path, environ_base=remote()).status_code == 302
-    login = web.get("/login", environ_base=remote())
+    assert phone_get(web, parsed_pairing.path).status_code == 302
+    login = phone_get(web, "/login")
     assert login.status_code == 302
     query = parse_qs(urlsplit(login.location).query)
     assert query["state"][0]
@@ -290,17 +319,18 @@ def test_oauth_uses_state_and_pkce_and_stores_expiring_guest(client, monkeypatch
 
     monkeypatch.setattr(server.requests, "post", token_exchange)
     monkeypatch.setattr(server.requests, "get", spotify_get_for_identity())
-    callback = web.get(
-        f"/callback?code=abc&state={query['state'][0]}",
-        environ_base=remote(),
-    )
+    callback = phone_get(web, f"/callback?code=abc&state={query['state'][0]}")
     assert callback.status_code == 302
     assert captured["data"]["code_verifier"]
     saved = json.loads(config_path.read_text())
     profile = saved["spotify_profiles"]["profiles"]["account-stable"]
     assert profile["refresh_token"] == "refresh"
-    assert profile["kind"] == "guest"
-    assert profile["expires_at"] > time.time()
+    assert profile["kind"] == "household"
+    assert profile["expires_at"] is None
+    assert profile["authorized_at"] > 0
+    assert profile["reauthorize_at"] == server.reauthorization_deadline(
+        profile["authorized_at"]
+    )
     assert profile["receiver_aliases"] == ["receiver-user"]
 
 
@@ -356,34 +386,76 @@ def test_oauth_invalid_expiry_uses_bounded_default(client, monkeypatch):
 
 
 def test_pairing_link_is_one_use_and_only_allows_oauth_start(client):
-    web, _ = client
+    web, config_path = client
+    enable_phone_pairing(config_path)
     server._observe_receiver_identity("receiver-user")
     pairing = web.post("/api/auth/pairing")
     assert pairing.status_code == 200
     path = urlsplit(pairing.get_json()["join_url"]).path + "?" + urlsplit(pairing.get_json()["join_url"]).query
 
-    consumed = web.get(path, environ_base=remote())
+    consumed = phone_get(web, path)
     assert consumed.status_code == 302
     assert consumed.location == "/join"
-    login = web.get("/login?playlist=1", environ_base=remote())
+    login = phone_get(web, "/login?playlist=1")
     assert login.status_code == 302
     assert web.get("/api/wled/status", environ_base=remote()).status_code == 401
-    assert web.get(path, environ_base=remote()).status_code == 400
+    assert phone_get(web, path).status_code == 400
 
 
-def test_pairing_forces_expiring_guest_even_without_playlist_query(client, monkeypatch):
+def test_pairing_defaults_to_household_even_without_playlist_query(client, monkeypatch):
     web, config_path = client
+    enable_phone_pairing(config_path)
     server._observe_receiver_identity("receiver-user")
     pairing = web.post("/api/auth/pairing").get_json()
     parsed = urlsplit(pairing["join_url"])
     path = parsed.path + "?" + parsed.query
-    assert web.get(path, environ_base=remote()).status_code == 302
+    assert phone_get(web, path).status_code == 302
 
-    login = web.get("/login", environ_base=remote())
+    login = phone_get(web, "/login")
     query = parse_qs(urlsplit(login.location).query)
     assert "user-library-read" in query["scope"][0]
     assert "playlist-read-private" in query["scope"][0]
-    with web.session_transaction() as oauth_session:
+    with web.session_transaction(base_url="https://display.example") as oauth_session:
+        assert oauth_session["spotify_oauth"]["guest"] is False
+        assert oauth_session["spotify_oauth"]["profile_kind"] == "household"
+
+    monkeypatch.setattr(
+        server.requests,
+        "post",
+        lambda *_a, **_k: FakeResponse(payload={
+            "access_token": "guest-access",
+            "refresh_token": "guest-refresh",
+            "expires_in": 3600,
+        }),
+    )
+    monkeypatch.setattr(server.requests, "get", spotify_get_for_identity())
+    callback = phone_get(web, f"/callback?code=abc&state={query['state'][0]}")
+    assert callback.status_code == 302
+    grant = json.loads(config_path.read_text())["spotify_profiles"]["profiles"]["account-stable"]
+    assert grant["kind"] == "household"
+    assert grant["expires_at"] is None
+    assert grant["reauthorize_at"] == server.reauthorization_deadline(
+        grant["authorized_at"]
+    )
+
+
+def test_owner_can_explicitly_mint_a_bounded_guest_pairing(client, monkeypatch):
+    web, config_path = client
+    enable_phone_pairing(config_path)
+    server._observe_receiver_identity("receiver-user")
+    pairing = web.post(
+        "/api/auth/pairing", json={"profile_kind": "guest"}
+    )
+    assert pairing.status_code == 200
+    assert pairing.get_json()["profile_kind"] == "guest"
+    assert phone_get(
+        web, urlsplit(pairing.get_json()["join_url"]).path
+    ).status_code == 302
+
+    login = phone_get(web, "/login")
+    state = parse_qs(urlsplit(login.location).query)["state"][0]
+    with web.session_transaction(base_url="https://display.example") as oauth_session:
+        assert oauth_session["spotify_oauth"]["profile_kind"] == "guest"
         assert oauth_session["spotify_oauth"]["guest"] is True
 
     monkeypatch.setattr(
@@ -396,14 +468,74 @@ def test_pairing_forces_expiring_guest_even_without_playlist_query(client, monke
         }),
     )
     monkeypatch.setattr(server.requests, "get", spotify_get_for_identity())
-    callback = web.get(
-        f"/callback?code=abc&state={query['state'][0]}",
-        environ_base=remote(),
-    )
-    assert callback.status_code == 302
+    assert phone_get(web, f"/callback?code=abc&state={state}").status_code == 302
+
     grant = json.loads(config_path.read_text())["spotify_profiles"]["profiles"]["account-stable"]
     assert grant["kind"] == "guest"
-    assert grant["expires_at"] > time.time()
+    assert time.time() < grant["expires_at"] <= time.time() + 12 * 60 * 60 + 5
+    assert grant["reauthorize_at"] == server.reauthorization_deadline(
+        grant["authorized_at"]
+    )
+
+
+def test_pairing_rejects_unknown_profile_kind(client):
+    web, config_path = client
+    enable_phone_pairing(config_path)
+    server._observe_receiver_identity("receiver-user")
+
+    response = web.post(
+        "/api/auth/pairing", json={"profile_kind": "owner"}
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "profile_kind must be household or guest"
+    assert len(server._pairing_tokens) == 0
+
+
+def test_replacing_pairing_kind_invalidates_old_url_and_kiosk_reuses_owner_choice(client):
+    web, config_path = client
+    enable_phone_pairing(config_path)
+    server._observe_receiver_identity("receiver-user")
+
+    household = web.post("/api/auth/pairing").get_json()["join_url"]
+    guest = web.post(
+        "/api/auth/pairing", json={"profile_kind": "guest"}
+    ).get_json()["join_url"]
+    assert guest != household
+    assert phone_get(web, urlsplit(household).path).status_code == 400
+    assert server._new_pairing_url(reuse=True) == guest
+
+    replacement = web.post("/api/auth/pairing").get_json()["join_url"]
+    assert replacement not in (household, guest)
+    assert phone_get(web, urlsplit(guest).path).status_code == 400
+    assert len(server._pairing_tokens) == 1
+    assert phone_get(web, urlsplit(replacement).path).status_code == 302
+
+
+def test_consumed_guest_pairing_keeps_guest_policy_for_kiosk_poll(client):
+    web, config_path = client
+    enable_phone_pairing(config_path)
+    server._observe_receiver_identity("receiver-user")
+    guest = web.post(
+        "/api/auth/pairing", json={"profile_kind": "guest"}
+    ).get_json()["join_url"]
+
+    assert phone_get(web, urlsplit(guest).path).status_code == 302
+    assert server._kiosk_pairing["url"] is None
+    assert server._kiosk_pairing["profile_kind"] == "guest"
+    retained_epoch = server._kiosk_pairing["profile_epoch"]
+
+    idle = web.get("/api/idle/playlists").get_json()
+    assert idle["join_url"] not in (None, guest)
+    assert server._kiosk_pairing["profile_epoch"] == retained_epoch
+    assert server._kiosk_pairing["profile_kind"] == "guest"
+    binding = server._pairing_tokens.get(server._kiosk_pairing["digest"])
+    assert binding["profile_kind"] == "guest"
+
+    # An explicit owner action can still replace the retained epoch policy.
+    household = web.post("/api/auth/pairing").get_json()
+    assert household["profile_kind"] == "household"
+    assert server._kiosk_pairing["profile_kind"] == "household"
 
 
 def test_owner_oauth_requests_private_library_scopes(client):
@@ -436,6 +568,66 @@ def test_oauth_requires_one_configured_public_origin(client):
     )
     assert mismatch.status_code == 503
     assert "share the public_base_url origin" in mismatch.get_json()["error"]
+
+
+def test_phone_pairing_requires_non_loopback_https_but_owner_loopback_oauth_remains(client, monkeypatch):
+    web, config_path = client
+    config = json.loads(config_path.read_text())
+    config["public_base_url"] = "http://127.0.0.1"
+    config["redirect_uri"] = "http://127.0.0.1/callback"
+    config_path.write_text(json.dumps(config))
+    server._observe_receiver_identity("receiver-user")
+
+    pairing_config = server._phone_pairing_configuration()
+    assert pairing_config == {"configured": False, "reason": "loopback_origin"}
+    pairing = web.post(
+        "/api/auth/pairing", base_url="http://127.0.0.1"
+    )
+    assert pairing.status_code == 503
+    assert "loopback_origin" in pairing.get_json()["error"]
+    # Local owner repair remains possible without weakening phone pairing.
+    assert web.get("/login", base_url="http://127.0.0.1").status_code == 302
+
+    status = web.get("/api/auth/status", base_url="http://127.0.0.1")
+    assert status.get_json()["pairing"] == pairing_config
+    monkeypatch.setattr(server, "read_go_librespot_state", lambda: (True, None))
+    monkeypatch.setattr(
+        server, "_read_legacy_state_file", lambda: (None, "/run/state", "missing")
+    )
+    assert web.get("/api/health").get_json()["pairing"] == {"configured": False}
+    idle = web.get("/api/idle/playlists", base_url="http://127.0.0.1").get_json()
+    assert idle["pairing_error"] == "Spotify phone pairing is temporarily unavailable"
+    assert "loopback" not in json.dumps(idle).lower()
+    remote_idle = web.get(
+        "/api/idle/playlists",
+        base_url="http://127.0.0.1",
+        environ_base=remote(),
+    ).get_json()
+    assert remote_idle["join_url"] is None
+    assert remote_idle["pairing_error"] == idle["pairing_error"]
+    assert "127.0.0.1" not in json.dumps(remote_idle)
+
+
+def test_phone_pairing_reports_syntactic_https_configuration_state(client):
+    web, config_path = client
+    config = json.loads(config_path.read_text())
+    config["public_base_url"] = "http://display.example"
+    config["redirect_uri"] = "http://display.example/callback"
+    config_path.write_text(json.dumps(config))
+    assert server._phone_pairing_configuration() == {
+        "configured": False,
+        "reason": "https_required",
+    }
+
+    enable_phone_pairing(config_path)
+    assert server._phone_pairing_configuration() == {
+        "configured": True,
+        "reason": None,
+    }
+    assert web.get("/api/auth/status").get_json()["pairing"] == {
+        "configured": True,
+        "reason": None,
+    }
 
 
 def test_oauth_accepts_explicit_https_reverse_proxy_origin(client, monkeypatch):
@@ -618,6 +810,60 @@ def test_idle_playlist_response_is_never_cached(client):
     web, _ = client
     response = web.get("/api/idle/playlists")
     assert response.headers["Cache-Control"] == "no-store"
+
+
+def test_idle_playlists_drop_private_data_if_reauthorization_becomes_due_at_end(
+    client, monkeypatch
+):
+    web, config_path = client
+    store_profile(config_path)
+    server._observe_receiver_identity("receiver-user")
+    launcher_calls = []
+    context_checks = 0
+
+    def launcher(include_private=True, **_kwargs):
+        launcher_calls.append(include_private)
+        item = "secret-private" if include_private else "house-pick"
+        return {"playlists": [{"id": item}], "title": "Crate"}
+
+    original_context_is_current = server._crate_context_is_current
+
+    def context_is_current(context):
+        nonlocal context_checks
+        context_checks += 1
+        if context_checks == 2:
+            mark_profile_reauth_due(config_path)
+        return original_context_is_current(context)
+
+    monkeypatch.setattr(server, "idle_launcher_payload", launcher)
+    monkeypatch.setattr(server, "_crate_context_is_current", context_is_current)
+
+    payload = web.get("/api/idle/playlists").get_json()
+
+    assert context_checks == 2
+    assert launcher_calls == [True, False]
+    assert payload["profile_state"] == "reauth_required"
+    assert payload["playlists"] == [{"id": "house-pick"}]
+    assert "secret-private" not in json.dumps(payload)
+
+
+def test_idle_linked_profile_does_not_auto_mint_another_pairing(client, monkeypatch):
+    web, config_path = client
+    enable_phone_pairing(config_path)
+    store_profile(config_path)
+    server._observe_receiver_identity("receiver-user")
+    monkeypatch.setattr(
+        server,
+        "idle_launcher_payload",
+        lambda **_kwargs: {"playlists": [], "title": "Your playlists"},
+    )
+
+    payload = web.get("/api/idle/playlists").get_json()
+
+    assert payload["profile_state"] == "linked"
+    assert payload["join_url"] is None
+    assert len(server._pairing_tokens) == 0
+    assert server._kiosk_pairing["url"] is None
 
 
 def test_cross_site_mutation_is_rejected_before_control(client, monkeypatch):
@@ -1317,6 +1563,56 @@ def test_expired_guest_grant_is_removed_without_refresh(client, monkeypatch):
     assert "spotify_session" not in saved
 
 
+def test_legacy_owner_future_cutoff_is_preserved_and_enforced(client):
+    _web, config_path = client
+    cutoff = time.time() + 3600
+    config = json.loads(config_path.read_text())
+    config["spotify_profiles"] = {"profiles": {"legacy-account": {
+        "account_id": "legacy-account",
+        "display_name": "Legacy",
+        "refresh_token": "legacy-refresh",
+        "kind": "owner",
+        "connected_at": 1,
+        "expires_at": cutoff,
+        "scopes": ["user-library-read"],
+        "receiver_aliases": ["legacy-alias"],
+    }}}
+    config_path.write_text(json.dumps(config))
+    server._observe_receiver_identity("legacy-alias")
+
+    migrated = server._profile_by_id("legacy-account")
+    assert migrated["kind"] == "household"
+    assert migrated["expires_at"] == cutoff
+    assert server._receiver_context()["profile_state"] == "linked"
+    assert server._grant_is_expired(migrated, now=cutoff - 1) is False
+    assert server._grant_is_expired(migrated, now=cutoff) is True
+
+
+def test_already_expired_legacy_owner_is_removed_without_refresh(client, monkeypatch):
+    _web, config_path = client
+    config = json.loads(config_path.read_text())
+    config["spotify_profiles"] = {"profiles": {"legacy-account": {
+        "account_id": "legacy-account",
+        "display_name": "Legacy",
+        "refresh_token": "legacy-refresh",
+        "kind": "owner",
+        "connected_at": 1,
+        "expires_at": time.time() - 1,
+        "scopes": ["user-library-read"],
+        "receiver_aliases": ["legacy-alias"],
+    }}}
+    config_path.write_text(json.dumps(config))
+    server._observe_receiver_identity("legacy-alias")
+    monkeypatch.setattr(
+        server.requests, "post", lambda *_a, **_k: pytest.fail("must not refresh")
+    )
+
+    assert server.get_user_token() is None
+    saved = json.loads(config_path.read_text())
+    assert "legacy-account" not in saved["spotify_profiles"]["profiles"]
+    assert server._receiver_context()["profile_state"] == "unlinked"
+
+
 def test_manual_refresh_token_removal_invalidates_cached_access(client, monkeypatch):
     _web, config_path = client
     config = json.loads(config_path.read_text())
@@ -1436,14 +1732,15 @@ def test_receiver_outage_rotates_epoch_and_returns_only_opaque_context(client, m
 
 
 def test_pairing_cookie_contains_only_opaque_epoch_not_receiver_identity(client):
-    web, _ = client
+    web, config_path = client
+    enable_phone_pairing(config_path)
     server._observe_receiver_identity("PrivateAlias")
     pairing = web.post("/api/auth/pairing").get_json()
     path = urlsplit(pairing["join_url"]).path
     assert re.fullmatch(r"/pair/[0-9A-HJKMNP-TV-Z]{12}", path)
 
-    assert web.get(path.lower(), environ_base=remote()).status_code == 302
-    with web.session_transaction() as browser_session:
+    assert phone_get(web, path.lower()).status_code == 302
+    with web.session_transaction(base_url="https://display.example") as browser_session:
         assert browser_session["oauth_pairing"]["profile_epoch"]
         serialised = json.dumps(dict(browser_session))
         assert "PrivateAlias" not in serialised
@@ -1451,8 +1748,8 @@ def test_pairing_cookie_contains_only_opaque_epoch_not_receiver_identity(client)
         assert "account_id" not in serialised
         assert "display_name" not in serialised
 
-    assert web.get("/login", environ_base=remote()).status_code == 302
-    with web.session_transaction() as browser_session:
+    assert phone_get(web, "/login").status_code == 302
+    with web.session_transaction(base_url="https://display.example") as browser_session:
         serialised = json.dumps(dict(browser_session))
         assert "PrivateAlias" not in serialised
         assert "receiver_alias" not in serialised
@@ -1462,10 +1759,11 @@ def test_pairing_cookie_contains_only_opaque_epoch_not_receiver_identity(client)
 
 def test_oauth_handoff_during_provider_io_cannot_publish_old_profile(client, monkeypatch):
     web, config_path = client
+    enable_phone_pairing(config_path)
     server._observe_receiver_identity("receiver-user")
     pairing = web.post("/api/auth/pairing").get_json()
-    assert web.get(urlsplit(pairing["join_url"]).path, environ_base=remote()).status_code == 302
-    login = web.get("/login", environ_base=remote())
+    assert phone_get(web, urlsplit(pairing["join_url"]).path).status_code == 302
+    login = phone_get(web, "/login")
     state = parse_qs(urlsplit(login.location).query)["state"][0]
     monkeypatch.setattr(
         server.requests,
@@ -1494,7 +1792,7 @@ def test_oauth_handoff_during_provider_io_cannot_publish_old_profile(client, mon
         raise AssertionError(url)
 
     monkeypatch.setattr(server.requests, "get", provider_get)
-    callback = web.get(f"/callback?code=abc&state={state}", environ_base=remote())
+    callback = phone_get(web, f"/callback?code=abc&state={state}")
 
     assert callback.status_code == 409
     assert callback.get_json()["code"] == "profile_changed"
@@ -1503,10 +1801,11 @@ def test_oauth_handoff_during_provider_io_cannot_publish_old_profile(client, mon
 
 def test_oauth_rechecks_epoch_after_waiting_for_token_lock(client, monkeypatch):
     web, config_path = client
+    enable_phone_pairing(config_path)
     server._observe_receiver_identity("receiver-user")
     pairing = web.post("/api/auth/pairing").get_json()
-    assert web.get(urlsplit(pairing["join_url"]).path, environ_base=remote()).status_code == 302
-    login = web.get("/login", environ_base=remote())
+    assert phone_get(web, urlsplit(pairing["join_url"]).path).status_code == 302
+    login = phone_get(web, "/login")
     state = parse_qs(urlsplit(login.location).query)["state"][0]
     monkeypatch.setattr(
         server.requests,
@@ -1554,7 +1853,7 @@ def test_oauth_rechecks_epoch_after_waiting_for_token_lock(client, monkeypatch):
     holder = threading.Thread(target=hold_token_lock_then_handoff)
     holder.start()
     assert lock_held.wait(1)
-    callback = web.get(f"/callback?code=abc&state={state}", environ_base=remote())
+    callback = phone_get(web, f"/callback?code=abc&state={state}")
     holder.join(2)
 
     assert callback.status_code == 409
@@ -1634,6 +1933,136 @@ def test_hot_a_cache_is_not_returned_after_handoff_during_lookup(client, monkeyp
     assert "secret" not in json.dumps(payload)
 
 
+def test_hot_private_crate_cache_is_not_returned_when_reauthorization_is_due(client):
+    _web, config_path = client
+    store_profile(config_path)
+    server._observe_receiver_identity("receiver-user")
+    linked = server._receiver_context()
+    server._crate_caches[linked["cache_key"]] = {
+        "built_at": time.time(),
+        "payload": {
+            "sections": [{"id": "yours", "items": [{"id": "secret-private"}]}]
+        },
+    }
+    server._crate_cache.update({
+        "built_at": time.time(),
+        "payload": {
+            "sections": [{"id": "house", "items": [{"id": "house-pick"}]}]
+        },
+    })
+
+    mark_profile_reauth_due(config_path)
+    payload = server.crate_payload()
+
+    assert payload["profile_state"] == "reauth_required"
+    assert [section["id"] for section in payload["sections"]] == ["house"]
+    assert "secret-private" not in json.dumps(payload)
+
+
+def test_second_cold_request_cannot_leak_first_build_after_reauthorization(
+    client, monkeypatch
+):
+    _web, config_path = client
+    store_profile(config_path)
+    server._observe_receiver_identity("receiver-user")
+    linked = server._receiver_context()
+    first_saw_cold = threading.Event()
+    release_first = threading.Event()
+
+    class CoordinatedColdMiss:
+        blocked = False
+
+        def __bool__(self):
+            if threading.current_thread().name == "cold-first" and not self.blocked:
+                self.blocked = True
+                first_saw_cold.set()
+                assert release_first.wait(2)
+            return False
+
+    server._crate_caches[linked["cache_key"]] = {
+        "built_at": 0,
+        "payload": CoordinatedColdMiss(),
+    }
+    builds = []
+
+    def build(account_id=None, profile_epoch=None):
+        assert account_id == "account-stable"
+        assert profile_epoch == linked["profile_epoch"]
+        builds.append(threading.current_thread().name)
+        return {
+            "sections": [{"id": "yours", "items": [{"id": "secret-private"}]}]
+        }
+
+    monkeypatch.setattr(server, "_build_crate_payload", build)
+    results = {}
+    first = threading.Thread(
+        name="cold-first",
+        target=lambda: results.setdefault("first", server.crate_payload()),
+    )
+    second = threading.Thread(
+        name="cold-second",
+        target=lambda: results.setdefault("second", server.crate_payload()),
+    )
+    first.start()
+    assert first_saw_cold.wait(1)
+    second.start()
+    second.join(2)
+    assert second.is_alive() is False
+    mark_profile_reauth_due(config_path)
+    release_first.set()
+    first.join(2)
+
+    assert first.is_alive() is False
+    assert builds == ["cold-second"]
+    assert "secret-private" in json.dumps(results["second"])
+    assert results["first"]["profile_state"] == "reauth_required"
+    assert results["first"]["sections"] == []
+    assert "secret-private" not in json.dumps(results["first"])
+
+
+def test_private_crate_build_is_discarded_if_reauthorization_becomes_due(
+    client, monkeypatch
+):
+    _web, config_path = client
+    store_profile(config_path)
+    server._observe_receiver_identity("receiver-user")
+    linked = server._receiver_context()
+    started = threading.Event()
+    release = threading.Event()
+
+    def delayed_build(account_id=None, profile_epoch=None):
+        assert account_id == "account-stable"
+        assert profile_epoch == linked["profile_epoch"]
+        started.set()
+        assert release.wait(2)
+        return {
+            "sections": [{"id": "yours", "items": [{"id": "secret-private"}]}]
+        }
+
+    monkeypatch.setattr(server, "_build_crate_payload", delayed_build)
+    server._rebuild_crate_async(linked)
+    assert started.wait(1)
+    mark_profile_reauth_due(config_path)
+    release.set()
+    deadline = time.time() + 2
+    while server._crate_building and time.time() < deadline:
+        time.sleep(0.01)
+
+    assert server._crate_building is False
+    private_cache = server._crate_caches.get(linked["cache_key"])
+    assert private_cache is None or private_cache["payload"] is None
+    server._crate_cache.update({
+        "built_at": time.time(),
+        "payload": {
+            "sections": [{"id": "house", "items": [{"id": "house-pick"}]}]
+        },
+    })
+    payload = server.crate_payload()
+    assert payload["profile_state"] == "reauth_required"
+    assert [section["id"] for section in payload["sections"]] == ["house"]
+    assert "secret-private" not in json.dumps(payload)
+
+
 def test_invalid_grant_removes_only_affected_profile(client, monkeypatch):
     _web, config_path = client
     store_profile(config_path, account_id="account-a", alias="alias-a", token="refresh-a")
@@ -1651,6 +2080,130 @@ def test_invalid_grant_removes_only_affected_profile(client, monkeypatch):
     profiles = json.loads(config_path.read_text())["spotify_profiles"]["profiles"]
     assert "account-a" not in profiles
     assert profiles["account-b"]["refresh_token"] == "refresh-b"
+
+
+def test_reauthorization_due_fails_closed_without_deleting_household_mapping(client, monkeypatch):
+    web, config_path = client
+    store_profile(config_path)
+    mark_profile_reauth_due(config_path)
+    server._observe_receiver_identity("receiver-user")
+    monkeypatch.setattr(
+        server.requests, "post", lambda *_a, **_k: pytest.fail("must not refresh")
+    )
+    monkeypatch.setattr(
+        server.requests, "get", lambda *_a, **_k: pytest.fail("must not fetch user data")
+    )
+
+    context = server._receiver_context()
+    assert context["profile_state"] == "reauth_required"
+    assert context["account_id"] is None
+    assert context["reauthorize_account_id"] == "account-stable"
+    assert server.get_user_token("account-stable", context["profile_epoch"]) is None
+
+    server._prune_expired_profiles()
+    saved = json.loads(config_path.read_text())
+    assert "account-stable" in saved["spotify_profiles"]["profiles"]
+    assert server.profile_for_alias(
+        server._profile_store(saved), "receiver-user"
+    )["account_id"] == "account-stable"
+
+    status = web.get("/api/auth/status").get_json()
+    assert status["profile_state"] == "reauth_required"
+    assert status["reauth_required"] is True
+    assert status["session_kind"] == "household"
+    assert status["profiles"][0]["reauth_required"] is True
+
+
+def test_legacy_owner_with_unknown_authorization_time_remains_linked(client):
+    _web, config_path = client
+    config = json.loads(config_path.read_text())
+    config["spotify_profiles"] = {"profiles": {"legacy-account": {
+        "account_id": "legacy-account",
+        "display_name": "Legacy",
+        "refresh_token": "legacy-refresh",
+        "kind": "owner",
+        "connected_at": 1,
+        "expires_at": None,
+        "scopes": ["user-library-read"],
+        "receiver_aliases": ["legacy-alias"],
+    }}}
+    config_path.write_text(json.dumps(config))
+    server._observe_receiver_identity("legacy-alias")
+
+    context = server._receiver_context()
+    normalized = server._profile_by_id("legacy-account")
+    assert context["profile_state"] == "linked"
+    assert normalized["kind"] == "household"
+    assert normalized["authorized_at"] is None
+    assert normalized["reauthorize_at"] is None
+    assert server._grant_reauthorization_due(normalized) is False
+
+
+def test_reauthorizing_due_household_profile_replaces_grant_and_restores_link(client, monkeypatch):
+    web, config_path = client
+    enable_phone_pairing(config_path)
+    store_profile(config_path, token="old-refresh")
+    mark_profile_reauth_due(config_path)
+    server._observe_receiver_identity("receiver-user")
+
+    pairing = web.post("/api/auth/pairing").get_json()
+    assert pairing["profile_kind"] == "household"
+    assert phone_get(web, urlsplit(pairing["join_url"]).path).status_code == 302
+    login = phone_get(web, "/login")
+    state = parse_qs(urlsplit(login.location).query)["state"][0]
+    monkeypatch.setattr(
+        server.requests,
+        "post",
+        lambda *_a, **_k: FakeResponse(payload={
+            "access_token": "new-access",
+            "refresh_token": "new-refresh",
+            "expires_in": 3600,
+        }),
+    )
+    monkeypatch.setattr(server.requests, "get", spotify_get_for_identity())
+
+    response = phone_get(web, f"/callback?code=abc&state={state}")
+    assert response.status_code == 302
+    saved = json.loads(config_path.read_text())
+    profile = saved["spotify_profiles"]["profiles"]["account-stable"]
+    assert profile["kind"] == "household"
+    assert profile["refresh_token"] == "new-refresh"
+    assert profile["authorized_at"] > time.time() - 5
+    assert profile["reauthorize_at"] == server.reauthorization_deadline(
+        profile["authorized_at"]
+    )
+    assert server._receiver_context()["profile_state"] == "linked"
+
+
+def test_disconnect_removes_reauth_due_profile_and_revokes_inflight_callback(client, monkeypatch):
+    web, config_path = client
+    enable_phone_pairing(config_path)
+    store_profile(config_path, token="old-refresh")
+    mark_profile_reauth_due(config_path)
+    old_epoch = server._observe_receiver_identity("receiver-user")["epoch"]
+
+    pairing = web.post("/api/auth/pairing").get_json()
+    assert phone_get(web, urlsplit(pairing["join_url"]).path).status_code == 302
+    login = phone_get(web, "/login")
+    state = parse_qs(urlsplit(login.location).query)["state"][0]
+
+    # No account_id means "the selected profile", including reauth_required.
+    disconnect = web.post("/api/auth/disconnect")
+    assert disconnect.status_code == 204
+    assert "account-stable" not in json.loads(
+        config_path.read_text()
+    )["spotify_profiles"]["profiles"]
+    assert server._receiver_context()["profile_epoch"] != old_epoch
+    assert server._receiver_context()["profile_state"] == "unlinked"
+
+    monkeypatch.setattr(server, "read_go_librespot_state", lambda: (True, None))
+    monkeypatch.setattr(
+        server.requests, "post", lambda *_a, **_k: pytest.fail("must not exchange")
+    )
+    callback = phone_get(web, f"/callback?code=abc&state={state}")
+    assert callback.status_code == 409
+    assert callback.get_json()["code"] == "profile_changed"
+    assert not json.loads(config_path.read_text())["spotify_profiles"]["profiles"]
 
 
 def test_rotated_profile_token_is_saved_even_when_refresh_handoffs(client, monkeypatch):
@@ -1743,6 +2296,9 @@ def test_exact_legacy_identity_migrates_atomically(client, monkeypatch):
     profile = saved["spotify_profiles"]["profiles"]["stable-legacy-account"]
     assert context["profile_state"] == "linked"
     assert profile["refresh_token"] == "legacy-rotated"
+    assert profile["kind"] == "household"
+    assert profile["authorized_at"] is None
+    assert profile["reauthorize_at"] is None
     assert profile["receiver_aliases"] == ["legacy-user"]
     assert "refresh_token" not in saved
     assert "spotify_session" not in saved

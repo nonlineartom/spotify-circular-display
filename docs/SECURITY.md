@@ -74,16 +74,20 @@ owner-approved flow:
 5. Multiple grants coexist. The active receiver alias selects exactly one
    profile, while an unknown, expired or ambiguous alias selects no profile and
    receives only non-private House picks.
-6. A paired guest grant expires after `guest_session_hours` (12 hours by
-   default, bounded to 1–168). Spotify `invalid_grant` removes only the affected
-   profile and requires that listener to pair again.
+6. The default pairing creates a persistent household profile, selected only
+   when that same receiver identity returns. It requires reauthorization after
+   six calendar months. An owner may instead explicitly mint a bounded guest
+   grant; it expires after `guest_session_hours` (12 hours by default, bounded
+   to 1–168). Spotify `invalid_grant` removes only the affected profile and
+   requires that listener to pair again.
 7. Receiver handoff rotates an opaque epoch. Browser shelves, pairing URLs,
    private API requests, launches, caches and in-flight publication are bound
    to it and fail closed when it changes.
 
 A valid stopped receiver session intentionally retains its selected profile so
 the listener can launch the next record locally. Shared or public venues should
-use a short guest TTL and explicitly disconnect profiles after use. A receiver
+use explicit guest links with a short TTL for visitors and deliberately
+disconnect household profiles that should no longer be retained. A receiver
 outage, 204/session disconnect, invalid username or expired grant selects no
 private profile.
 
@@ -115,6 +119,16 @@ denies `/api/` entirely. This matters because Flask cannot distinguish a direct
 localhost kiosk connection from a marker-free TCP proxy that presents both a
 loopback peer and loopback Host; the latter would otherwise inherit local-kiosk
 owner trust.
+
+The tracked LAN HTTPS deployment makes this boundary executable rather than
+leaving it as operator convention. Its renderer accepts only a concrete
+RFC1918 listen address and a containing RFC1918 client CIDR; the generated site
+has no port 80, wildcard or IPv6 listener. The deployment also binds Waitress
+to `127.0.0.1`, replaces client-supplied forwarding headers with a fixed HTTPS
+marker, clears owner-credential headers, disables access logging so OAuth codes
+do not enter request logs, and rejects every route not on the phone allowlist.
+The certificate is provisioned separately: DNS-01
+issuance credentials do not belong in this repository or nginx configuration.
 
 ## Browser request protections
 
@@ -153,6 +167,8 @@ making a byte-for-byte backup.
 ## Deployment controls
 
 - Never port-forward the Flask/Waitress port from the router.
+- Never port-forward 80 or 443, enable UPnP mappings, or point a tunnel at the
+  LAN HTTPS listener. DNS-01 validation requires none of those paths.
 - Preserve the canonical public Host at the TLS proxy, allowlist only the phone
   OAuth routes, and verify unauthenticated public `/api/auth/status` is denied.
 - Prefer an appliance VLAN/firewall that prevents guest and untrusted IoT

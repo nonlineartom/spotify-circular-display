@@ -1,0 +1,8 @@
+{
+  "public_host": "",
+  "lan_listen_address": "",
+  "lan_allow_cidr": "",
+  "tls_certificate_path": "",
+  "tls_private_key_path": "",
+  "flask_port": 5000
+}

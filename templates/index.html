@@ -3018,6 +3018,7 @@
   let crateJoinUrl = null;
   let crateJoinPromise = null;
   let cratePairingUnavailable = false;
+  let crateRotationApproximation = false;
   const CRATE_CACHE_MS = 120000;
   const CRATE_RETRY_MS = 10000;
   const CRATE_BUILD_RETRY_MS = 3000;
@@ -3038,7 +3039,23 @@
     return String(item && (item.id || item.uri) || [item && item.title || "", item && item.subtitle || "", index].join("|"));
   }
 
-  const CRATE_PROFILE_STATES = new Set(["linked", "unlinked", "no_receiver"]);
+  function crateSectionIsTopListening(section, index) {
+    const key = stableSectionKey(section, index).toLowerCase();
+    const title = String(section && section.title || "").trim().toLowerCase();
+    return key === "rotation" || title === "your rotation";
+  }
+
+  function crateSectionDisplayTitle(section, index) {
+    return crateSectionIsTopListening(section, index)
+      ? "Your rotation · top listening"
+      : String(section && section.title || "Records");
+  }
+
+  const CRATE_PROFILE_STATES = new Set(["linked", "unlinked", "reauth_required", "no_receiver"]);
+
+  function crateProfileNeedsLink() {
+    return crateProfileState === "unlinked" || crateProfileState === "reauth_required";
+  }
 
   function crateProfileSignal(data) {
     if (!data || typeof data !== "object") return null;
@@ -3068,17 +3085,27 @@
 
   function renderCrateProfilePrompt() {
     let message = "";
-    if (crateProfileState === "unlinked") {
+    if (crateProfileState === "reauth_required") {
       message = cratePairingUnavailable
-        ? "House picks are showing. Spotify linking is temporarily unavailable."
-        : "House picks are showing until this listener links their Spotify crate.";
+        ? "House picks are showing. Spotify reauthorization is temporarily unavailable."
+        : "House picks are showing. This household Spotify account needs to be linked again.";
+    } else if (crateProfileState === "unlinked") {
+      // The public profile signal deliberately does not reveal whether this
+      // account belongs to a household member. Keep the prompt generic and do
+      // not expose a Spotify name or identifier on the shared display.
+      message = cratePairingUnavailable
+        ? "House picks are showing. Household Spotify linking is temporarily unavailable."
+        : "House picks are showing. Link this household Spotify account to show its playlists and albums.";
     } else if (crateProfileState === "no_receiver") {
-      message = "Choose Pi Display in Spotify to activate your own crate. House picks are showing for now.";
+      message = "Choose Pi Display in Spotify. Linked household crates return automatically; everyone else sees House picks.";
     }
     crateProfileCopy.textContent = message;
-    const href = crateProfileState === "unlinked" ? crateJoinUrl : null;
+    const href = crateProfileNeedsLink() ? crateJoinUrl : null;
     crateProfileLink.hidden = !href;
-    crateProfileLink.textContent = href ? "On your phone, open " + href : "";
+    crateProfileLink.textContent = href
+      ? "On that household member’s phone, " +
+        (crateProfileState === "reauth_required" ? "link again at " : "open ") + href
+      : "";
     crateProfilePrompt.classList.toggle("visible", !!message);
   }
 
@@ -3113,10 +3140,10 @@
     }
     if (changed || forceClear) invalidateCrateContents();
     else renderCrateProfilePrompt();
-    if (changed && crateProfileState === "unlinked") {
+    if (changed && crateProfileNeedsLink()) {
       const pairingRevision = crateProfileRevision;
       queueMicrotask(() => {
-        if (pairingRevision === crateProfileRevision && crateProfileState === "unlinked") {
+        if (pairingRevision === crateProfileRevision && crateProfileNeedsLink()) {
           refreshCratePairingLink();
         }
       });
@@ -3175,7 +3202,7 @@
       const chip = document.createElement("button");
       chip.type = "button";
       chip.className = "crate-chip" + (sectionKey === crateSection ? " active" : "");
-      chip.textContent = s.title;
+      chip.textContent = crateSectionDisplayTitle(s, sectionIndex);
       chip.setAttribute("role", "tab");
       chip.setAttribute("aria-selected", sectionKey === crateSection ? "true" : "false");
       chip.addEventListener("click", () => {
@@ -3207,6 +3234,7 @@
     const section = sections[sectionIndex] || sections[0];
     if (!section) return;
     crateSection = stableSectionKey(section, sectionIndex);
+    crateRotationApproximation = crateSectionIsTopListening(section, sectionIndex);
     crateItems = section.items || [];
     crateBelt.innerHTML = "";
     crateCards = crateItems.map((item, index) => {
@@ -3267,7 +3295,10 @@
       crateEl.setAttribute("aria-activedescendant", crateCards[focusIdx].id);
       crateCaptionIdx = focusIdx;
       capTitle.textContent = crateItems[focusIdx].title || "";
-      capSub.textContent = crateItems[focusIdx].subtitle || "";
+      const subtitle = crateItems[focusIdx].subtitle || "";
+      capSub.textContent = crateRotationApproximation
+        ? "Top-listening approximation" + (subtitle ? " · " + subtitle : "")
+        : subtitle;
       if (FLAG_REFLECT) {
         const img = crateItems[focusIdx].image;
         crateReflection.style.display = img ? "block" : "none";
@@ -3498,6 +3529,7 @@
     crateScroll = 0;
     crateTarget = 0;
     crateCaptionIdx = -1;
+    crateRotationApproximation = false;
     shelfRenderKey = "empty";
     crateChips.replaceChildren();
     crateBelt.replaceChildren();
@@ -3508,9 +3540,11 @@
     capSub.textContent = showEmptyMessage
       ? crateProfileState === "linked"
         ? "This linked crate is empty right now"
-        : crateProfileState === "unlinked"
-          ? "Link Spotify to add personal albums and playlists"
-          : "Choose Pi Display in Spotify to activate a personal crate"
+        : crateProfileState === "reauth_required"
+          ? "Link this household Spotify account again to restore its albums and playlists"
+          : crateProfileState === "unlinked"
+          ? "Link a household Spotify account to add its albums and playlists"
+          : "Choose Pi Display in Spotify; unlinked listeners use House picks"
       : "";
   }
 
@@ -3557,7 +3591,7 @@
   }
 
   function refreshCratePairingLink() {
-    if (crateProfileState !== "unlinked") return Promise.resolve(false);
+    if (!crateProfileNeedsLink()) return Promise.resolve(false);
     if (crateJoinPromise) return crateJoinPromise;
     const expectedRevision = crateProfileRevision;
     crateJoinPromise = (async () => {
@@ -3581,7 +3615,7 @@
       renderCrateProfilePrompt();
       return !!crateJoinUrl;
     })().catch(() => {
-      if (expectedRevision === crateProfileRevision && crateProfileState === "unlinked") {
+      if (expectedRevision === crateProfileRevision && crateProfileNeedsLink()) {
         crateJoinUrl = null;
         cratePairingUnavailable = true;
         renderCrateProfilePrompt();
@@ -3589,7 +3623,7 @@
       return false;
     }).finally(() => {
       crateJoinPromise = null;
-      if (expectedRevision !== crateProfileRevision && crateProfileState === "unlinked" &&
+      if (expectedRevision !== crateProfileRevision && crateProfileNeedsLink() &&
           !crateJoinUrl) queueMicrotask(refreshCratePairingLink);
     });
     return crateJoinPromise;
@@ -3598,7 +3632,7 @@
   function applyCratePayload(data, now) {
     if (!data || !Array.isArray(data.sections)) throw new Error("invalid crate payload");
     applyCrateProfileSignal(data, { required: true });
-    if (crateProfileState === "unlinked") refreshCratePairingLink();
+    if (crateProfileNeedsLink()) refreshCratePairingLink();
     if (data.building === true) {
       crateBuilding = true;
       shelfRetryAt = now + CRATE_BUILD_RETRY_MS;

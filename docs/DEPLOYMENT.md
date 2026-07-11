@@ -274,6 +274,91 @@ id
 A new supplementary-group membership may require logout/login or reboot before
 the user service can access GPIO/HID.
 
+## 4a. LAN-only HTTPS pairing ingress
+
+This optional ingress gives phones a publicly trusted HTTPS origin on the same
+LAN without exposing the appliance to the Internet. It does not create a
+tunnel, open a router port, issue a certificate, run an HTTP challenge or store
+DNS-provider credentials.
+
+Prepare all of these outside the deployment scripts:
+
+- reserve one RFC1918 address for the Pi;
+- choose a DNS hostname under a domain you control and make it resolve to the
+  reserved address using one of the LAN resolution models below;
+- obtain a publicly trusted certificate with DNS-01 on a controlled issuance
+  host, then provision its full-chain PEM and unencrypted private key onto the
+  Pi; and
+- confirm the router has no 80/443 port-forward, DMZ-host rule or UPnP mapping
+  for the Pi. DNS-01 does not require inbound connectivity.
+
+Do not put a DNS API token in this checkout or in the nginx settings. Certificate
+renewal remains an operator/issuer responsibility; deploy renewed files
+atomically, then run `nginx -t` and reload nginx.
+
+Two name-resolution models are supported:
+
+1. **Split DNS:** DHCP clients use a controlled LAN resolver that returns the
+   Pi's RFC1918 address for the public hostname. This keeps the private address
+   out of public DNS, but it does not help clients configured to bypass DHCP DNS
+   (for example, clients querying `1.1.1.1` directly).
+2. **Public private-address record:** authoritative public DNS publishes an A
+   record whose value is the Pi's RFC1918 address. This creates no Internet
+   route and still requires the client to be on the LAN, but some browsers,
+   encrypted-DNS clients and resolver/router DNS-rebinding protections reject
+   public names that resolve to private addresses. Confirm every intended
+   phone resolves and can use the name before relying on this model.
+
+Do not publish an AAAA record unless a separately reviewed IPv6 listener and
+firewall policy are added; this deployment intentionally has neither. Under
+either model, the hostname must resolve to `lan_listen_address` from every
+intended client. DNS is discovery, not exposure control: keep the nginx CIDR
+allowlist and the router's no-forward policy.
+
+Install nginx on the Pi, but stop it until the reviewed site is ready. Copy and
+fill the per-device settings; blank values are intentional because the
+repository cannot know the hostname, subnet or certificate paths:
+
+```bash
+sudo apt-get install -y nginx
+sudo systemctl disable --now nginx
+install -m 0600 deploy/lan-https.example.json deploy/lan-https.json
+${EDITOR:-vi} deploy/lan-https.json
+```
+
+The settings are:
+
+| Key | Required value |
+|---|---|
+| `public_host` | Exact DNS hostname on the trusted certificate; no scheme or port. |
+| `lan_listen_address` | Reserved RFC1918 address assigned to the Pi. |
+| `lan_allow_cidr` | Canonical RFC1918 client subnet containing that address. |
+| `tls_certificate_path` | Absolute path to leaf plus intermediate full-chain PEM. |
+| `tls_private_key_path` | Absolute path to its unencrypted, mode-0600 private key. |
+| `flask_port` | Loopback Waitress port, normally `5000`. |
+
+Set the application `public_base_url` to `https://<public_host>` and
+`redirect_uri` to the exact same origin plus `/callback` in `config.json`.
+Register that exact callback in Spotify's dashboard. Do not add a port, path to
+`public_base_url`, query string or alternate callback hostname.
+
+First render and validate only. This checks settings, RFC1918 containment,
+certificate hostname/expiry/public trust, private-key permissions and the
+certificate/key match, but changes no service or system file:
+
+```bash
+sudo ./scripts/install-lan-https.sh \
+  --settings deploy/lan-https.json \
+  --output /tmp/spotify-display-lan-https.conf
+sudo less /tmp/spotify-display-lan-https.conf
+```
+
+Review that the rendered file contains exactly two concrete-address TLS
+listeners, `proxy_set_header Host $host`, the phone/font allowlist, explicit
+`/api` denial and a catch-all 404. Stop here during a staged installation. The
+`--activate` step restarts `spotify-display`, so it belongs after the controlled
+candidate cutover below, never while the preserved release is still serving.
+
 ## 5. Controlled cutover
 
 Stop the graphical user service, then the affected system services. Do not kill
@@ -319,6 +404,30 @@ wiring and opt-in. Apply `harden-network.sh` or host display policy separately
 only after the core stack is healthy and their recorded before/after state has
 been reviewed.
 
+### Activate LAN HTTPS after cutover
+
+Only after the candidate `spotify-display` service is active and its loopback
+health check above passes, activate the reviewed ingress deliberately:
+
+```bash
+sudo ./scripts/install-lan-https.sh \
+  --settings deploy/lan-https.json \
+  --activate
+sudo ./scripts/verify-lan-https.sh --settings deploy/lan-https.json
+```
+
+Activation disables only nginx's stock `default` site and refuses to coexist
+with another enabled nginx listener. It installs a systemd drop-in that binds
+Waitress to `127.0.0.1`, verifies nginx before reload, and restores prior files
+if startup fails. The verifier requires the DNS answer to contain the configured
+RFC1918 address, validates the certificate without `--insecure`, confirms exact
+socket binds, exercises all allowed assets, and proves `/`, `/api/`, other
+static files and malformed pairing paths return 404.
+
+Finally, inspect the router directly and try the hostname from a phone with
+Wi-Fi disabled. It must be unreachable over mobile data. An inside-LAN test
+cannot prove the absence of NAT hairpinning or an upstream port-forward.
+
 ## 6. Acceptance checklist
 
 Record pass/fail, evidence and temperature for every row. A repository test is
@@ -361,6 +470,18 @@ transition and one complete track transition before removing the old release.
 
 Rollback changes only the display stack; it must not reset NetworkManager or
 delete the new account grant blindly.
+
+If LAN HTTPS was activated, remove its listener and loopback override before
+restoring the previous display unit. Do not re-enable nginx's stock HTTP site:
+
+```bash
+sudo systemctl disable --now nginx
+sudo rm -f \
+  /etc/nginx/sites-enabled/spotify-display-lan-https.conf \
+  /etc/nginx/sites-available/spotify-display-lan-https.conf \
+  /etc/systemd/system/spotify-display.service.d/lan-https-loopback.conf
+sudo systemctl daemon-reload
+```
 
 ```bash
 systemctl --user stop spotify-kiosk spotify-pygame 2>/dev/null || true

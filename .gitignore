@@ -39,3 +39,6 @@ go-librespot/state.json
 go-librespot/credentials.json
 /index.html
 recently_spun.json
+
+# Per-device LAN HTTPS settings and rendered nginx output
+deploy/lan-https.json

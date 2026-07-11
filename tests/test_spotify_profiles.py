@@ -1,3 +1,5 @@
+import datetime
+
 import pytest
 
 import spotify_profiles
@@ -70,3 +72,68 @@ def test_new_profile_cannot_exceed_store_bound():
             profile("one-too-many", "alias-too-many"),
             "alias-too-many",
         )
+
+
+def test_legacy_owner_migrates_to_household_without_inventing_authorization_time():
+    migrated = spotify_profiles.normalize_profile(profile("one", "alias"))
+
+    assert migrated["kind"] == "household"
+    assert migrated["authorized_at"] is None
+    assert migrated["reauthorize_at"] is None
+    assert migrated["expires_at"] is None
+
+
+def test_legacy_owner_migration_preserves_a_finite_expiry_cutoff():
+    item = profile("one", "alias")
+    item["expires_at"] = 1234
+
+    migrated = spotify_profiles.normalize_profile(item)
+
+    assert migrated["kind"] == "household"
+    assert migrated["expires_at"] == 1234
+
+
+def test_existing_guest_remains_bounded_during_store_migration():
+    item = profile("one", "alias")
+    item.update({"kind": "guest", "expires_at": 1234})
+
+    migrated = spotify_profiles.normalize_profile(item)
+
+    assert migrated["kind"] == "guest"
+    assert migrated["expires_at"] == 1234
+    assert migrated["authorized_at"] is None
+    assert migrated["reauthorize_at"] is None
+
+
+def test_six_month_deadline_uses_calendar_arithmetic_and_clamps_month_end():
+    authorized = datetime.datetime(
+        2025, 8, 31, 12, 30, tzinfo=datetime.timezone.utc
+    ).timestamp()
+    expected = datetime.datetime(
+        2026, 2, 28, 12, 30, tzinfo=datetime.timezone.utc
+    ).timestamp()
+
+    assert spotify_profiles.reauthorization_deadline(authorized) == expected
+
+
+def test_profile_lifecycle_is_bounded_and_public_metadata_never_contains_token():
+    authorized = datetime.datetime(
+        2026, 1, 31, tzinfo=datetime.timezone.utc
+    ).timestamp()
+    item = profile("one", "alias")
+    item.update({
+        "kind": "household",
+        "authorized_at": authorized,
+        # A malformed later deadline is capped to the calendar policy.
+        "reauthorize_at": authorized + 400 * 24 * 60 * 60,
+    })
+
+    normalized = spotify_profiles.normalize_profile(item)
+    public = spotify_profiles.public_profile(normalized)
+
+    assert normalized["reauthorize_at"] == spotify_profiles.reauthorization_deadline(
+        authorized
+    )
+    assert public["authorized_at"] == authorized
+    assert public["reauthorize_at"] == normalized["reauthorize_at"]
+    assert "refresh_token" not in public

@@ -9,17 +9,20 @@ only refresh grants and bounded profile metadata are persisted here.
 
 from __future__ import annotations
 
+import calendar
+import datetime
 import math
 import unicodedata
 
 
-STORE_VERSION = 1
+STORE_VERSION = 2
 MAX_ID_LENGTH = 256
 MAX_NAME_LENGTH = 256
 MAX_ALIASES = 16
 MAX_PROFILES = 32
 MAX_SCOPES = 32
 MAX_REFRESH_TOKEN_LENGTH = 8192
+PROFILE_KINDS = ("household", "guest")
 
 
 class AliasCollisionError(ValueError):
@@ -57,6 +60,29 @@ def _finite_timestamp(value, *, allow_none=False):
         return None
     value = float(value)
     return value if math.isfinite(value) and value >= 0 else None
+
+
+def reauthorization_deadline(authorized_at):
+    """Return the UTC timestamp exactly six calendar months after authorization.
+
+    Spotify measures refresh-token lifetime from the original authorization,
+    not from subsequent token refreshes.  Calendar arithmetic avoids silently
+    turning that policy into a fixed 180/183-day approximation.
+    """
+    authorized_at = _finite_timestamp(authorized_at, allow_none=True)
+    if authorized_at is None:
+        return None
+    try:
+        instant = datetime.datetime.fromtimestamp(
+            authorized_at, tz=datetime.timezone.utc
+        )
+        month_index = instant.month - 1 + 6
+        year = instant.year + month_index // 12
+        month = month_index % 12 + 1
+        day = min(instant.day, calendar.monthrange(year, month)[1])
+        return instant.replace(year=year, month=month, day=day).timestamp()
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _normalise_scopes(value):
@@ -99,12 +125,32 @@ def normalize_profile(value, account_id=None):
     display_name = unicodedata.normalize("NFKC", display_name).strip()[:MAX_NAME_LENGTH]
 
     kind = value.get("kind")
-    if kind not in ("guest", "owner"):
+    # Version-1 owner profiles were the persistent household account. Rename
+    # that role without broadening any finite cutoff the old server enforced.
+    if kind == "owner":
+        kind = "household"
+    if kind not in PROFILE_KINDS:
         kind = "guest"
     connected_at = _finite_timestamp(value.get("connected_at")) or 0.0
     expires_at = _finite_timestamp(value.get("expires_at"), allow_none=True)
     if kind == "guest" and expires_at is None:
         return None
+
+    # Existing profiles predate Spotify's six-month refresh-token policy and
+    # do not have a trustworthy issuance timestamp. Preserve them with an
+    # unknown deadline; invalid_grant remains authoritative. New grants always
+    # supply both fields. If only authorized_at exists, derive the deadline.
+    authorized_at = _finite_timestamp(
+        value.get("authorized_at"), allow_none=True
+    )
+    reauthorize_at = _finite_timestamp(
+        value.get("reauthorize_at"), allow_none=True
+    )
+    policy_deadline = reauthorization_deadline(authorized_at)
+    if reauthorize_at is None:
+        reauthorize_at = policy_deadline
+    elif policy_deadline is not None:
+        reauthorize_at = min(reauthorize_at, policy_deadline)
 
     aliases = []
     raw_aliases = value.get("receiver_aliases")
@@ -123,6 +169,8 @@ def normalize_profile(value, account_id=None):
         "kind": kind,
         "connected_at": connected_at,
         "expires_at": expires_at,
+        "authorized_at": authorized_at,
+        "reauthorize_at": reauthorize_at,
         "scopes": _normalise_scopes(value.get("scopes")),
         "receiver_aliases": aliases,
     }
@@ -224,6 +272,8 @@ def public_profile(profile):
         "kind": profile["kind"],
         "connected_at": profile["connected_at"],
         "expires_at": profile["expires_at"],
+        "authorized_at": profile["authorized_at"],
+        "reauthorize_at": profile["reauthorize_at"],
         "scopes": list(profile["scopes"]),
         "receiver_alias_count": len(profile["receiver_aliases"]),
     }

@@ -52,7 +52,7 @@ resolution remains a Pi-side check because macOS has no systemd installation.
 | ID | Audit finding | Implemented resolution |
 |---|---|---|
 | BE-01 | OAuth callback reflected untrusted HTML | Errors are JSON/escaped template data; auth responses are `no-store`. |
-| BE-02 | OAuth lacked state, PKCE and bounded account grants | One-time state and PKCE were added; owner-approved join tokens live 10 minutes, initiate once within 5 minutes, and create expiring guest grants. Account changes invalidate tokens and caches by generation. |
+| BE-02 | OAuth lacked state, PKCE and bounded account grants | One-time state and PKCE were added; owner-approved join tokens live 10 minutes and initiate once within 5 minutes. Pairing creates an isolated persistent household profile by default or an explicitly bounded guest grant; account changes invalidate tokens and caches by generation. |
 | BE-03 | Private library and administration shared the public LAN boundary | Owner middleware now protects crate/library, OAuth administration, WLED mutation and detailed diagnostics. Loopback trust requires both a loopback peer and literal loopback Host, preventing Host-header rebinding. |
 | BE-04 | WLED input was unbounded; malformed numbers raised 500 | Device count, strings, host/port, pixel count and renderer values have strict type/range bounds and explicit 4xx errors. |
 | BE-05 | Config, refresh and recent-history writes could race or truncate | Writes are locked, permission-restricted, fsynced and atomically replaced. Token refresh is single-flight. Existing malformed/unreadable config is preserved and write-protected instead of overwritten. |

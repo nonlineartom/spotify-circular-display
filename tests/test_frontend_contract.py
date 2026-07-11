@@ -214,8 +214,11 @@ def test_modal_and_tracklist_expose_accessible_state():
 
 
 def test_join_page_describes_receiver_bound_private_pairing():
-    assert "pairing links expire" in JOIN.lower()
-    assert "bound to the current listener" in JOIN.lower()
+    assert "link a household spotify account" in JOIN.lower()
+    assert "one-use link expires quickly" in JOIN.lower()
+    assert "bound to the account currently playing" in JOIN.lower()
+    assert "household link itself stays saved" in JOIN.lower()
+    assert "spotify asks that member to reauthorize" in JOIN.lower()
     assert "never another person’s library" in JOIN.lower()
     assert 'href="/login"' in JOIN
     assert "/login?playlist=" not in JOIN
@@ -259,6 +262,7 @@ def test_building_crate_is_transient_preserves_stale_data_and_retries_quickly():
         'let crateProfileState = "linked";',
         "const scheduled = []; let loading = 0, preloaded = 0, rendered = 0;",
         "function applyCrateProfileSignal() {}",
+        "function crateProfileNeedsLink() { return false; }",
         "function refreshCratePairingLink() {}",
         "function scheduleCrateRetry(delay) { scheduled.push(delay); }",
         "function renderCrateLoading() { loading++; }",
@@ -283,7 +287,7 @@ def test_building_crate_is_transient_preserves_stale_data_and_retries_quickly():
 
 def test_profile_epoch_handoff_synchronously_invalidates_private_crate():
     source = "\n".join((
-        "const CRATE_PROFILE_STATES = new Set(['linked', 'unlinked', 'no_receiver']);",
+        "const CRATE_PROFILE_STATES = new Set(['linked', 'unlinked', 'reauth_required', 'no_receiver']);",
         "let crateProfileSeen = true, crateProfileState = 'linked', crateProfileEpoch = 'epoch-a';",
         "let crateProfileRevision = 4, crateJoinUrl = 'https://display.test/join?pair=old';",
         "let cratePairingUnavailable = false, clears = 0, renders = 0;",
@@ -293,6 +297,7 @@ def test_profile_epoch_handoff_synchronously_invalidates_private_crate():
         "function renderCrateProfilePrompt() { renders++; }",
         _js_function("crateProfileSignal"),
         _js_function("currentCrateProfileMatches"),
+        _js_function("crateProfileNeedsLink"),
         _js_function("applyCrateProfileSignal"),
         "if (applyCrateProfileSignal({profile_state: 'linked', profile_epoch: 'epoch-a'})) throw new Error('same profile changed');",
         "if (clears !== 0 || crateData === null) throw new Error('same profile was cleared');",
@@ -300,6 +305,8 @@ def test_profile_epoch_handoff_synchronously_invalidates_private_crate():
         "if (clears !== 1 || crateData !== null) throw new Error('private crate was not synchronously cleared');",
         "if (crateProfileEpoch !== 'epoch-b' || crateProfileState !== 'unlinked' || crateProfileRevision !== 5) throw new Error('new context not committed');",
         "if (crateJoinUrl !== null) throw new Error('old pairing URL crossed handoff');",
+        "if (!applyCrateProfileSignal({profile_state: 'reauth_required', profile_epoch: 'epoch-c'})) throw new Error('reauthorization transition missed');",
+        "if (clears !== 2 || crateProfileState !== 'reauth_required' || crateProfileEpoch !== 'epoch-c') throw new Error('reauthorization context not committed');",
     ))
     _run_node(source)
     apply_payload = INDEX.split("function applyCratePayload", 1)[1].split(
@@ -344,12 +351,40 @@ def test_unlinked_crate_uses_safe_generic_copy_and_pairing_cta():
     assert link_tag == "span"
     assert "hidden" in link
     assert "House picks are showing" in INDEX
-    assert "Choose Pi Display in Spotify" in INDEX
+    assert "Link this household Spotify account to show its playlists and albums" in INDEX
+    assert "Household Spotify linking is temporarily unavailable" in INDEX
+    assert "Linked household crates return automatically; everyone else sees House picks" in INDEX
     assert 'fetch("/api/idle/playlists"' in INDEX
     assert 'url.protocol === "http:" || url.protocol === "https:"' in INDEX
     assert "crateProfileCopy.textContent = message" in INDEX
-    assert 'crateProfileLink.textContent = href ? "On your phone, open " + href : ""' in INDEX
+    assert 'crateProfileState === "reauth_required" ? "link again at " : "open "' in INDEX
     assert "crateProfileLink.href" not in INDEX
+
+
+def test_reauthorization_state_falls_back_to_house_picks_and_links_again_privately():
+    assert '"reauth_required"' in INDEX
+    assert "This household Spotify account needs to be linked again" in INDEX
+    assert "Spotify reauthorization is temporarily unavailable" in INDEX
+    assert "Link this household Spotify account again to restore its albums and playlists" in INDEX
+    assert "function crateProfileNeedsLink()" in INDEX
+    assert 'crateProfileState === "unlinked" || crateProfileState === "reauth_required"' in INDEX
+    assert "profile_name" not in INDEX
+    assert "username" not in INDEX.lower()
+    assert "account_id" not in INDEX.lower()
+
+
+def test_rotation_is_explicitly_labelled_as_top_listening_approximation():
+    source = "\n".join((
+        "function stableSectionKey(section, index) { return String(section && section.id || section && section.title || 'section-' + index); }",
+        _js_function("crateSectionIsTopListening"),
+        _js_function("crateSectionDisplayTitle"),
+        "const rotation = { id: 'rotation', title: 'Your rotation' };",
+        "if (!crateSectionIsTopListening(rotation, 0)) throw new Error('rotation section not recognized');",
+        "if (crateSectionDisplayTitle(rotation, 0) !== 'Your rotation · top listening') throw new Error('rotation approximation label missing');",
+        "if (crateSectionDisplayTitle({ id: 'house', title: 'House picks' }, 1) !== 'House picks') throw new Error('house label changed');",
+    ))
+    _run_node(source)
+    assert '"Top-listening approximation"' in INDEX
 
 
 def test_missing_profile_context_fails_closed_and_pairing_does_not_wait_for_crate():
@@ -364,7 +399,7 @@ def test_missing_profile_context_fails_closed_and_pairing_does_not_wait_for_crat
     apply_signal = INDEX.split("function applyCrateProfileSignal", 1)[1].split(
         "function markCrateProfileUnknown", 1
     )[0]
-    assert 'changed && crateProfileState === "unlinked"' in apply_signal
+    assert "changed && crateProfileNeedsLink()" in apply_signal
     assert "refreshCratePairingLink()" in apply_signal
 
 
