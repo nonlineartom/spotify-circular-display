@@ -16,7 +16,7 @@ needs for ordinary playback:
 
 Owner authorization is required for:
 
-- private playlists, saved albums and retained listening history;
+- private playlists, saved albums and top-listening rotation;
 - OAuth link creation, status and disconnect;
 - WLED discovery, status and persistent configuration;
 - detailed diagnostics and persistent application configuration.
@@ -41,8 +41,10 @@ X-Owner-Token: <token>
 ```
 
 `POST /api/auth/owner` can exchange it for a signed, HttpOnly, SameSite=Lax
-session. Auth API responses are `Cache-Control: no-store`. Generate the value
-with:
+session. The cookie contains only a keyed binding to the current owner token,
+not the token itself; rotating the configured token immediately revokes old
+owner cookies. Auth API responses are `Cache-Control: no-store`. Generate the
+value with:
 
 ```bash
 python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
@@ -51,20 +53,49 @@ python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
 There is intentionally no default/shared password. If no owner token is
 configured, non-loopback owner access is unavailable.
 
-## OAuth and shared-display pairing
+## OAuth and receiver-bound profiles
 
 Playback does not require OAuth. Private crate personalization uses an explicit
 owner-approved flow:
 
 1. An owner or the trusted local kiosk mints a cryptographically random join
-   URL. It expires after 10 minutes and is stored only as a digest.
+   URL for the active or last authenticated receiver identity. Its 60-bit
+   human-typeable token expires after 10 minutes. The token lookup is stored as
+   a digest; the kiosk retains only the expiring URL in process memory so it can
+   render the same prompt.
 2. The URL can be consumed once. Consumption permits one OAuth initiation for
    at most 5 minutes and cannot be promoted to owner scope by query parameters.
-3. OAuth uses one-time `state`, PKCE S256 and a 10-minute flow lifetime.
-4. A paired guest grant replaces the preceding personalized account and expires
-   after `guest_session_hours` (12 hours by default, bounded to 1–168).
-5. Disconnect/account replacement clears private caches and invalidates
-   in-flight crate publication by account generation.
+3. OAuth uses one-time `state`, PKCE S256 and a 10-minute flow lifetime. The
+   captured receiver alias and random process-local epoch must still match at
+   initiation, callback and grant publication.
+4. The callback requires the authorized `/me.id` to exactly equal the receiver
+   username. It stores the grant under Spotify's immutable `/me.account_id`;
+   identifiers remain opaque and are never case-folded or Unicode-normalized.
+5. Multiple grants coexist. The active receiver alias selects exactly one
+   profile, while an unknown, expired or ambiguous alias selects no profile and
+   receives only non-private House picks.
+6. A paired guest grant expires after `guest_session_hours` (12 hours by
+   default, bounded to 1–168). Spotify `invalid_grant` removes only the affected
+   profile and requires that listener to pair again.
+7. Receiver handoff rotates an opaque epoch. Browser shelves, pairing URLs,
+   private API requests, launches, caches and in-flight publication are bound
+   to it and fail closed when it changes.
+
+A valid stopped receiver session intentionally retains its selected profile so
+the listener can launch the next record locally. Shared or public venues should
+use a short guest TTL and explicitly disconnect profiles after use. A receiver
+outage, 204/session disconnect, invalid username or expired grant selects no
+private profile.
+
+The public now-playing and SSE surfaces expose only `profile_state` and the
+opaque epoch. They do not return the receiver username, Spotify user ID,
+immutable account ID or display name. Owner-only status may return bounded,
+non-credential profile metadata for administration.
+
+Older configurations may contain one unbound top-level `refresh_token`. It is
+quarantined: the server migrates it only after refreshing it, fetching `/me`
+and proving that `/me.id` exactly matches the active receiver username. A
+mismatch never becomes a fallback for the current listener.
 
 OAuth requires a canonical `public_base_url`, for example
 `https://display.example`. `redirect_uri` must be the exact same origin with
@@ -75,6 +106,15 @@ derived from that canonical public origin.
 
 Register the exact callback in the Spotify application. Do not use a public
 origin that forwards directly from the Internet to this appliance.
+
+The reverse proxy is part of the authorization boundary. It **must** preserve
+the configured public Host header (`proxy_set_header Host $host` in nginx), not
+replace it with a loopback backend Host. The safest proxy exposes only the
+phone OAuth routes `/pair/`, `/join`, `/login`, `/callback` and `/connect`, and
+denies `/api/` entirely. This matters because Flask cannot distinguish a direct
+localhost kiosk connection from a marker-free TCP proxy that presents both a
+loopback peer and loopback Host; the latter would otherwise inherit local-kiosk
+owner trust.
 
 ## Browser request protections
 
@@ -113,6 +153,8 @@ making a byte-for-byte backup.
 ## Deployment controls
 
 - Never port-forward the Flask/Waitress port from the router.
+- Preserve the canonical public Host at the TLS proxy, allowlist only the phone
+  OAuth routes, and verify unauthenticated public `/api/auth/status` is denied.
 - Prefer an appliance VLAN/firewall that prevents guest and untrusted IoT
   networks from reaching owner routes.
 - If remote owner/OAuth access is needed, terminate HTTPS at one deliberately

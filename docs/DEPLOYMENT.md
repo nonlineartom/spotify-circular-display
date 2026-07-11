@@ -54,6 +54,9 @@ done
 [ ! -e /etc/udev/rules.d/70-spotify-display-backlight.rules ] || \
   sudo cp -a /etc/udev/rules.d/70-spotify-display-backlight.rules \
     "$BACKUP_DIR/host/"
+[ ! -e /etc/udev/rules.d/70-spotify-display-touch.rules ] || \
+  sudo cp -a /etc/udev/rules.d/70-spotify-display-touch.rules \
+    "$BACKUP_DIR/host/"
 for wants_dir in default.target.wants graphical-session.target.wants; do
   [ ! -d "$HOME/.config/systemd/user/$wants_dir" ] || \
     cp -a "$HOME/.config/systemd/user/$wants_dir" "$BACKUP_DIR/user/"
@@ -325,9 +328,10 @@ not a substitute for the physical checks.
 |---|---|
 | Boot/readiness | Cold boot reaches the square kiosk without a fixed-delay race; no service is crash-looping. |
 | Spotify Connect | “Pi Display” appears from two LAN clients; connect, play, pause, resume, next and same-track previous all work. |
+| Listener profiles | Pair two allowed Spotify accounts. A→B and rapid A→B→A handoffs synchronously clear the old shelf, select the matching saved albums/playlists/rotation, invalidate old pairing links and reject stale launches. An unpaired third account sees House picks only. |
 | Motion | At 1080×1080, the record reaches stable 33⅓/45 motion, pause returns cleanly to zero, rapid skips do not flash old art, and no-art uses the neutral sleeve. |
 | Static/dim | Paused/idle/dim scenes reduce frame activity; first touch wakes without firing the underlying control. |
-| Gestures | Single swipe/tap, two-finger seek/volume/pinch and three-finger brightness all complete; pointer cancellation sends no action. |
+| Gestures | Left/right and up/down touches land on the same physical side/direction; single swipe/tap, two-finger seek/volume/pinch and three-finger brightness all complete; pointer cancellation sends no action. |
 | Crate/tracklist/lyrics | Owner/private data is visible only in an owner context; empty account clears old cards; modal keyboard/focus/Escape behaviour is correct. |
 | Offline/error | Restart go-librespot and briefly remove the route; UI shows continuity/error rather than false idle, then recovers without a stale transition. |
 | Backlight | Confirm the correct `0712:000a` hidraw interface, 10% first-contact command, stepped ramp, idle/wake and rediscovery after a controlled USB reconnect. |
@@ -337,7 +341,7 @@ not a substitute for the physical checks.
 | Network | Temporarily disable/re-enable the AP or route; no password dialog appears, recovery is debounced and a healthy boot is not restarted. |
 | Audio/display | Correct HDMI/USB sink, no dropouts, DPMS/blanking policy and touch-to-output mapping survive reboot. |
 | Performance | Observe frame diagnostics and Pi thermals through at least two tracks, a rapid-skip sequence and 30 minutes of playback. No throttling or sustained long-frame growth. |
-| Security | Remote guest gets 401 from owner routes; loopback kiosk works; malformed config is never overwritten; OAuth public origin/callback and Secure cookie are correct. |
+| Security | Remote guest gets 401 from owner routes; loopback kiosk works; malformed config is never overwritten; OAuth public origin/callback and Secure cookie are correct; the proxy preserves public Host and unauthenticated public `/api/auth/status` is 401/404. |
 
 Useful evidence commands:
 
@@ -395,7 +399,8 @@ done
 for item in \
   'raspotify.conf:/etc/raspotify/conf' \
   'spotify-display.conf:/etc/tmpfiles.d/spotify-display.conf' \
-  '70-spotify-display-backlight.rules:/etc/udev/rules.d/70-spotify-display-backlight.rules'; do
+  '70-spotify-display-backlight.rules:/etc/udev/rules.d/70-spotify-display-backlight.rules' \
+  '70-spotify-display-touch.rules:/etc/udev/rules.d/70-spotify-display-touch.rules'; do
   backup_name="${item%%:*}"
   destination="${item#*:}"
   if [ -e "$BACKUP_DIR/host/$backup_name" ]; then

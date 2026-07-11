@@ -43,6 +43,18 @@ from flask import (
 )
 
 from backlight import BacklightController
+from spotify_profiles import (
+    AliasCollisionError,
+    ProfileLimitError,
+    normalize_alias,
+    normalize_identifier,
+    normalize_profile,
+    normalize_store as normalize_profile_store,
+    profile_for_alias,
+    public_profile,
+    remove_profile,
+    upsert_profile,
+)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_REQUEST_BYTES", 64 * 1024))
@@ -62,8 +74,18 @@ SERVER_PORT = int(os.environ.get("DISPLAY_PORT") or os.environ.get("PORT", "5000
 SPOTIFY_AUTH_URL = "https://accounts.spotify.com/authorize"
 SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
 SPOTIFY_API_BASE = "https://api.spotify.com/v1"
-SCOPES = "user-modify-playback-state user-read-playback-state"
-PLAYLIST_SCOPES = "playlist-read-private user-library-read user-read-playback-state user-modify-playback-state"
+LIBRARY_SCOPES = (
+    "user-read-private",
+    "playlist-read-private",
+    "playlist-read-collaborative",
+    "user-library-read",
+    "user-top-read",
+)
+PLAYBACK_SCOPES = ("user-read-playback-state", "user-modify-playback-state")
+# Backwards-compatible names for operators importing this module. OAuth uses
+# ``_oauth_scopes`` so playback authority remains opt-in.
+SCOPES = " ".join(PLAYBACK_SCOPES)
+PLAYLIST_SCOPES = " ".join(LIBRARY_SCOPES)
 
 # Raspotify/librespot events can occasionally be missed during Wi-Fi drops or
 # Spotify handoffs. These guards keep an old "playing" event from looking alive
@@ -83,6 +105,9 @@ STOPPED_IDLE_EVENTS = {
 
 _client_token = None
 _client_token_expiry = 0
+# Per-account access tokens. The three scalar names remain diagnostic mirrors
+# for older local tooling; authorization decisions never read them.
+_user_tokens = {}
 _user_token = None
 _user_token_expiry = 0
 _user_token_grant_id = None
@@ -164,11 +189,14 @@ _artist_albums_cache = BoundedTTLCache(512, 6 * 60 * 60)
 _recent_spins = {"loaded": False, "items": []}  # newest first
 _recent_spins_lock = threading.Lock()
 _last_spin_album = None
-_crate_cache = {"built_at": 0, "payload": None}
+_crate_cache = {"built_at": 0, "payload": None}  # generic/legacy test alias
+_crate_caches = {"generic": _crate_cache}
 _crate_build_lock = threading.RLock()
 _crate_build_condition = threading.Condition(_crate_build_lock)
 _crate_building = False
+_crate_building_key = None
 _account_generation = 0
+_profile_generations = {}
 _enrich_inflight = set()
 _enrich_last_attempt = BoundedTTLCache(2048, 10 * 60)
 _enrich_lock = threading.Lock()
@@ -183,8 +211,17 @@ _lyrics_breaker_until = 0.0
 _lyrics_lock = threading.Lock()
 _lyrics_inflight = set()
 _pairing_tokens = BoundedTTLCache(32, 10 * 60)
-_kiosk_pairing = {"url": None, "digest": None, "expires_at": 0}
+_kiosk_pairing = {"url": None, "digest": None, "expires_at": 0, "profile_epoch": None}
 _pairing_lock = threading.Lock()
+
+# Receiver identities are opaque, process-local observations. Epochs are
+# deliberately random rather than sequential so a browser flow from a prior
+# service process cannot accidentally bind after restart.
+_receiver_identity_lock = threading.RLock()
+_receiver_identity = {"alias": None, "epoch": secrets.token_urlsafe(18), "active": False}
+_legacy_migration_attempts = BoundedTTLCache(32, 5 * 60)
+_profile_prune_lock = threading.Lock()
+_profile_prune_next = 0.0
 
 _started_at = time.time()
 _background_lock = threading.Lock()
@@ -195,7 +232,15 @@ _backlight_controller = None
 _event_condition = threading.Condition()
 _event_monitor_started = False
 _event_version = 0
-_event_signal = {"version": 0, "active": False, "track_id": None, "is_playing": False}
+_event_signal = {
+    "version": 0,
+    "active": False,
+    "track_id": None,
+    "is_playing": False,
+    "profile_state": "no_receiver",
+    "profile_epoch": _receiver_identity["epoch"],
+    "receiver_available": False,
+}
 _event_clients = 0
 MAX_SSE_CLIENTS = max(1, min(int(os.environ.get("MAX_SSE_CLIENTS", "2")), 8))
 
@@ -340,6 +385,8 @@ def _normalize_config(config):
         or not math.isfinite(float(guest_hours))
     ):
         normalized["guest_session_hours"] = 12
+    if "spotify_profiles" in normalized:
+        normalized["spotify_profiles"] = normalize_profile_store(normalized["spotify_profiles"])
     return normalized
 
 
@@ -369,6 +416,58 @@ def update_config(mutator):
         result = mutator(config)
         _atomic_write_json(CONFIG_FILE, config, mode=0o600)
         return result
+
+
+def _profile_store(config=None):
+    config = load_config() if config is None else config
+    return normalize_profile_store(config.get("spotify_profiles"))
+
+
+def _profile_by_id(account_id, config=None):
+    account_id = normalize_identifier(account_id)
+    if not account_id:
+        return None
+    profile = _profile_store(config)["profiles"].get(account_id)
+    return dict(profile) if profile else None
+
+
+def _oauth_scopes(config=None):
+    config = load_config() if config is None else config
+    scopes = list(LIBRARY_SCOPES)
+    if bool(config.get("allow_web_api_control_fallback", False)):
+        scopes.extend(PLAYBACK_SCOPES)
+    return scopes
+
+
+def _grant_is_expired(profile, now=None):
+    profile = normalize_profile(profile)
+    if not profile:
+        return True
+    now = time.time() if now is None else now
+    expires_at = profile.get("expires_at")
+    if profile.get("kind") == "guest":
+        return expires_at is None or now >= expires_at
+    return expires_at is not None and now >= expires_at
+
+
+def _legacy_grant(config=None):
+    """Return the pre-profile grant without ever binding it implicitly."""
+    config = load_config() if config is None else config
+    refresh_token = config.get("refresh_token")
+    if not isinstance(refresh_token, str) or not refresh_token:
+        return None
+    grant = config.get("spotify_session")
+    grant = grant if isinstance(grant, dict) else {}
+    kind = grant.get("kind") if grant.get("kind") in ("guest", "owner") else "owner"
+    expires_at = grant.get("expires_at")
+    if kind == "guest" and not isinstance(expires_at, (int, float)):
+        return None
+    return {
+        "refresh_token": refresh_token,
+        "kind": kind,
+        "connected_at": grant.get("connected_at") if isinstance(grant.get("connected_at"), (int, float)) else 0,
+        "expires_at": expires_at if isinstance(expires_at, (int, float)) else None,
+    }
 
 
 def _get_backlight_controller():
@@ -961,15 +1060,10 @@ def deeper_cut_items():
     return items[:24]
 
 
-def _build_crate_payload():
-    """Assemble all crate sections, fetching the remote ones in parallel.
-
-    Ordered by how good the first impression is: personal playlists lead
-    (always have covers), then saved albums, the local listening history,
-    the dig-deeper albums. House picks last — editorial-playlist covers
-    can't be resolved by newer API apps, so they may render as blank
-    sleeves.
-    """
+def _build_crate_payload(account_id=None, profile_epoch=None):
+    """Build a profile-isolated crate, or a non-private generic fallback."""
+    if account_id and not _profile_epoch_matches(account_id, profile_epoch):
+        return None
     results = {}
 
     def grab(key, fn):
@@ -979,12 +1073,20 @@ def _build_crate_payload():
             print(f"Crate section '{key}' failed: {e}")
             results[key] = []
 
-    threads = [threading.Thread(target=grab, args=(key, fn)) for key, fn in (
-        ("yours", lambda: fetch_user_playlists(limit=50)),
-        ("saved", lambda: fetch_saved_albums(limit=50)),
-        ("deeper", deeper_cut_items),
-        ("house", load_idle_playlists),
-    )]
+    sources = [("house", load_idle_playlists)]
+    if account_id:
+        sources[:0] = [
+            ("yours", lambda: fetch_user_playlists(
+                limit=50, account_id=account_id, profile_epoch=profile_epoch
+            )),
+            ("saved", lambda: fetch_saved_albums(
+                limit=50, account_id=account_id, profile_epoch=profile_epoch
+            )),
+            ("rotation", lambda: fetch_top_albums(
+                limit=50, account_id=account_id, profile_epoch=profile_epoch
+            )),
+        ]
+    threads = [threading.Thread(target=grab, args=(key, fn)) for key, fn in sources]
     for t in threads:
         t.start()
     for t in threads:
@@ -995,91 +1097,143 @@ def _build_crate_payload():
         sections.append({"id": "yours", "title": "Your playlists", "items": results["yours"]})
     if results.get("saved"):
         sections.append({"id": "saved", "title": "Your albums", "items": results["saved"]})
-    spins = recent_spin_items()  # local file — instant
-    if spins:
-        sections.append({"id": "recent", "title": "Recently spun", "items": spins})
-    if results.get("deeper"):
-        sections.append({"id": "deeper", "title": "Deeper cuts", "items": results["deeper"]})
+    if results.get("rotation"):
+        sections.append({"id": "rotation", "title": "Your rotation", "items": results["rotation"]})
     if results.get("house"):
         sections.append({"id": "house", "title": "House picks", "items": results["house"]})
     return {"sections": sections}
 
 
-def _rebuild_crate_async():
-    """Refresh the crate cache on a background thread, at most one at a time."""
-    global _crate_building
+def _crate_cache_for(cache_key):
+    with _crate_build_lock:
+        cache = _crate_caches.get(cache_key)
+        if cache is None:
+            cache = {"built_at": 0, "payload": None}
+            _crate_caches[cache_key] = cache
+        return cache
+
+
+def _crate_generation(context):
+    account_id = context.get("account_id")
+    return _profile_generations.get(account_id, 0) if account_id else _account_generation
+
+
+def _decorate_crate_payload(payload, context):
+    result = dict(payload or {"sections": []})
+    result.update(_public_profile_context(context, include_name=True))
+    return result
+
+
+def _crate_context_is_current(context):
+    current = _receiver_context()
+    return bool(
+        hmac.compare_digest(str(current["profile_epoch"]), str(context["profile_epoch"]))
+        and current["cache_key"] == context["cache_key"]
+        and current["profile_state"] == context["profile_state"]
+    )
+
+
+def _safe_crate_payload(payload, context):
+    if not _crate_context_is_current(context):
+        return _decorate_crate_payload(
+            {"sections": [], "building": True}, _receiver_context()
+        )
+    return _decorate_crate_payload(payload, context)
+
+
+def _rebuild_crate_async(context=None):
+    """Refresh one profile cache on a background thread, at most one at a time."""
+    global _crate_building, _crate_building_key
+    context = _maybe_migrate_legacy_profile(context or _receiver_context())
+    cache_key = context["cache_key"]
+    account_id = context.get("account_id")
     with _crate_build_lock:
         if _crate_building:
             return
         _crate_building = True
-        build_generation = _account_generation
+        _crate_building_key = cache_key
+        build_generation = _crate_generation(context)
 
     def job():
-        global _crate_building
+        global _crate_building, _crate_building_key
         payload = None
         try:
-            payload = _build_crate_payload()
+            payload = _build_crate_payload(account_id, context["profile_epoch"])
         finally:
             with _crate_build_condition:
                 if (
-                    payload
-                    and payload.get("sections")
-                    and build_generation == _account_generation
+                    payload is not None
+                    and build_generation == _crate_generation(context)
+                    and _crate_context_is_current(context)
                 ):
-                    _crate_cache["payload"] = payload
-                    _crate_cache["built_at"] = time.time()
+                    cache = _crate_cache_for(cache_key)
+                    cache["payload"] = payload
+                    cache["built_at"] = time.time()
                 _crate_building = False
+                _crate_building_key = None
                 _crate_build_condition.notify_all()
 
     threading.Thread(target=job, daemon=True).start()
 
 
-def crate_payload():
+def crate_payload(context=None):
     """All browsable music, in sections, for the kiosk crate UI.
 
     Stale-while-revalidate: a cached payload is always served immediately —
     if it has gone stale, a background rebuild refreshes it for the next
     request. Only a completely cold cache builds synchronously.
     """
+    context = _maybe_migrate_legacy_profile(context or _receiver_context())
+    cache_key = context["cache_key"]
+    account_id = context.get("account_id")
+    cache = _crate_cache_for(cache_key)
     now = time.time()
     with _crate_build_lock:
-        cached = _crate_cache["payload"]
-        cached_at = _crate_cache["built_at"]
+        cached = cache["payload"]
+        cached_at = cache["built_at"]
     if cached and now - cached_at < 120:
-        return cached
+        return _safe_crate_payload(cached, context)
     if cached:
-        _rebuild_crate_async()
-        return cached
+        _rebuild_crate_async(context)
+        return _safe_crate_payload(cached, context)
 
-    global _crate_building
+    global _crate_building, _crate_building_key
     # Do not launch a second cold build while the startup warmer is already
     # fetching the same four Spotify sections.  Wait briefly, then return a
     # valid "building" payload rather than blocking a Flask worker for 12s.
     with _crate_build_condition:
         if _crate_building:
             _crate_build_condition.wait(timeout=3.0)
-            if _crate_cache["payload"]:
-                return _crate_cache["payload"]
-            return {"sections": [], "building": True}
+            if cache["payload"]:
+                return _safe_crate_payload(cache["payload"], context)
+            return _safe_crate_payload({"sections": [], "building": True}, context)
         _crate_building = True
-        build_generation = _account_generation
+        _crate_building_key = cache_key
+        build_generation = _crate_generation(context)
 
     result = None
     try:
-        payload = _build_crate_payload()
+        payload = _build_crate_payload(account_id, context["profile_epoch"])
         with _crate_build_lock:
-            if build_generation == _account_generation:
-                if payload["sections"]:
-                    _crate_cache["payload"] = payload
-                    _crate_cache["built_at"] = time.time()
-                result = payload
+            if (
+                payload is not None
+                and build_generation == _crate_generation(context)
+                and _crate_context_is_current(context)
+            ):
+                cache["payload"] = payload
+                cache["built_at"] = time.time()
+                result = _safe_crate_payload(payload, context)
             else:
                 # Never return or cache library data from the disconnected or
                 # replaced account after its generation has been invalidated.
-                result = _crate_cache["payload"] or {"sections": [], "building": True}
+                result = _decorate_crate_payload(
+                    cache["payload"] or {"sections": [], "building": True},
+                    _receiver_context(),
+                )
     finally:
         with _crate_build_condition:
             _crate_building = False
+            _crate_building_key = None
             _crate_build_condition.notify_all()
     return result
 
@@ -1108,11 +1262,6 @@ def attach_album_extras(state):
         if cached_album.get(key) and not album.get(key):
             album[key] = cached_album[key]
 
-    # Feed the 'Recently spun' crate. The artist ids live on the cached
-    # track, not the album — pass them along for the deeper-cuts crate.
-    if state.get("is_playing"):
-        record_spin(item, {**cached_album, "artists": cached.get("artists") or []})
-
     album_id = cached_album.get("id")
     if album_id:
         album.setdefault("id", album_id)  # lets the kiosk fetch the album's tracklist
@@ -1123,10 +1272,18 @@ def attach_album_extras(state):
             album["label"] = extra["label"]
 
 
-def fetch_user_playlists(limit=6):
+def fetch_user_playlists(limit=6, account_id=None, profile_epoch=None):
     """Fetch playlists for the currently authorized Spotify user, if present."""
-    token = get_user_token()
+    if account_id is not None and not _profile_epoch_matches(account_id, profile_epoch):
+        return []
+    token = (
+        get_user_token()
+        if account_id is None
+        else get_user_token(account_id, profile_epoch=profile_epoch)
+    )
     if not token:
+        return []
+    if account_id is not None and not _profile_epoch_matches(account_id, profile_epoch):
         return []
 
     try:
@@ -1164,14 +1321,22 @@ def fetch_user_playlists(limit=6):
     return playlists
 
 
-def fetch_saved_albums(limit=50):
+def fetch_saved_albums(limit=50, account_id=None, profile_epoch=None):
     """The user's saved Spotify albums — needs the user-library-read scope.
 
     Returns [] quietly until the OAuth token has been re-granted with that
     scope (403 before then), so the crate simply omits the section.
     """
-    token = get_user_token()
+    if account_id is not None and not _profile_epoch_matches(account_id, profile_epoch):
+        return []
+    token = (
+        get_user_token()
+        if account_id is None
+        else get_user_token(account_id, profile_epoch=profile_epoch)
+    )
     if not token:
+        return []
+    if account_id is not None and not _profile_epoch_matches(account_id, profile_epoch):
         return []
 
     try:
@@ -1214,8 +1379,67 @@ def fetch_saved_albums(limit=50):
     return albums
 
 
-def idle_launcher_payload(include_private=True):
-    user_playlists = fetch_user_playlists() if include_private else []
+def fetch_top_albums(limit=50, account_id=None, profile_epoch=None):
+    """Deduplicated albums from one profile's medium-term top tracks."""
+    if account_id is not None and not _profile_epoch_matches(account_id, profile_epoch):
+        return []
+    token = (
+        get_user_token()
+        if account_id is None
+        else get_user_token(account_id, profile_epoch=profile_epoch)
+    )
+    if not token:
+        return []
+    if account_id is not None and not _profile_epoch_matches(account_id, profile_epoch):
+        return []
+    try:
+        response = requests.get(
+            f"{SPOTIFY_API_BASE}/me/top/tracks",
+            params={"limit": min(50, limit), "offset": 0, "time_range": "medium_term"},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=8,
+        )
+    except requests.RequestException as error:
+        print(f"Top tracks lookup failed: {error}")
+        return []
+    if response.status_code != 200:
+        if response.status_code != 403:
+            print(f"Top tracks lookup error: {response.status_code}")
+        return []
+
+    albums = []
+    seen = set()
+    for entry in _response_object_items(response):
+        album = entry.get("album") if isinstance(entry.get("album"), dict) else {}
+        uri = album.get("uri") if isinstance(album.get("uri"), str) else ""
+        if not uri.startswith("spotify:album:") or uri in seen:
+            continue
+        seen.add(uri)
+        images = album.get("images") if isinstance(album.get("images"), list) else []
+        artists = album.get("artists") if isinstance(album.get("artists"), list) else []
+        artist = ", ".join(
+            item.get("name", "") for item in artists
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        )
+        albums.append({
+            "id": f"rotation-{album.get('id') or len(albums)}",
+            "title": album.get("name") if isinstance(album.get("name"), str) else "Album",
+            "subtitle": artist,
+            "uri": uri,
+            "image": _first_image_url(images),
+            "accent": "#c47bd8",
+            "type": "album",
+        })
+        if len(albums) >= 24:
+            break
+    return albums
+
+
+def idle_launcher_payload(include_private=True, account_id=None, profile_epoch=None):
+    user_playlists = (
+        fetch_user_playlists(account_id=account_id, profile_epoch=profile_epoch)
+        if include_private and account_id else []
+    )
     house_playlists = load_idle_playlists()
     if user_playlists:
         playlists = (user_playlists + house_playlists)[:6]
@@ -1233,6 +1457,120 @@ def spotify_uri_id(uri):
     if len(parts) == 3 and parts[0] == "spotify":
         return parts[2]
     return uri
+
+
+def _observe_receiver_identity(alias, active=True):
+    """Record a trusted go-librespot identity without exposing it to clients."""
+    alias = normalize_alias(alias) if active else None
+    active = bool(active and alias)
+    with _receiver_identity_lock:
+        if (
+            _receiver_identity["active"] != active
+            or _receiver_identity["alias"] != alias
+        ):
+            _receiver_identity.update({
+                "alias": alias,
+                "active": active,
+                "epoch": secrets.token_urlsafe(18),
+            })
+        return dict(_receiver_identity)
+
+
+def _receiver_identity_snapshot():
+    with _receiver_identity_lock:
+        return dict(_receiver_identity)
+
+
+def _bump_receiver_epoch(expected_epoch=None):
+    """Invalidate browser/profile work after a grant mapping changes."""
+    with _receiver_identity_lock:
+        if expected_epoch is not None and not hmac.compare_digest(
+            str(expected_epoch), str(_receiver_identity["epoch"])
+        ):
+            return None
+        _receiver_identity["epoch"] = secrets.token_urlsafe(18)
+        return dict(_receiver_identity)
+
+
+def _receiver_context(config=None):
+    if config is None:
+        config = load_config()
+    identity = _receiver_identity_snapshot()
+    base = {
+        "profile_state": "no_receiver",
+        "profile_epoch": identity["epoch"],
+        "profile_name": None,
+        "account_id": None,
+        "receiver_alias": None,
+        "cache_key": "generic",
+        "expired_account_id": None,
+    }
+    if not identity["active"] or not identity["alias"]:
+        return base
+    base["profile_state"] = "unlinked"
+    base["receiver_alias"] = identity["alias"]
+    profile = profile_for_alias(_profile_store(config), identity["alias"])
+    if not profile:
+        return base
+    if _grant_is_expired(profile):
+        base["expired_account_id"] = profile["account_id"]
+        return base
+    base.update({
+        "profile_state": "linked",
+        "profile_name": profile.get("display_name") or None,
+        "account_id": profile["account_id"],
+        "cache_key": f"profile:{profile['account_id']}",
+    })
+    return base
+
+
+def _public_profile_context(context=None, include_name=False):
+    context = _receiver_context() if context is None else context
+    payload = {
+        "profile_state": context["profile_state"],
+        "profile_epoch": context["profile_epoch"],
+    }
+    if include_name:
+        payload["profile_name"] = context.get("profile_name")
+    return payload
+
+
+def _profile_epoch_matches(account_id, profile_epoch):
+    account_id = normalize_identifier(account_id)
+    if not account_id or not isinstance(profile_epoch, str):
+        return False
+    context = _receiver_context()
+    return bool(
+        context.get("account_id") == account_id
+        and hmac.compare_digest(str(context.get("profile_epoch")), profile_epoch)
+    )
+
+
+def _receiver_binding_matches(binding, refresh=False):
+    if not isinstance(binding, dict):
+        return False
+    available = True
+    if refresh:
+        available, _state = read_go_librespot_state()
+    current = _receiver_identity_snapshot()
+    alias = normalize_alias(binding.get("receiver_alias"))
+    epoch = binding.get("profile_epoch")
+    return bool(
+        available
+        and current["active"]
+        and isinstance(epoch, str)
+        and hmac.compare_digest(str(current["epoch"]), epoch)
+        and (alias is None or current["alias"] == alias)
+    )
+
+
+def _profile_changed_response(context=None):
+    context = _receiver_context() if context is None else context
+    return jsonify({
+        "error": "The active Spotify profile changed; refresh the crate",
+        "code": "profile_changed",
+        **_public_profile_context(context),
+    }), 409
 
 
 def _read_legacy_state_file():
@@ -1279,33 +1617,45 @@ def read_go_librespot_state():
     session, available is True and state is None, preventing stale fallback data
     from an old Raspotify state file from showing on the display.
     """
+    def unavailable():
+        # Unknown receiver identity is not authorization. Rotate the epoch so
+        # browsers and in-flight private fetches fail closed immediately.
+        _observe_receiver_identity(None, active=False)
+        return False, None
+
     try:
         resp = requests.get(f"{GO_LIBRESPOT_API_BASE}/status", timeout=0.8)
     except requests.RequestException:
-        return False, None
+        return unavailable()
 
     if resp.status_code == 204:
+        _observe_receiver_identity(None, active=False)
         return True, None
     if resp.status_code != 200:
         print(f"go-librespot status error: {resp.status_code}")
-        return False, None
+        return unavailable()
 
     try:
         status = resp.json()
     except ValueError:
-        return False, None
+        return unavailable()
     if not isinstance(status, dict):
-        return False, None
+        return unavailable()
+
+    username = status.get("username")
+    if username is not None and normalize_alias(username) is None:
+        return unavailable()
 
     for flag in ("stopped", "paused", "buffering"):
         if flag in status and not isinstance(status[flag], bool):
-            return False, None
+            return unavailable()
     if status.get("stopped") is True:
+        _observe_receiver_identity(username, active=username is not None)
         return True, None
 
     track = status.get("track")
     if not isinstance(track, dict) or not track:
-        return False, None
+        return unavailable()
 
     def nonnegative_number(value, default=0):
         if value is None:
@@ -1319,22 +1669,22 @@ def read_go_librespot_state():
 
     uri = track.get("uri", "")
     if not isinstance(uri, str):
-        return False, None
+        return unavailable()
     track_id = spotify_uri_id(uri)
     artist_names = track.get("artist_names", [])
     if not isinstance(artist_names, list) or any(not isinstance(name, str) for name in artist_names):
-        return False, None
+        return unavailable()
     artists = [{"name": name} for name in artist_names]
     cover_url = track.get("album_cover_url")
     if cover_url is not None and not isinstance(cover_url, str):
-        return False, None
+        return unavailable()
     images = [{"url": cover_url}] if cover_url else []
     for text_field in ("name", "album_name"):
         if text_field in track and not isinstance(track[text_field], str):
-            return False, None
+            return unavailable()
     for text_field in ("device_id", "device_name", "play_origin"):
         if text_field in status and status[text_field] is not None and not isinstance(status[text_field], str):
-            return False, None
+            return unavailable()
 
     try:
         duration = nonnegative_number(track.get("duration"))
@@ -1345,7 +1695,9 @@ def read_go_librespot_state():
             raise ValueError
         volume_percent = int(round((volume / max(volume_steps, 1)) * 100))
     except (TypeError, ValueError, OverflowError):
-        return False, None
+        return unavailable()
+
+    _observe_receiver_identity(username, active=username is not None)
 
     return True, {
         "is_playing": not bool(status.get("paused")) and not bool(status.get("buffering")),
@@ -1474,100 +1826,497 @@ def read_playback_state_with_availability():
     return read_raspotify_playback_state(), True
 
 
-def get_user_token():
-    """Get a user-level Spotify token using stored refresh_token."""
-    global _user_token, _user_token_expiry, _user_token_grant_id
+def _granted_scopes(value, fallback=()):
+    scopes = value.split() if isinstance(value, str) else list(fallback)
+    # Reuse profile normalisation to bound and validate scope strings.
+    probe = normalize_profile({
+        "account_id": "scope-probe",
+        "refresh_token": "scope-probe",
+        "kind": "owner",
+        "connected_at": 0,
+        "expires_at": None,
+        "scopes": scopes,
+    })
+    return probe["scopes"] if probe else []
 
-    # Singleflight: one thread performs a refresh while all other request
-    # workers wait on the same lock and reuse the resulting access token.
+
+def _spotify_current_user(access_token):
+    try:
+        response = requests.get(
+            f"{SPOTIFY_API_BASE}/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=8,
+        )
+    except requests.RequestException as error:
+        print(f"Spotify profile lookup failed: {error}")
+        return None
+    if response.status_code != 200:
+        print(f"Spotify profile lookup error: {response.status_code}")
+        return None
+    try:
+        data = response.json()
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    account_id = normalize_identifier(data.get("account_id"))
+    receiver_alias = normalize_alias(data.get("id"))
+    if not account_id or not receiver_alias:
+        return None
+    display_name = data.get("display_name")
+    return {
+        "account_id": account_id,
+        "receiver_alias": receiver_alias,
+        "display_name": display_name if isinstance(display_name, str) else "",
+    }
+
+
+def _persist_profile_grant(
+    profile, receiver_alias=None, clear_legacy=False, expected_legacy_token=None
+):
+    profile = normalize_profile(profile)
+    if not profile:
+        raise ValueError("invalid Spotify profile grant")
+
+    pruned_account_ids = []
+
+    def persist(latest):
+        store = _profile_store(latest)
+        for account_id, existing in list(store["profiles"].items()):
+            if _grant_is_expired(existing):
+                store = remove_profile(store, account_id)
+                pruned_account_ids.append(account_id)
+        latest["spotify_profiles"] = upsert_profile(store, profile, receiver_alias)
+        if clear_legacy:
+            current_legacy = latest.get("refresh_token")
+            if expected_legacy_token is not None and not (
+                isinstance(current_legacy, str)
+                and hmac.compare_digest(current_legacy, str(expected_legacy_token))
+            ):
+                raise RuntimeError("legacy Spotify grant changed during migration")
+            latest.pop("refresh_token", None)
+            latest.pop("spotify_session", None)
+
+    update_config(persist)
+    for account_id in pruned_account_ids:
+        _user_tokens.pop(account_id, None)
+        _clear_user_caches(account_id)
+    return profile
+
+
+def _persist_bound_profile_grant(
+    profile, receiver_alias, binding, clear_legacy=False, expected_legacy_token=None
+):
+    """Atomically validate receiver epoch and publish its alias mapping."""
+    profile = normalize_profile(profile)
+    receiver_alias = normalize_alias(receiver_alias)
+    expected_epoch = binding.get("profile_epoch") if isinstance(binding, dict) else None
+    if not profile or not receiver_alias or not isinstance(expected_epoch, str):
+        return None
+    pruned_account_ids = []
+    new_epoch = None
+
+    with _receiver_identity_lock:
+        if not (
+            _receiver_identity["active"]
+            and _receiver_identity["alias"] == receiver_alias
+            and hmac.compare_digest(str(_receiver_identity["epoch"]), expected_epoch)
+        ):
+            return None
+
+        def persist(latest):
+            store = _profile_store(latest)
+            for account_id, existing in list(store["profiles"].items()):
+                if _grant_is_expired(existing):
+                    store = remove_profile(store, account_id)
+                    pruned_account_ids.append(account_id)
+            latest["spotify_profiles"] = upsert_profile(store, profile, receiver_alias)
+            if clear_legacy:
+                current_legacy = latest.get("refresh_token")
+                if expected_legacy_token is not None and not (
+                    isinstance(current_legacy, str)
+                    and hmac.compare_digest(current_legacy, str(expected_legacy_token))
+                ):
+                    raise RuntimeError("legacy Spotify grant changed during migration")
+                latest.pop("refresh_token", None)
+                latest.pop("spotify_session", None)
+
+        update_config(persist)
+        new_epoch = secrets.token_urlsafe(18)
+        _receiver_identity["epoch"] = new_epoch
+
+    for account_id in pruned_account_ids:
+        _user_tokens.pop(account_id, None)
+        _clear_user_caches(account_id)
+    return new_epoch
+
+
+def _update_profile_grant(account_id, expected_refresh_token, rotated=None, scopes=None):
+    updated = {"ok": False, "refresh_token": expected_refresh_token}
+
+    def mutate(latest):
+        store = _profile_store(latest)
+        profile = store["profiles"].get(account_id)
+        if not profile or not hmac.compare_digest(
+            str(profile.get("refresh_token", "")), str(expected_refresh_token)
+        ):
+            return
+        profile = dict(profile)
+        if isinstance(rotated, str) and rotated:
+            profile["refresh_token"] = rotated
+            updated["refresh_token"] = rotated
+        if scopes is not None:
+            profile["scopes"] = list(scopes)
+        latest["spotify_profiles"] = upsert_profile(store, profile)
+        updated["ok"] = True
+
+    update_config(mutate)
+    return updated
+
+
+def _remove_legacy_grant(expected_refresh_token=None):
+    removed = {"ok": False}
+
+    def clear(latest):
+        current = latest.get("refresh_token")
+        if expected_refresh_token is not None and not (
+            isinstance(current, str)
+            and hmac.compare_digest(current, str(expected_refresh_token))
+        ):
+            return
+        if "refresh_token" in latest or "spotify_session" in latest:
+            latest.pop("refresh_token", None)
+            latest.pop("spotify_session", None)
+            removed["ok"] = True
+
+    update_config(clear)
+    return removed["ok"]
+
+
+def _rotate_legacy_grant(expected_refresh_token, rotated_refresh_token):
+    if not isinstance(rotated_refresh_token, str) or not rotated_refresh_token:
+        return False
+    updated = {"ok": False}
+
+    def rotate(latest):
+        current = latest.get("refresh_token")
+        if isinstance(current, str) and hmac.compare_digest(current, str(expected_refresh_token)):
+            latest["refresh_token"] = rotated_refresh_token
+            updated["ok"] = True
+
+    update_config(rotate)
+    return updated["ok"]
+
+
+def _clear_user_caches(account_id=None):
+    """Invalidate only one profile by default, or all profiles for maintenance."""
+    global _playlist_cache, _account_generation
+    with _crate_build_lock:
+        _account_generation += 1
+        if account_id:
+            _profile_generations[account_id] = _profile_generations.get(account_id, 0) + 1
+            _crate_caches.pop(f"profile:{account_id}", None)
+        else:
+            _profile_generations.clear()
+            _crate_cache.update({"payload": None, "built_at": 0})
+            _crate_caches.clear()
+            _crate_caches["generic"] = _crate_cache
+    if account_id is None:
+        _playlist_cache = {"loaded_at": 0, "items": []}
+
+
+def _prune_expired_profiles(config=None):
+    """Remove all expired grants so dormant guests cannot retain capacity."""
+    config = load_config() if config is None else config
+    store = _profile_store(config)
+    expired = {
+        account_id: profile
+        for account_id, profile in store["profiles"].items()
+        if _grant_is_expired(profile)
+    }
+    legacy = _legacy_grant(config)
+    legacy_expired = bool(
+        legacy and _grant_is_expired({"account_id": "legacy", **legacy})
+    )
+    if not expired and not legacy_expired:
+        return config
+
+    removed = []
+    removed_legacy = {"ok": False}
+
+    def prune(latest):
+        latest_store = _profile_store(latest)
+        for account_id, profile in list(latest_store["profiles"].items()):
+            if _grant_is_expired(profile):
+                latest_store = remove_profile(latest_store, account_id)
+                removed.append((account_id, list(profile.get("receiver_aliases", []))))
+        latest["spotify_profiles"] = latest_store
+        latest_legacy = _legacy_grant(latest)
+        if latest_legacy and _grant_is_expired({"account_id": "legacy", **latest_legacy}):
+            latest.pop("refresh_token", None)
+            latest.pop("spotify_session", None)
+            removed_legacy["ok"] = True
+
+    update_config(prune)
+    identity = _receiver_identity_snapshot()
+    active_removed = False
+    with _user_token_lock:
+        for account_id, aliases in removed:
+            _user_tokens.pop(account_id, None)
+            _clear_user_caches(account_id)
+            active_removed = active_removed or (
+                identity["active"] and identity["alias"] in aliases
+            )
+    if active_removed:
+        _bump_receiver_epoch(identity["epoch"])
+    if removed_legacy["ok"]:
+        _clear_user_caches()
+    return load_config()
+
+
+def _maybe_prune_expired_profiles(now=None, interval=60):
+    """Bound pruning work at a request boundary with a single lock order."""
+    global _profile_prune_next
+    now = time.monotonic() if now is None else now
+    with _profile_prune_lock:
+        if now < _profile_prune_next:
+            return
+        _profile_prune_next = now + max(1, interval)
+    _prune_expired_profiles()
+
+
+def _remove_profile_grant(account_id, expected_refresh_token=None):
+    account_id = normalize_identifier(account_id)
+    if not account_id:
+        return False
+    removed = {"ok": False}
+
+    def clear(latest):
+        store = _profile_store(latest)
+        profile = store["profiles"].get(account_id)
+        if not profile:
+            return
+        if expected_refresh_token is not None and not hmac.compare_digest(
+            str(profile.get("refresh_token", "")), str(expected_refresh_token)
+        ):
+            return
+        latest["spotify_profiles"] = remove_profile(store, account_id)
+        removed["ok"] = True
+
+    update_config(clear)
+    if removed["ok"]:
+        _user_tokens.pop(account_id, None)
+        _clear_user_caches(account_id)
+    return removed["ok"]
+
+
+def _disconnect_user_account(account_id=None, expected_refresh_token=None):
+    """Forget one profile grant; unbound legacy credentials are separate."""
+    global _user_token, _user_token_expiry, _user_token_grant_id
+    with _user_token_lock:
+        context = _receiver_context()
+        account_id = normalize_identifier(
+            account_id or context.get("account_id") or context.get("expired_account_id")
+        )
+        if account_id:
+            removed = _remove_profile_grant(account_id, expected_refresh_token)
+            if removed and account_id in (
+                context.get("account_id"), context.get("expired_account_id")
+            ):
+                _bump_receiver_epoch(context["profile_epoch"])
+        else:
+            removed = _remove_legacy_grant(expected_refresh_token)
+            if removed:
+                _clear_user_caches()
+        _user_token = None
+        _user_token_expiry = 0
+        _user_token_grant_id = None
+        return removed
+
+
+def _refresh_token_response(refresh_token, config):
+    try:
+        response = requests.post(SPOTIFY_TOKEN_URL, data={
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+        }, auth=(config.get("client_id", ""), config.get("client_secret", "")), timeout=5)
+    except requests.RequestException as error:
+        print(f"User token refresh failed: {error}")
+        return None, False
+    try:
+        data = response.json()
+    except ValueError:
+        data = {}
+    invalid_grant = (
+        response.status_code == 400
+        and isinstance(data, dict)
+        and data.get("error") == "invalid_grant"
+    )
+    if response.status_code != 200:
+        print(f"User token refresh error: {response.status_code}")
+        return None, invalid_grant
+    if not isinstance(data, dict):
+        return None, False
+    access_token = data.get("access_token")
+    if not isinstance(access_token, str) or not access_token:
+        return None, False
+    return data, False
+
+
+def _maybe_migrate_legacy_profile(context):
+    """Migrate only when legacy `/me.id` exactly matches receiver username.
+
+    A legacy grant has no receiver binding. Guessing would expose one account's
+    library to another caster, so a mismatch remains quarantined until an
+    explicit owner-approved OAuth pairing replaces it.
+    """
+    expired_account_id = context.get("expired_account_id")
+    if expired_account_id:
+        _disconnect_user_account(expired_account_id)
+        context = _receiver_context()
+    if context.get("profile_state") != "unlinked" or not context.get("receiver_alias"):
+        return context
+    config = load_config()
+    legacy = _legacy_grant(config)
+    if not legacy:
+        return context
+    if _grant_is_expired({"account_id": "legacy", **legacy}):
+        _remove_legacy_grant(legacy["refresh_token"])
+        return context
+    marker = hashlib.sha256(
+        f"{context['receiver_alias']}\0{legacy['refresh_token']}".encode()
+    ).hexdigest()
+    if _legacy_migration_attempts.get(marker):
+        return context
+    _legacy_migration_attempts.set(marker, True)
+
+    with _user_token_lock:
+        data, invalid_grant = _refresh_token_response(legacy["refresh_token"], config)
+        if invalid_grant:
+            _remove_legacy_grant(legacy["refresh_token"])
+            return context
+        if not data:
+            return context
+        rotated = data.get("refresh_token")
+        if isinstance(rotated, str) and rotated and rotated != legacy["refresh_token"]:
+            if not _rotate_legacy_grant(legacy["refresh_token"], rotated):
+                return context
+            legacy["refresh_token"] = rotated
+        identity = _spotify_current_user(data["access_token"])
+        if not identity or identity["receiver_alias"] != context["receiver_alias"]:
+            return context
+        binding = {
+            "receiver_alias": context["receiver_alias"],
+            "profile_epoch": context["profile_epoch"],
+        }
+        if not _receiver_binding_matches(binding, refresh=True):
+            return _receiver_context()
+        refresh_token = legacy["refresh_token"]
+        profile = {
+            **identity,
+            "refresh_token": refresh_token,
+            "kind": legacy["kind"],
+            "connected_at": legacy["connected_at"],
+            "expires_at": legacy["expires_at"],
+            "scopes": _granted_scopes(data.get("scope")),
+            "receiver_aliases": [],
+        }
+        try:
+            committed_epoch = _persist_bound_profile_grant(
+                profile,
+                context["receiver_alias"],
+                binding,
+                clear_legacy=True,
+                expected_legacy_token=refresh_token,
+            )
+        except (AliasCollisionError, ValueError, RuntimeError):
+            return context
+        if not committed_epoch:
+            return _receiver_context()
+        expiry = time.time() + _token_lifetime(data.get("expires_in"))
+        _user_tokens[identity["account_id"]] = {
+            "access_token": data["access_token"],
+            "expires_at": expiry,
+            "grant_id": hashlib.sha256(refresh_token.encode()).hexdigest(),
+        }
+        return _receiver_context()
+
+
+def get_user_token(account_id=None, profile_epoch=None):
+    """Return a cached/refreshed token for one explicitly selected profile."""
+    global _user_token, _user_token_expiry, _user_token_grant_id
+    if account_id is None:
+        configured_ids = set(_profile_store()["profiles"])
+        with _user_token_lock:
+            for stale_account_id in set(_user_tokens) - configured_ids:
+                _user_tokens.pop(stale_account_id, None)
+                _clear_user_caches(stale_account_id)
+        legacy = _legacy_grant()
+        if legacy and _grant_is_expired({"account_id": "legacy", **legacy}):
+            _remove_legacy_grant(legacy["refresh_token"])
+        context = _maybe_migrate_legacy_profile(_receiver_context())
+        account_id = context.get("account_id")
+        profile_epoch = context.get("profile_epoch")
+    account_id = normalize_identifier(account_id)
+    if not account_id:
+        return None
+    if not _profile_epoch_matches(account_id, profile_epoch):
+        return None
+
     with _user_token_lock:
         config = load_config()
-        spotify_session = config.get("spotify_session") or {}
-        expires_at = spotify_session.get("expires_at")
-        try:
-            if spotify_session.get("kind") == "guest":
-                session_expired = expires_at is None or time.time() >= float(expires_at)
-            else:
-                session_expired = bool(expires_at) and time.time() >= float(expires_at)
-        except (TypeError, ValueError):
-            session_expired = True
-        if session_expired:
-            _disconnect_user_account()
+        profile = _profile_by_id(account_id, config)
+        if not profile:
+            _user_tokens.pop(account_id, None)
+            _clear_user_caches(account_id)
             return None
-
-        refresh_token = config.get("refresh_token")
-        if not refresh_token:
-            if _user_token is not None:
-                _user_token = None
-                _user_token_expiry = 0
-                _user_token_grant_id = None
-                _clear_user_caches()
+        refresh_token = profile["refresh_token"]
+        if _grant_is_expired(profile):
+            _disconnect_user_account(account_id, refresh_token)
             return None
-        grant_id = hashlib.sha256(str(refresh_token).encode()).hexdigest()
-        if (
-            _user_token
-            and _user_token_grant_id == grant_id
-            and _user_token_expiry > time.time() + 60
-        ):
-            return _user_token
         client_id = config.get("client_id", "")
         client_secret = config.get("client_secret", "")
         if not client_id or not client_secret:
             return None
 
-        try:
-            resp = requests.post(SPOTIFY_TOKEN_URL, data={
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-            }, auth=(client_id, client_secret), timeout=5)
-            if resp.status_code != 200:
-                print(f"User token refresh error: {resp.status_code}")
-                return None
-            data = resp.json()
-            if not isinstance(data, dict):
-                return None
-            access_token = data.get("access_token")
-            if not isinstance(access_token, str) or not access_token:
-                return None
-            _user_token = access_token
-            _user_token_expiry = time.time() + _token_lifetime(data.get("expires_in"))
+        grant_id = hashlib.sha256(refresh_token.encode()).hexdigest()
+        cached = _user_tokens.get(account_id)
+        if (
+            cached
+            and cached.get("grant_id") == grant_id
+            and cached.get("expires_at", 0) > time.time() + 60
+        ):
+            return cached["access_token"] if _profile_epoch_matches(account_id, profile_epoch) else None
 
-            rotated = data.get("refresh_token")
-            if isinstance(rotated, str) and rotated and rotated != refresh_token:
-                update_config(lambda latest: latest.__setitem__("refresh_token", rotated))
-                grant_id = hashlib.sha256(str(rotated).encode()).hexdigest()
-            _user_token_grant_id = grant_id
-            return _user_token
-        except (requests.RequestException, KeyError, TypeError, ValueError) as e:
-            print(f"User token refresh failed: {e}")
+        if not _profile_epoch_matches(account_id, profile_epoch):
             return None
-
-
-def _clear_user_caches():
-    global _playlist_cache, _account_generation
-    with _crate_build_lock:
-        _account_generation += 1
-        _crate_cache["payload"] = None
-        _crate_cache["built_at"] = 0
-    _playlist_cache = {"loaded_at": 0, "items": []}
-
-
-def _disconnect_user_account():
-    """Forget the global user grant and every account-derived cache."""
-    global _user_token, _user_token_expiry, _user_token_grant_id
-    with _user_token_lock:
-        # Bump the generation before changing credentials so in-flight crate
-        # work becomes unpublishable at the account transition boundary.
-        _clear_user_caches()
-        _user_token = None
-        _user_token_expiry = 0
-        _user_token_grant_id = None
-
-        def clear(latest):
-            latest.pop("refresh_token", None)
-            latest.pop("spotify_session", None)
-
-        update_config(clear)
+        data, invalid_grant = _refresh_token_response(refresh_token, config)
+        if invalid_grant:
+            _disconnect_user_account(account_id, refresh_token)
+            return None
+        if not data:
+            return None
+        rotated = data.get("refresh_token")
+        rotated = rotated if isinstance(rotated, str) and rotated else None
+        scopes = _granted_scopes(data.get("scope"), profile.get("scopes", []))
+        update = _update_profile_grant(account_id, refresh_token, rotated, scopes)
+        if not update["ok"]:
+            return None
+        refresh_token = update["refresh_token"]
+        if not _profile_epoch_matches(account_id, profile_epoch):
+            return None
+        grant_id = hashlib.sha256(refresh_token.encode()).hexdigest()
+        expiry = time.time() + _token_lifetime(data.get("expires_in"))
+        cached = {
+            "access_token": data["access_token"],
+            "expires_at": expiry,
+            "grant_id": grant_id,
+        }
+        _user_tokens[account_id] = cached
+        _user_token = cached["access_token"]
+        _user_token_expiry = expiry
+        _user_token_grant_id = grant_id
+        return cached["access_token"]
 
 
 def get_local_ip():
@@ -1591,6 +2340,13 @@ def get_public_base_url():
 class OAuthOriginError(RuntimeError):
     def __init__(self, message, expected_url=None, status_code=503):
         self.expected_url = expected_url
+        self.status_code = status_code
+        super().__init__(message)
+
+
+class ReceiverIdentityError(RuntimeError):
+    def __init__(self, message, code="receiver_unavailable", status_code=409):
+        self.code = code
         self.status_code = status_code
         super().__init__(message)
 
@@ -1824,7 +2580,22 @@ def _request_host_is_loopback():
 
 
 def _backlight_request_is_trusted_local():
-    return _remote_is_loopback() and _request_host_is_loopback()
+    # A reverse proxy normally connects from loopback and may rewrite Host to
+    # its backend address. Forwarding markers therefore disqualify implicit
+    # kiosk trust even when both socket/Host otherwise look local. A marker-free
+    # proxy is indistinguishable at this layer and must preserve the public Host.
+    forwarding_headers = (
+        "Forwarded",
+        "X-Forwarded-For",
+        "X-Forwarded-Host",
+        "X-Forwarded-Proto",
+        "Via",
+    )
+    return bool(
+        _remote_is_loopback()
+        and _request_host_is_loopback()
+        and not any(request.headers.get(header) for header in forwarding_headers)
+    )
 
 
 def _owner_token():
@@ -1833,12 +2604,34 @@ def _owner_token():
     return os.environ.get("OWNER_TOKEN") or security.get("owner_token") or config.get("owner_token") or ""
 
 
+def _owner_session_binding(owner_token):
+    secret = app.secret_key
+    if isinstance(secret, str):
+        secret = secret.encode("utf-8")
+    if not isinstance(secret, bytes) or not isinstance(owner_token, str) or not owner_token:
+        return ""
+    return hmac.new(
+        secret,
+        b"spotify-display-owner-session\0" + owner_token.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
 def _is_owner_request():
-    if _backlight_request_is_trusted_local() or session.get("owner") is True:
+    if _backlight_request_is_trusted_local():
         return True
     expected = _owner_token()
     if not expected:
         return False
+    session_binding = session.get("owner_token_binding")
+    expected_binding = _owner_session_binding(expected)
+    if (
+        isinstance(session_binding, str)
+        and session_binding
+        and expected_binding
+        and hmac.compare_digest(session_binding, expected_binding)
+    ):
+        return True
     supplied = request.headers.get("X-Owner-Token", "")
     authorization = request.headers.get("Authorization", "")
     if authorization.lower().startswith("bearer "):
@@ -1861,38 +2654,73 @@ def owner_required(fn):
 def oauth_initiation_required(fn):
     @wraps(fn)
     def wrapped(*args, **kwargs):
-        try:
-            permitted_until = float(session.get("oauth_pairing_until") or 0)
-        except (TypeError, ValueError):
-            permitted_until = 0
-        if time.time() < permitted_until:
-            # A consumed pairing nonce can only initiate an expiring guest
-            # grant. Query parameters must never promote it to owner scope.
-            session.pop("oauth_pairing_until", None)
-            g.oauth_paired_guest = True
-            return fn(*args, **kwargs)
-        session.pop("oauth_pairing_until", None)
+        pairing = session.pop("oauth_pairing", None)
+        if isinstance(pairing, dict):
+            try:
+                permitted_until = float(pairing.get("expires_at") or 0)
+            except (TypeError, ValueError):
+                permitted_until = 0
+            epoch = pairing.get("profile_epoch")
+            current = _receiver_identity_snapshot()
+            if time.time() < permitted_until and epoch:
+                if not (
+                    current["active"]
+                    and hmac.compare_digest(str(current["epoch"]), str(epoch))
+                ):
+                    raise ReceiverIdentityError(
+                        "Spotify receiver changed before authorization started",
+                        code="profile_changed",
+                    )
+                g.oauth_paired_guest = True
+                # Flask's signed cookie is readable by the browser. Keep raw
+                # receiver/account identifiers server-side; only this opaque
+                # random epoch crosses the cookie boundary.
+                g.oauth_receiver_binding = {"profile_epoch": epoch}
+                return fn(*args, **kwargs)
         if _is_owner_request():
             return fn(*args, **kwargs)
         return jsonify({"error": "An owner-approved pairing link is required"}), 401
     return wrapped
 
 
-def _new_pairing_url(reuse=False):
+def _new_pairing_url(reuse=False, expected_epoch=None):
     with _pairing_lock:
         public_base = get_oauth_public_base_url()
+        context = _receiver_context()
+        if context["profile_state"] == "no_receiver" or not context.get("receiver_alias"):
+            raise ReceiverIdentityError(
+                "Play on Pi Display before linking a Spotify library profile"
+            )
+        if expected_epoch is not None and not hmac.compare_digest(
+            str(expected_epoch), str(context["profile_epoch"])
+        ):
+            raise ReceiverIdentityError(
+                "Spotify receiver changed; refresh before creating a pairing link",
+                code="profile_changed",
+            )
         if (
             reuse
             and _kiosk_pairing["url"]
             and _kiosk_pairing["expires_at"] > time.time() + 60
+            and _kiosk_pairing.get("profile_epoch") == context["profile_epoch"]
             and _pairing_tokens.get(_kiosk_pairing["digest"]) is not None
         ):
             return _kiosk_pairing["url"]
-        token = secrets.token_urlsafe(32)
+        # Twelve Crockford/base32 characters carry 60 bits of entropy while
+        # remaining practical to type from the physical display into a phone.
+        alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+        token = "".join(secrets.choice(alphabet) for _ in range(12))
         digest = hashlib.sha256(token.encode()).hexdigest()
-        _pairing_tokens.set(digest, True, ttl=10 * 60)
-        url = f"{public_base}/join?pair={urllib.parse.quote(token)}"
-        _kiosk_pairing.update({"url": url, "digest": digest, "expires_at": time.time() + 10 * 60})
+        _pairing_tokens.set(digest, {
+            "profile_epoch": context["profile_epoch"],
+        }, ttl=10 * 60)
+        url = f"{public_base}/pair/{token}"
+        _kiosk_pairing.update({
+            "url": url,
+            "digest": digest,
+            "expires_at": time.time() + 10 * 60,
+            "profile_epoch": context["profile_epoch"],
+        })
         return url
 
 
@@ -1946,6 +2774,7 @@ def _request_json_object():
 
 @app.before_request
 def secure_request_boundary():
+    _maybe_prune_expired_profiles()
     # Waitress imports the app rather than running __main__, so start daemon
     # workers lazily on the first real request. Tests explicitly skip this.
     if not app.testing and os.environ.get("SPOTIFY_DISPLAY_DISABLE_BACKGROUND") != "1":
@@ -1954,6 +2783,16 @@ def secure_request_boundary():
     if request.method == "GET" and request.path == "/api/lyrics":
         if not _rate_limit(10, 60):
             response = jsonify({"error": "Too many lyrics requests"})
+            response.status_code = 429
+            response.headers["Retry-After"] = "60"
+            return response
+
+    if request.method == "GET" and (
+        request.path.startswith("/pair/")
+        or (request.path == "/join" and request.args.get("pair"))
+    ):
+        if not _rate_limit(20, 60):
+            response = jsonify({"error": "Too many pairing attempts"})
             response.status_code = 429
             response.headers["Retry-After"] = "60"
             return response
@@ -1991,11 +2830,13 @@ def security_headers(response):
         "/api/auth/",
         "/api/backlight",
         "/api/crate",
+        "/api/idle/",
         "/api/wled",
         "/api/diagnostics",
         "/callback",
         "/login",
         "/join",
+        "/pair/",
     )):
         response.headers["Cache-Control"] = "no-store"
     return response
@@ -2022,6 +2863,15 @@ def oauth_origin_error(error):
     return jsonify(payload), error.status_code
 
 
+@app.errorhandler(ReceiverIdentityError)
+def receiver_identity_error(error):
+    return jsonify({
+        "error": str(error),
+        "code": error.code,
+        **_public_profile_context(),
+    }), error.status_code
+
+
 # ── UI routes ────────────────────────────────────────────────
 
 @app.route("/")
@@ -2035,19 +2885,40 @@ def connect():
     return render_template("connect.html")
 
 
+def _consume_pairing_token(token):
+    if isinstance(token, str) and re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{12}", token.upper()):
+        token = token.upper()
+    digest = hashlib.sha256(str(token).encode()).hexdigest()
+    binding = _pairing_tokens.pop(digest, None)
+    if not isinstance(binding, dict):
+        return jsonify({"error": "Pairing link is invalid, expired, or already used"}), 400
+    with _pairing_lock:
+        if _kiosk_pairing["digest"] == digest:
+            _kiosk_pairing.update({
+                "url": None,
+                "digest": None,
+                "expires_at": 0,
+                "profile_epoch": None,
+            })
+    session["oauth_pairing"] = {
+        **binding,
+        "expires_at": time.time() + 5 * 60,
+    }
+    return redirect("/join")
+
+
+@app.route("/pair/<token>")
+def pair(token):
+    """Consume a human-typeable one-use pairing token."""
+    return _consume_pairing_token(token)
+
+
 @app.route("/join")
 def join():
-    """Consume a one-use owner-approved pairing link, then show guest OAuth."""
+    """Consume a legacy pairing query or show the guest OAuth handoff."""
     token = request.args.get("pair", "")
     if token:
-        digest = hashlib.sha256(token.encode()).hexdigest()
-        if _pairing_tokens.pop(digest, None) is None:
-            return jsonify({"error": "Pairing link is invalid, expired, or already used"}), 400
-        with _pairing_lock:
-            if _kiosk_pairing["digest"] == digest:
-                _kiosk_pairing.update({"url": None, "digest": None, "expires_at": 0})
-        session["oauth_pairing_until"] = time.time() + 5 * 60
-        return redirect("/join")
+        return _consume_pairing_token(token)
     return render_template("join.html")
 
 
@@ -2059,10 +2930,11 @@ def login():
     client_id = config.get("client_id", "")
     if not client_id:
         return "Spotify client_id is missing from config.json", 500
-    guest = bool(getattr(g, "oauth_paired_guest", False) or request.args.get("playlist"))
-    # Both owner and guest crate views need playlist/library read scopes. The
-    # guest bit controls expiry only; it must not control the requested data.
-    scope = PLAYLIST_SCOPES
+    guest = bool(getattr(g, "oauth_paired_guest", False))
+    # Playback normally stays inside the loopback receiver; Web API playback
+    # authority is requested only when its legacy fallback is explicitly on.
+    requested_scopes = _oauth_scopes(config)
+    scope = " ".join(requested_scopes)
     public_base = get_oauth_public_base_url(config)
     if not _request_uses_public_origin(public_base):
         raise OAuthOriginError(
@@ -2079,6 +2951,8 @@ def login():
         "verifier": verifier,
         "created_at": time.time(),
         "guest": guest,
+        "requested_scopes": requested_scopes,
+        "receiver_binding": getattr(g, "oauth_receiver_binding", None),
     }
     params = urllib.parse.urlencode({
         "client_id": client_id,
@@ -2121,6 +2995,17 @@ def callback():
     if flow_age < 0 or flow_age > 10 * 60 or not hmac.compare_digest(supplied_state, expected_state):
         return jsonify({"error": "Invalid or expired OAuth state"}), 400
 
+    guest = bool(flow.get("guest"))
+    binding = flow.get("receiver_binding")
+    if guest and not isinstance(binding, dict):
+        return jsonify({"error": "Guest OAuth is missing its receiver binding"}), 400
+    if isinstance(binding, dict) and not _receiver_binding_matches(binding, refresh=True):
+        return jsonify({
+            "error": "Spotify receiver changed during authorization",
+            "code": "profile_changed",
+            **_public_profile_context(),
+        }), 409
+
     redirect_uri = get_oauth_redirect_uri(config)
 
     try:
@@ -2147,8 +3032,18 @@ def callback():
         ):
             return jsonify({"error": "Spotify returned an incomplete token response"}), 502
 
+        identity = _spotify_current_user(access_token)
+        if not identity:
+            return jsonify({"error": "Spotify account identity lookup failed"}), 502
+        receiver_alias = identity["receiver_alias"]
+        current = _receiver_identity_snapshot()
+        if isinstance(binding, dict) and receiver_alias != current.get("alias"):
+            return jsonify({
+                "error": "The authorized Spotify account does not match the active receiver",
+                "code": "receiver_account_mismatch",
+            }), 409
+
         connected_at = time.time()
-        guest = bool(flow.get("guest"))
         if guest:
             try:
                 hours = float(config.get("guest_session_hours", 12))
@@ -2158,21 +3053,78 @@ def callback():
         else:
             expires_at = None
 
-        def store_grant(latest):
-            latest["refresh_token"] = refresh_token
-            latest["spotify_session"] = {
-                "kind": "guest" if guest else "owner",
-                "connected_at": connected_at,
-                "expires_at": expires_at,
-            }
+        if isinstance(binding, dict) and not _receiver_binding_matches(binding, refresh=True):
+            return jsonify({
+                "error": "Spotify receiver changed before the profile could be linked",
+                "code": "profile_changed",
+                **_public_profile_context(),
+            }), 409
+        current = _receiver_identity_snapshot()
+        if isinstance(binding, dict) and receiver_alias != current.get("alias"):
+            return jsonify({
+                "error": "The authorized Spotify account no longer matches the active receiver",
+                "code": "receiver_account_mismatch",
+            }), 409
 
         global _user_token, _user_token_expiry, _user_token_grant_id
         with _user_token_lock:
-            _clear_user_caches()
-            update_config(store_grant)
+            profile = {
+                "account_id": identity["account_id"],
+                "display_name": identity["display_name"],
+                "refresh_token": refresh_token,
+                "kind": "guest" if guest else "owner",
+                "connected_at": connected_at,
+                "expires_at": expires_at,
+                "scopes": _granted_scopes(
+                    data.get("scope"), flow.get("requested_scopes") or _oauth_scopes(config)
+                ),
+                "receiver_aliases": [receiver_alias],
+            }
+            try:
+                # A pre-profile grant has no trustworthy receiver binding. Keep
+                # it quarantined until its own `/me.id` is verified by the
+                # legacy migration path or an owner explicitly disconnects it.
+                if isinstance(binding, dict):
+                    committed_epoch = _persist_bound_profile_grant(
+                        profile, receiver_alias, binding, clear_legacy=False
+                    )
+                    if not committed_epoch:
+                        return jsonify({
+                            "error": "Spotify receiver changed before profile publication",
+                            "code": "profile_changed",
+                            **_public_profile_context(),
+                        }), 409
+                else:
+                    _persist_profile_grant(profile, receiver_alias, clear_legacy=False)
+                    committed_epoch = None
+            except (AliasCollisionError, ProfileLimitError) as error:
+                code = "alias_collision" if isinstance(error, AliasCollisionError) else "profile_limit"
+                return jsonify({"error": str(error), "code": code}), 409
+            _clear_user_caches(identity["account_id"])
+            expiry = time.time() + _token_lifetime(data.get("expires_in"))
+            grant_id = hashlib.sha256(refresh_token.encode()).hexdigest()
+            _user_tokens[identity["account_id"]] = {
+                "access_token": access_token,
+                "expires_at": expiry,
+                "grant_id": grant_id,
+            }
             _user_token = access_token
-            _user_token_expiry = time.time() + _token_lifetime(data.get("expires_in"))
-            _user_token_grant_id = hashlib.sha256(refresh_token.encode()).hexdigest()
+            _user_token_expiry = expiry
+            _user_token_grant_id = grant_id
+            current = _receiver_identity_snapshot()
+            if committed_epoch is not None:
+                if not (
+                    current["active"]
+                    and current["alias"] == receiver_alias
+                    and hmac.compare_digest(str(current["epoch"]), committed_epoch)
+                ):
+                    return jsonify({
+                        "error": "Spotify receiver changed after profile publication",
+                        "code": "profile_changed",
+                        **_public_profile_context(),
+                    }), 409
+            elif current["active"] and current["alias"] == receiver_alias:
+                _bump_receiver_epoch(current["epoch"])
 
         return redirect("/connect?auth=ok")
     except (requests.RequestException, KeyError, ValueError) as e:
@@ -2192,7 +3144,8 @@ def owner_login():
         return jsonify({"error": "Remote owner access is not configured"}), 503
     if not supplied or not hmac.compare_digest(str(supplied), str(expected)):
         return jsonify({"error": "Invalid owner token"}), 401
-    session["owner"] = True
+    session.pop("owner", None)  # legacy boolean sessions are intentionally revoked
+    session["owner_token_binding"] = _owner_session_binding(str(expected))
     return jsonify({"status": "ok"})
 
 
@@ -2200,27 +3153,69 @@ def owner_login():
 @owner_required
 def create_pairing_link():
     """Create a one-use guest OAuth link valid for ten minutes."""
-    return jsonify({"join_url": _new_pairing_url(), "expires_in": 10 * 60})
+    data = _request_json_object()
+    if request.data and data is None:
+        return jsonify({"error": "JSON object required"}), 400
+    initial = _receiver_context()
+    expected_epoch = data.get("profile_epoch") if data else initial["profile_epoch"]
+    join_url = _new_pairing_url(expected_epoch=expected_epoch)
+    context = _receiver_context()
+    if context["profile_epoch"] != initial["profile_epoch"]:
+        with _pairing_lock:
+            if _kiosk_pairing.get("profile_epoch") == initial["profile_epoch"]:
+                _pairing_tokens.pop(_kiosk_pairing.get("digest"), None)
+                _kiosk_pairing.update({
+                    "url": None,
+                    "digest": None,
+                    "expires_at": 0,
+                    "profile_epoch": None,
+                })
+        raise ReceiverIdentityError(
+            "Spotify receiver changed while creating the pairing link",
+            code="profile_changed",
+        )
+    return jsonify({
+        "join_url": join_url,
+        "expires_in": 10 * 60,
+        "profile_epoch": context["profile_epoch"],
+    })
 
 
 @app.route("/api/auth/status")
 @owner_required
 def auth_status():
-    config = load_config()
-    grant = config.get("spotify_session") or {}
+    config = _prune_expired_profiles()
+    store = _profile_store(config)
+    context = _receiver_context(config)
+    active = _profile_by_id(context.get("account_id"), config)
+    profiles = [
+        public_profile(store["profiles"][account_id])
+        for account_id in sorted(store["profiles"])
+    ]
+    profiles = [profile for profile in profiles if profile]
     return jsonify({
         "owner": True,
-        "spotify_connected": bool(config.get("refresh_token")),
-        "session_kind": grant.get("kind"),
-        "expires_at": grant.get("expires_at"),
+        "spotify_connected": bool(profiles or _legacy_grant(config)),
+        "session_kind": active.get("kind") if active else None,
+        "expires_at": active.get("expires_at") if active else None,
+        "legacy_grant_pending": bool(_legacy_grant(config)),
+        "profiles": profiles,
+        **_public_profile_context(context, include_name=True),
     })
 
 
 @app.route("/api/auth/disconnect", methods=["POST"])
 @owner_required
 def auth_disconnect():
-    _disconnect_user_account()
+    data = _request_json_object()
+    if request.data and data is None:
+        return jsonify({"error": "JSON object required"}), 400
+    account_id = data.get("account_id") if data else None
+    if account_id is not None and normalize_identifier(account_id) is None:
+        return jsonify({"error": "Invalid account_id"}), 400
+    _disconnect_user_account(account_id=account_id)
     session.pop("spotify_oauth", None)
+    session.pop("oauth_pairing", None)
     return "", 204
 
 
@@ -2230,11 +3225,23 @@ def auth_disconnect():
 def now_playing():
     """Return current playback state from the local Spotify Connect receiver."""
     state, available = read_playback_state_with_availability()
+    context = _receiver_context()
     if state is None:
         if not available:
-            return jsonify({"error": "Playback receiver unavailable"}), 503
-        return "", 204  # No content — nothing playing
+            response = jsonify({
+                "error": "Playback receiver unavailable",
+                **_public_profile_context(context),
+            })
+            response.status_code = 503
+            response.headers["X-Spotify-Profile-State"] = context["profile_state"]
+            response.headers["X-Spotify-Profile-Epoch"] = context["profile_epoch"] or ""
+            return response
+        response = Response(status=204)
+        response.headers["X-Spotify-Profile-State"] = context["profile_state"]
+        response.headers["X-Spotify-Profile-Epoch"] = context["profile_epoch"] or ""
+        return response  # No content — nothing playing
     attach_album_extras(state)
+    state.update(_public_profile_context(context))
     return jsonify(state)
 
 
@@ -2430,22 +3437,51 @@ def backlight():
 @app.route("/api/idle/playlists")
 def idle_playlists():
     """Return house playlists for the idle launcher."""
-    payload = idle_launcher_payload(include_private=_is_owner_request())
+    owner = _is_owner_request()
+    context = _maybe_migrate_legacy_profile(_receiver_context())
+    payload = idle_launcher_payload(
+        include_private=owner and context["profile_state"] == "linked",
+        account_id=context.get("account_id"),
+        profile_epoch=context["profile_epoch"],
+    )
+    if not _crate_context_is_current(context):
+        context = _receiver_context()
+        payload = idle_launcher_payload(include_private=False)
     pairing_error = None
     try:
         public_join = f"{get_oauth_public_base_url()}/join"
-        join_url = _new_pairing_url(reuse=True) if _backlight_request_is_trusted_local() else public_join
-    except OAuthOriginError as error:
+        join_url = (
+            _new_pairing_url(reuse=True, expected_epoch=context["profile_epoch"])
+            if _backlight_request_is_trusted_local() else public_join
+        )
+    except (OAuthOriginError, ReceiverIdentityError) as error:
         join_url = None
         pairing_error = str(error)
-    return jsonify({
+    latest_context = _receiver_context()
+    if latest_context["profile_epoch"] != context["profile_epoch"]:
+        with _pairing_lock:
+            if _kiosk_pairing.get("profile_epoch") == context["profile_epoch"]:
+                _pairing_tokens.pop(_kiosk_pairing.get("digest"), None)
+                _kiosk_pairing.update({
+                    "url": None,
+                    "digest": None,
+                    "expires_at": 0,
+                    "profile_epoch": None,
+                })
+        context = latest_context
+        payload = idle_launcher_payload(include_private=False)
+        join_url = None
+        pairing_error = "Spotify receiver changed; refresh to create a new pairing link"
+    response = {
         "playlists": payload["playlists"],
         "title": payload["title"],
         # Only the kiosk itself can mint the one-use guest authorization URL.
         # A remote unauthenticated caller sees the informational join page.
         "join_url": join_url,
         "pairing_error": pairing_error,
-    })
+        **_public_profile_context(context, include_name=owner),
+    }
+    return jsonify(response)
 
 
 @app.route("/api/crate")
@@ -2464,13 +3500,31 @@ def idle_play():
     uri = data.get("uri", "")
     if not isinstance(uri, str):
         return jsonify({"error": "uri must be a string"}), 400
+    supplied_epoch = data.get("profile_epoch")
+    context = _maybe_migrate_legacy_profile(_receiver_context())
+    if not isinstance(supplied_epoch, str) or not hmac.compare_digest(
+        supplied_epoch, str(context["profile_epoch"])
+    ):
+        return _profile_changed_response(context)
     owner = _is_owner_request()
-    allowed = {item["uri"] for item in idle_launcher_payload(include_private=owner)["playlists"]}
+    allowed = {
+        item["uri"] for item in idle_launcher_payload(
+            include_private=owner and context["profile_state"] == "linked",
+            account_id=context.get("account_id"),
+            profile_epoch=context["profile_epoch"],
+        )["playlists"]
+    }
     if owner:
-        for section in crate_payload()["sections"]:
+        crate = crate_payload(context)
+        if crate.get("profile_epoch") != supplied_epoch:
+            return _profile_changed_response()
+        for section in crate["sections"]:
             allowed.update(item["uri"] for item in section["items"])
     if uri not in allowed:
         return jsonify({"error": "Playlist is not configured for this display"}), 400
+
+    if not _crate_context_is_current(context):
+        return _profile_changed_response()
 
     ok, msg = play_uri_local(uri)
     if ok:
@@ -2534,7 +3588,7 @@ def info():
     return jsonify({"ip": ip, "port": SERVER_PORT, "url": f"http://{ip}:{SERVER_PORT}"})
 
 
-def _playback_event_signal(state):
+def _playback_event_signal(state, receiver_available=True):
     item = (state or {}).get("item") or {}
     progress = int((state or {}).get("progress_ms") or 0)
     identity = item.get("id") or item.get("uri")
@@ -2548,6 +3602,8 @@ def _playback_event_signal(state):
         # The UI interpolates progress locally; a 10s bucket detects lost
         # handoffs/seeks without recreating the old two-second poll load.
         "progress_bucket": progress // 10000,
+        "receiver_available": bool(receiver_available),
+        **_public_profile_context(),
     }
 
 
@@ -2564,10 +3620,7 @@ def _ensure_event_monitor():
         while True:
             try:
                 state, available = read_playback_state_with_availability()
-                if not available:
-                    time.sleep(1)
-                    continue
-                signal = _playback_event_signal(state)
+                signal = _playback_event_signal(state, receiver_available=available)
             except Exception as e:
                 print(f"Playback event monitor error: {e}")
                 time.sleep(1)
@@ -3160,8 +4213,10 @@ def diagnostics():
         load_average = [round(value, 2) for value in os.getloadavg()]
     except (AttributeError, OSError):
         load_average = None
-    config = load_config()
+    config = _prune_expired_profiles()
     wled = config.get("wled") or {}
+    profile_context = _receiver_context(config)
+    active_crate_cache = _crate_cache_for(profile_context["cache_key"])
     caches = {
         "tracks": len(_track_cache),
         "albums": len(_album_cache),
@@ -3179,8 +4234,11 @@ def diagnostics():
         "crate": {
             "building": _crate_building,
             "account_generation": _account_generation,
-            "age_seconds": round(max(0, time.time() - _crate_cache["built_at"]), 1)
-            if _crate_cache["built_at"] else None,
+            "profile_state": profile_context["profile_state"],
+            "profile_epoch": profile_context["profile_epoch"],
+            "cache_count": len(_crate_caches),
+            "age_seconds": round(max(0, time.time() - active_crate_cache["built_at"]), 1)
+            if active_crate_cache["built_at"] else None,
         },
         "wled": {
             "enabled": bool(wled.get("enabled", False)),

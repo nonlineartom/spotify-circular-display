@@ -13,6 +13,9 @@ numbers, so audit remediation is recorded under `Unreleased`.
   Connect playback.
 - Added canonical-origin, exact-callback, state-bound PKCE OAuth; one-use guest
   linkage; expiring grants; and generation-safe disconnect/cache invalidation.
+- Isolated library grants by immutable Spotify account ID and bound selection,
+  pairing, private fetches, cache publication and launches to the active
+  receiver's opaque epoch. Unknown listeners now receive House picks only.
 - Added request validation, body/rate bounds, browser-origin checks and security
   response headers, including bounded public SSE clients and auth `no-store`.
 - Replaced direct configuration writes with locked, permission-restricted atomic
@@ -53,6 +56,8 @@ numbers, so audit remediation is recorded under `Unreleased`.
 - Corrected LRC fractional timestamp parsing and same-track previous animation.
 - Made malformed receiver/config section shapes degrade safely instead of
   producing server errors.
+- Corrected the Waveshare touchscreen's inverted absolute axes with an
+  exact-device libinput calibration rule rather than browser-coordinate hacks.
 
 ### Added
 
@@ -67,6 +72,8 @@ numbers, so audit remediation is recorded under `Unreleased`.
   TTL cache instead of continuous background subnet sweeps.
 - Accessible keyboard controls, modal focus management and reduced-motion
   transitions.
+- Receiver-aware multi-profile crates with saved albums, playlists and a
+  top-listening **Your rotation** section, plus human-typeable phone pairing.
 - Repository validation scripts, regression tests, security documentation and a
   staged Pi deployment/rollback guide.
 

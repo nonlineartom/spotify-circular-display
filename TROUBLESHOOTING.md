@@ -64,6 +64,36 @@ sudo journalctl -u spotify-display -n 100 --no-pager
 An absent `/sys/class/backlight` remains expected for this HDMI panel; it does
 not indicate that vendor HID control is unavailable.
 
+## Touch targets and gestures are inverted
+
+If touching the left activates the right side and dragging up moves down, both
+absolute axes need the panel's 180-degree calibration. Do not compensate in the
+web page: Chromium performs native hit-testing before application gesture code,
+so a JavaScript-only inversion would leave buttons and links wrong.
+
+`setup.sh` defaults `TOUCH_ROTATION=180` for the Waveshare `0712:000a`
+controller and installs
+`/etc/udev/rules.d/70-spotify-display-touch.rules`. The rule sets libinput's
+absolute-coordinate matrix only for that exact touchscreen. For a differently
+mounted panel, rerun setup with one of the supported orientations:
+
+```bash
+TOUCH_ROTATION=0 ./setup.sh       # no coordinate rotation
+TOUCH_ROTATION=90 ./setup.sh      # 90 degrees clockwise
+TOUCH_ROTATION=180 ./setup.sh     # normal round-panel mounting (default)
+TOUCH_ROTATION=270 ./setup.sh     # 270 degrees clockwise
+```
+
+Reconnect Touch USB or reboot after changing the rule. Confirm the applied
+matrix with:
+
+```bash
+sudo libinput list-devices | sed -n '/Waveshare/,/^$/p'
+```
+
+For the default orientation, `Calibration` should no longer report the identity
+matrix; the effective six values are `-1 0 1 0 -1 1`.
+
 ## Multi-touch gestures aren't recognized (single taps/swipes work)
 
 If multi-finger gestures (twist-seek, pinch, volume, three-finger brightness or
@@ -299,12 +329,41 @@ owner session. Pairing additionally requires one canonical `public_base_url`
 and the exact same-origin `/callback` Spotify redirect.
 
 Do not weaken the loopback/Host check or blindly trust `X-Forwarded-Host` to fix
-a reverse-proxy mistake. Configure the public origin explicitly as described in
-`docs/SECURITY.md`.
+a reverse-proxy mistake. The proxy must preserve the public Host rather than
+send its `127.0.0.1` backend Host, and should deny `/api/` while allowing the
+five phone OAuth routes documented in `docs/SECURITY.md`. From a machine using
+the public origin, verify `/api/auth/status` returns 401 or 404 without an owner
+token; a 200 response means the proxy has accidentally inherited kiosk trust.
+
+## The crate shows House picks instead of my library
+
+House picks are the privacy-safe result whenever the active Spotify Connect
+account has no verified Web API profile. Start playback from the intended
+Spotify account, open the crate, then type the displayed one-use URL into that
+listener's phone and authorize the same account that is controlling Pi Display.
+Authorizing a different Spotify account is rejected.
+
+If no URL appears, confirm that `public_base_url` and the exact same-origin
+`/callback` are registered in the Spotify dashboard, then check redacted owner
+status locally:
+
+```bash
+curl -s http://127.0.0.1:5000/api/auth/status | jq '{profile_state, legacy_grant_pending, profiles}'
+```
+
+Spotify Development Mode admits only a small authorized-user set, so intended
+listeners must also be added in the app dashboard. An expired guest grant or a
+Spotify `invalid_grant` intentionally returns that listener to House picks;
+pair again rather than copying another account's token into `config.json`.
+
+During a handoff, the old shelf should clear immediately. If it does not, do
+not weaken the epoch checks: verify that go-librespot `/status` includes a
+string `username`, that the display and server were upgraded together, and
+inspect the service log without printing the username or any token.
 
 ## Candidate future upgrades
 
-- Add the documented QR-based graphical owner portal for pairing/status/logout.
+- Add a QR-based graphical owner portal for pairing/status/logout.
 - Add an ambient-light sensor or local night schedule after defining the desired
   hardware and minimum wake brightness.
 - Split the large kiosk template into versioned JS/CSS modules after capturing a

@@ -7,7 +7,9 @@ multi-touch controls.
 
 Spotify Connect playback remains zero-configuration: a guest selects **Pi
 Display** in Spotify and the screen follows their music. OAuth is optional and
-is used only for an owner-approved, time-limited personalized crate.
+is used only to link the active listener to a private crate. Linked profiles
+coexist; changing Spotify Connect user changes the crate instead of exposing
+the last account that authorized the display.
 
 <p align="center">
   <img src="demo.gif" alt="Spotify Circular Display demo" width="400">
@@ -29,11 +31,11 @@ is used only for an owner-approved, time-limited personalized crate.
   brief outages.
 - Synced LRCLIB lyrics with bounded caching, correct fractional LRC timestamps,
   offsets, multiple timestamps and explicit loading/error states.
-- A bounded, lazy-loaded private/house record crate and album track picker.
+- A receiver-aware, bounded private/house record crate and album track picker.
 - WLED rendering at vinyl speed with smooth pause ramp, failure grace, bounded
   configuration and per-device direction, phase, brightness and gamma.
-- Owner-approved Spotify pairing with OAuth state, PKCE, one-use links and
-  expiring guest library grants.
+- Owner-approved Spotify pairing with exact receiver binding, OAuth state,
+  PKCE, one-use links, isolated profile grants and expiring guest access.
 - Hidden diagnostics (`D` or `?diag=1`) for browser timing, transport, receiver,
   crate, WLED, lyrics, temperature, load and disk state.
 - Reduced-motion, keyboard, semantic-control and modal focus support.
@@ -63,7 +65,7 @@ pointer.
 ```mermaid
 flowchart TD
     spotify["Spotify app"] -->|"Spotify Connect"| receiver["go-librespot"]
-    receiver -->|"loopback state/control API"| server["Waitress + Flask"]
+    receiver -->|"loopback state, username and control API"| server["Waitress + Flask"]
     server -->|"HTML, API and SSE"| kiosk["Chromium kiosk"]
     server -->|"bounded metadata/lyrics requests"| external["Spotify API / LRCLIB"]
     server -->|"safe HID reports"| panel["Waveshare backlight"]
@@ -130,7 +132,8 @@ chmod 600 config.json
 
 Set `client_id` and `client_secret` in `config.json`. These application
 credentials enrich metadata and album tracklists; guests do not log in to play
-music.
+music. A listener authorizes separately only if they want their own playlists,
+saved albums and top-listening rotation on the display.
 
 ### 2. Install the candidate on the Pi
 
@@ -177,7 +180,8 @@ The installer:
 - renders hardened system services for the actual user, path and port;
 - installs the Chromium or Pygame graphical user service;
 - creates the shared `/run/spotify-display` runtime directory;
-- installs exact-device HID permissions for the Waveshare backlight;
+- installs exact-device HID permissions and libinput touch calibration for the
+  Waveshare panel;
 - enables cheap path activation for optional WLED;
 - hardens NetworkManager recovery without killing unrelated desktop processes;
 - leaves GPIO and Raspotify disabled unless explicitly requested.
@@ -188,9 +192,16 @@ Useful installer options:
 ENABLE_GPIO_BUTTONS=1 ./setup.sh       # buttons are wired
 DISPLAY_BACKEND=pygame ./setup.sh      # lightweight renderer
 DISPLAY_PORT=5050 ./setup.sh           # non-default HTTP port
+TOUCH_ROTATION=0 ./setup.sh            # panel mounted opposite the default 180 degrees
 INSTALL_TEST_DEPS=1 ./setup.sh         # pytest + Node release gate
 STAGED_INSTALL=1 ./setup.sh            # preserve live service/host policy state
 ```
+
+The known `0712:000a` Waveshare controller reports both touch axes opposite the
+panel's normal mounting, so setup defaults `TOUCH_ROTATION` to `180`. Accepted
+values are `0`, `90`, `180` and `270`; the installer converts the selected
+orientation to an exact-device libinput calibration matrix. Reconnect Touch USB
+or reboot after changing it so the compositor re-adds the device.
 
 Raspotify fallback installation is deliberately opt-in and requires the
 operator to provide the expected installer checksum.
@@ -231,11 +242,18 @@ systemctl --user status spotify-kiosk
 systemctl --user restart spotify-kiosk
 ```
 
-## Optional personalized crate and pairing
+## Receiver-aware crates and pairing
 
-Playback needs no OAuth. To expose a Spotify account's private playlists and
-saved albums in the shared crate, use one HTTPS origin for both the display and
-callback, and register that exact callback with Spotify:
+Playback needs no OAuth. The Connect receiver and Spotify Web API are separate
+security domains, so the receiver cannot silently provide a listener's library
+token. Each listener therefore completes one explicit pairing while their
+account controls Pi Display's authenticated receiver session. The server binds
+the receiver's exact Spotify user ID to the immutable Web API
+[`account_id`](https://developer.spotify.com/documentation/web-api/reference/get-current-users-profile),
+then automatically selects that isolated grant on later handoffs.
+
+To enable pairing, use one HTTPS origin for both the display and callback, and
+register that exact callback with Spotify:
 
 ```json
 {
@@ -251,23 +269,48 @@ callback, and register that exact callback with Spotify:
 Generate a token with `python3 -c 'import secrets; print(secrets.token_urlsafe(32))'`.
 `config.json` must remain mode `0600`.
 
-Until the optional graphical owner page is added, a remote owner can mint and
-share a one-use, ten-minute guest pairing URL with:
+When an unlinked account controls the receiver, the crate shows only House
+picks and a one-use, ten-minute URL to type into that listener's phone. The
+link is bound to the current receiver epoch; changing Connect user invalidates
+it. An owner can also mint the link while that listener remains active. Prefer
+doing that through an SSH session on the Pi so the HTTPS proxy does not expose
+owner APIs:
 
 ```bash
-BASE=https://display.example
-curl -sS -c /tmp/display-owner.cookie \
-  -H 'Content-Type: application/json' \
-  --data '{"token":"YOUR_OWNER_TOKEN"}' \
-  "$BASE/api/auth/owner"
-curl -sS -b /tmp/display-owner.cookie -X POST "$BASE/api/auth/pairing"
-rm -f /tmp/display-owner.cookie
+ssh admin@pi5.local \
+  'curl -sS -X POST http://127.0.0.1:5000/api/auth/pairing'
 ```
 
 Consuming the URL permits exactly one guest OAuth initiation within five
-minutes. The resulting shared grant expires after 12 hours by default and
-replaces the preceding personalized account. Disconnect with
-`POST /api/auth/disconnect` from an owner session.
+minutes. The Spotify account being authorized must match the account currently
+controlling the receiver. Guest grants expire after 12 hours by default
+(`guest_session_hours` is bounded to 1–168); other linked profiles remain
+isolated and intact. Owner status lists redacted profile metadata, and an owner
+can disconnect the active profile or pass an `account_id` to
+`POST /api/auth/disconnect`.
+
+The crate uses playlists, saved albums and a deduplicated **Your rotation**
+derived from the listener's medium-term top tracks. Spotify's Web API does not
+expose the Spotify Home screen, so it cannot reproduce the app's exact Home
+recommendations. [Development Mode apps](https://developer.spotify.com/blog/2026-02-06-update-on-developer-access-and-platform-security)
+currently support at most five newly authorized users; add intended listeners
+in the Spotify dashboard. Spotify [refresh grants](https://developer.spotify.com/blog/2026-06-18-refresh-token-expiration)
+also require reauthorization after six months, and an expired grant safely
+falls back to House picks until it is linked again.
+
+The last authenticated receiver session remains selected while playback is
+stopped so its listener can choose the next record from the crate. For a shared
+venue, keep `guest_session_hours` short and disconnect profiles that should no
+longer remain available; receiver outage, session disconnect or invalid
+identity clears to House picks immediately.
+
+The TLS reverse proxy **must** preserve the public Host header (for nginx,
+`proxy_set_header Host $host`) and should allow only `/pair/`, `/join`,
+`/login`, `/callback` and `/connect` for the phone flow. Do not proxy `/api/`
+unless remote administration is a deliberate, separately tested choice: a
+proxy that sends its backend Host as `127.0.0.1` is indistinguishable from the
+trusted local kiosk. Verify the public origin returns 401 or 404—not 200—for
+`/api/auth/status` without an owner token.
 
 ## Hardware backlight
 

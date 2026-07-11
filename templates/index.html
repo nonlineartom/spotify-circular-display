@@ -839,6 +839,52 @@
     text-overflow: ellipsis;
   }
 
+  /* Receiver-aware crate notice. This stays deliberately generic: the
+     display never exposes Spotify account handles or identifiers. */
+  #crate-profile-prompt {
+    position: absolute;
+    top: 964px;
+    left: 50%;
+    transform: translateX(-50%) translateY(8px);
+    width: min(760px, 72vw);
+    min-height: 44px;
+    z-index: 31;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 7px;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    color: rgba(255,255,255,0.70);
+    font-size: 12.5px;
+    line-height: 1.35;
+    text-align: center;
+    transition: opacity var(--dur-med) ease, transform var(--dur-med) ease,
+      visibility var(--dur-med);
+  }
+  #crate-profile-prompt.visible {
+    opacity: 1;
+    visibility: visible;
+    transform: translateX(-50%) translateY(0);
+  }
+  #crate-profile-copy { max-width: 620px; }
+  #crate-profile-link {
+    display: block;
+    max-width: 700px;
+    border: 1px solid rgba(255,255,255,0.22);
+    border-radius: var(--r-pill);
+    padding: 7px 14px;
+    background: rgba(255,255,255,0.12);
+    color: rgba(255,255,255,0.94);
+    font: inherit;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+    user-select: all;
+  }
+  #crate-profile-link[hidden] { display: none; }
+
   /* ── Hardware-control HUDs — arc faders on opposing rims ── */
   #volume-hud,
   #brightness-hud {
@@ -1442,6 +1488,10 @@
       <div class="cap-title"></div>
       <div class="cap-sub"></div>
     </div>
+    <div id="crate-profile-prompt" role="status" aria-live="polite">
+      <span id="crate-profile-copy"></span>
+      <span id="crate-profile-link" hidden></span>
+    </div>
   </div>
 
   <!-- Volume HUD — arc fader hugging the right rim -->
@@ -1903,12 +1953,21 @@
         signal,
       });
       diagnostics.pollMs = performance.now() - started;
-      if (resp.status === 204) return { kind: "idle", status: 204 };
-      if (!resp.ok) return { kind: "error", status: resp.status };
+      const profile = profileSignalFromResponse(resp);
+      const trustedProfile = crateProfileSignal(profile) ? profile : null;
+      if (resp.status === 204) {
+        return trustedProfile
+          ? { kind: "idle", status: 204, profile: trustedProfile }
+          : { kind: "error", status: 502, error: new Error("missing receiver profile context") };
+      }
+      if (!resp.ok) return { kind: "error", status: resp.status, profile: trustedProfile };
       const data = await resp.json();
+      if (!crateProfileSignal(data)) {
+        return { kind: "error", status: 502, error: new Error("missing receiver profile context") };
+      }
       return data && data.item
         ? { kind: "data", data, status: resp.status }
-        : { kind: "idle", status: resp.status };
+        : { kind: "idle", data, profile: trustedProfile, status: resp.status };
     } catch (error) {
       if (error && error.name === "AbortError") return { kind: "aborted" };
       diagnostics.pollMs = performance.now() - started;
@@ -2930,6 +2989,9 @@
   const crateReflection = $("crate-reflection");
   const capTitle = document.querySelector("#crate-caption .cap-title");
   const capSub = document.querySelector("#crate-caption .cap-sub");
+  const crateProfilePrompt = $("crate-profile-prompt");
+  const crateProfileCopy = $("crate-profile-copy");
+  const crateProfileLink = $("crate-profile-link");
 
   const CRATE_SPACING = 224;   // px between records in the row
   const CRATE_CARD = 312;      // face size
@@ -2951,6 +3013,13 @@
   let crateBuilding = false;
   let shelfLaunchedAt = -Infinity;
   let shelfRenderKey = "";
+  let crateProfileSeen = false;
+  let crateProfileState = null;
+  let crateProfileEpoch = null;
+  let crateProfileRevision = 0;
+  let crateJoinUrl = null;
+  let crateJoinPromise = null;
+  let cratePairingUnavailable = false;
   const CRATE_CACHE_MS = 120000;
   const CRATE_RETRY_MS = 10000;
   const CRATE_BUILD_RETRY_MS = 3000;
@@ -2969,6 +3038,134 @@
 
   function stableCrateItemKey(item, index) {
     return String(item && (item.id || item.uri) || [item && item.title || "", item && item.subtitle || "", index].join("|"));
+  }
+
+  const CRATE_PROFILE_STATES = new Set(["linked", "unlinked", "no_receiver"]);
+
+  function crateProfileSignal(data) {
+    if (!data || typeof data !== "object") return null;
+    if (!Object.prototype.hasOwnProperty.call(data, "profile_state") ||
+        !Object.prototype.hasOwnProperty.call(data, "profile_epoch")) return null;
+    const profileState = data.profile_state;
+    const profileEpoch = data.profile_epoch;
+    if (!CRATE_PROFILE_STATES.has(profileState) ||
+        (profileEpoch !== null && typeof profileEpoch !== "string")) return null;
+    return { state: profileState, epoch: profileEpoch };
+  }
+
+  function currentCrateProfileMatches(signal) {
+    return !!signal && crateProfileSeen && signal.state === crateProfileState &&
+      signal.epoch === crateProfileEpoch;
+  }
+
+  function safePairingHref(value) {
+    if (typeof value !== "string" || !value) return null;
+    try {
+      const url = new URL(value, location.href);
+      return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function renderCrateProfilePrompt() {
+    let message = "";
+    if (crateProfileState === "unlinked") {
+      message = cratePairingUnavailable
+        ? "House picks are showing. Spotify linking is temporarily unavailable."
+        : "House picks are showing until this listener links their Spotify crate.";
+    } else if (crateProfileState === "no_receiver") {
+      message = "Choose Pi Display in Spotify to activate your own crate. House picks are showing for now.";
+    }
+    crateProfileCopy.textContent = message;
+    const href = crateProfileState === "unlinked" ? crateJoinUrl : null;
+    crateProfileLink.hidden = !href;
+    crateProfileLink.textContent = href ? "On your phone, open " + href : "";
+    crateProfilePrompt.classList.toggle("visible", !!message);
+  }
+
+  function invalidateCrateContents() {
+    crateData = null;
+    crateBuilding = false;
+    shelfFetchedAt = -Infinity;
+    shelfRetryAt = -Infinity;
+    if (shelfRetryTimer) clearTimeout(shelfRetryTimer);
+    shelfRetryTimer = null;
+    cancelCratePreloads();
+    clearCrateUi(false);
+    renderCrateProfilePrompt();
+  }
+
+  function applyCrateProfileSignal(data, options) {
+    const required = !!(options && options.required);
+    const forceClear = !!(options && options.forceClear);
+    const signal = crateProfileSignal(data);
+    if (!signal) {
+      if (required) throw new Error("invalid crate profile context");
+      return false;
+    }
+    const changed = !currentCrateProfileMatches(signal);
+    if (changed) {
+      crateProfileSeen = true;
+      crateProfileState = signal.state;
+      crateProfileEpoch = signal.epoch;
+      crateProfileRevision++;
+      crateJoinUrl = null;
+      cratePairingUnavailable = false;
+    }
+    if (changed || forceClear) invalidateCrateContents();
+    else renderCrateProfilePrompt();
+    if (changed && crateProfileState === "unlinked") {
+      const pairingRevision = crateProfileRevision;
+      queueMicrotask(() => {
+        if (pairingRevision === crateProfileRevision && crateProfileState === "unlinked") {
+          refreshCratePairingLink();
+        }
+      });
+    }
+    return changed;
+  }
+
+  function markCrateProfileUnknown() {
+    // Receiver context is an authorization boundary. A mixed-version response,
+    // malformed SSE event or receiver outage must not leave the last person's
+    // private shelf visible while identity can no longer be verified.
+    if (!crateProfileSeen && crateProfileState === "no_receiver" && crateProfileEpoch === null) return;
+    crateProfileSeen = false;
+    crateProfileState = "no_receiver";
+    crateProfileEpoch = null;
+    crateProfileRevision++;
+    crateJoinUrl = null;
+    cratePairingUnavailable = false;
+    invalidateCrateContents();
+  }
+
+  function profileSignalFromResponse(response) {
+    const profileState = response.headers.get("X-Spotify-Profile-State");
+    if (!profileState) return null;
+    const rawEpoch = response.headers.get("X-Spotify-Profile-Epoch");
+    return {
+      profile_state: profileState,
+      profile_epoch: rawEpoch || null,
+    };
+  }
+
+  function queueCrateRefreshForProfile() {
+    const revision = crateProfileRevision;
+    const pending = shelfRefreshPromise;
+    if (!pending) {
+      refreshCrateData();
+      return;
+    }
+    pending.finally(() => {
+      if (revision === crateProfileRevision && !shelfRefreshPromise) refreshCrateData();
+    });
+  }
+
+  function observeReceiverProfile(data) {
+    const changed = applyCrateProfileSignal(data);
+    if (changed) queueCrateRefreshForProfile();
+    return changed;
   }
 
   const CHIP_ARC_R = 2000; // px — must match the #crate-chips top offset
@@ -3188,16 +3385,35 @@
   async function launchItem(item) {
     if (performance.now() - shelfLaunchedAt < 4000) return;
     shelfLaunchedAt = performance.now();
+    const launchProfileRevision = crateProfileRevision;
+    const launchProfileEpoch = crateProfileEpoch;
     try {
       const r = await fetch("/api/idle/play", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uri: item.uri }),
+        body: JSON.stringify({ uri: item.uri, profile_epoch: launchProfileEpoch }),
       });
+      let responseData = {};
+      try { responseData = await r.json(); } catch (e2) { /* empty success is valid */ }
+      if (r.status === 409 && responseData.code === "profile_changed") {
+        applyCrateProfileSignal(responseData, { required: true, forceClear: true });
+        queueCrateRefreshForProfile();
+        shelfLaunchedAt = -Infinity;
+        showWledToast("The active listener changed — refreshing their crate");
+        return;
+      }
       if (!r.ok) {
-        let msg = "";
-        try { msg = (await r.json()).error || ""; } catch (e2) {}
+        const msg = responseData.error || "";
         throw new Error(msg || ("idle play failed: " + r.status));
+      }
+      // A profile-bearing playback/SSE update may beat this response back to
+      // the kiosk. Do not complete an old listener's launch after handoff.
+      if (launchProfileRevision !== crateProfileRevision) {
+        invalidateCrateContents();
+        queueCrateRefreshForProfile();
+        shelfLaunchedAt = -Infinity;
+        showWledToast("The active listener changed — refreshing their crate");
+        return;
       }
       shelf.classList.remove("visible");
       exitBrowse(); // zoom the platter back up for the new record
@@ -3222,6 +3438,18 @@
   const _crateImgQueue = [];
   const _crateImgActive = new Map();
   const CRATE_PRELOAD_CONCURRENCY = 3;
+
+  function cancelCratePreloads() {
+    _crateImgQueue.length = 0;
+    _crateImgQueued.clear();
+    _crateImgDone.clear();
+    for (const image of _crateImgActive.values()) {
+      image.onload = null;
+      image.onerror = null;
+      image.src = "";
+    }
+    _crateImgActive.clear();
+  }
 
   function pumpCratePreloads() {
     while (_crateImgActive.size < CRATE_PRELOAD_CONCURRENCY && _crateImgQueue.length) {
@@ -3279,7 +3507,13 @@
     crateReflection.style.display = "none";
     crateReflection.style.backgroundImage = "";
     capTitle.textContent = showEmptyMessage ? "No records available" : "";
-    capSub.textContent = showEmptyMessage ? "Connect Spotify to fill the record shelf" : "";
+    capSub.textContent = showEmptyMessage
+      ? crateProfileState === "linked"
+        ? "This linked crate is empty right now"
+        : crateProfileState === "unlinked"
+          ? "Link Spotify to add personal albums and playlists"
+          : "Choose Pi Display in Spotify to activate a personal crate"
+      : "";
   }
 
   function renderCrateLoading() {
@@ -3324,8 +3558,49 @@
     }, delay);
   }
 
+  function refreshCratePairingLink() {
+    if (crateProfileState !== "unlinked") return Promise.resolve(false);
+    if (crateJoinPromise) return crateJoinPromise;
+    const expectedRevision = crateProfileRevision;
+    crateJoinPromise = (async () => {
+      const response = await fetch("/api/idle/playlists", {
+        cache: "no-store",
+        credentials: "same-origin",
+      });
+      if (!response.ok) throw new Error("pairing request failed: " + response.status);
+      const data = await response.json();
+      // A profile signal received while this request was in flight wins. An
+      // old pairing URL must never cross a receiver handoff.
+      if (expectedRevision !== crateProfileRevision) return false;
+      const signal = crateProfileSignal(data);
+      if (!signal) throw new Error("invalid pairing profile context");
+      if (!currentCrateProfileMatches(signal)) {
+        if (applyCrateProfileSignal(data)) queueCrateRefreshForProfile();
+        return false;
+      }
+      crateJoinUrl = safePairingHref(data.join_url);
+      cratePairingUnavailable = !crateJoinUrl && !!data.pairing_error;
+      renderCrateProfilePrompt();
+      return !!crateJoinUrl;
+    })().catch(() => {
+      if (expectedRevision === crateProfileRevision && crateProfileState === "unlinked") {
+        crateJoinUrl = null;
+        cratePairingUnavailable = true;
+        renderCrateProfilePrompt();
+      }
+      return false;
+    }).finally(() => {
+      crateJoinPromise = null;
+      if (expectedRevision !== crateProfileRevision && crateProfileState === "unlinked" &&
+          !crateJoinUrl) queueMicrotask(refreshCratePairingLink);
+    });
+    return crateJoinPromise;
+  }
+
   function applyCratePayload(data, now) {
     if (!data || !Array.isArray(data.sections)) throw new Error("invalid crate payload");
+    applyCrateProfileSignal(data, { required: true });
+    if (crateProfileState === "unlinked") refreshCratePairingLink();
     if (data.building === true) {
       crateBuilding = true;
       shelfRetryAt = now + CRATE_BUILD_RETRY_MS;
@@ -3351,10 +3626,15 @@
     // cannot start duplicate crate requests. A failed request preserves the
     // last successfully rendered data and becomes eligible again after 10s.
     shelfRetryAt = performance.now() + CRATE_RETRY_MS;
+    const expectedProfileRevision = crateProfileRevision;
     shelfRefreshPromise = (async () => {
       const response = await fetch("/api/crate", { cache: "no-store", credentials: "same-origin" });
       if (!response.ok) throw new Error("crate request failed: " + response.status);
       const data = await response.json();
+      const signal = crateProfileSignal(data);
+      if (!signal) throw new Error("invalid crate profile context");
+      if (expectedProfileRevision !== crateProfileRevision &&
+          !currentCrateProfileMatches(signal)) return false;
       // A non-building empty array is authoritative (for example after an
       // account disconnect). `building:true`, however, is a transient cold
       // response and must never erase the last completed shelf.
@@ -4289,6 +4569,8 @@
   }
 
   function handlePlaybackError(result) {
+    if (result && crateProfileSignal(result.profile)) observeReceiverProfile(result.profile);
+    else markCrateProfileUnknown();
     diagnostics.failures++;
     const sinceGood = lastPlaybackSuccessAt ? performance.now() - lastPlaybackSuccessAt : 0;
     const auth = result.status === 401 || result.status === 403;
@@ -4331,6 +4613,8 @@
       diagnostics.failures = 0;
       diagnostics.lastSuccessAt = performance.now();
       lastPlaybackSuccessAt = diagnostics.lastSuccessAt;
+      if (result.kind === "data") observeReceiverProfile(result.data);
+      else if (result.kind === "idle") observeReceiverProfile(result.data || result.profile);
       if (result.kind === "idle") applyIdlePlayback();
       else applyPlaybackData(result.data);
       if (result.kind === "data" && result.data.stale) {
@@ -4367,7 +4651,20 @@
       renderDiagnostics();
       schedulePoll(POLL_SSE_SAFETY_MS);
     };
-    const signalUpdate = () => poll("sse");
+    const signalUpdate = event => {
+      let trusted = false;
+      if (event && event.data) {
+        try {
+          const data = JSON.parse(event.data);
+          if (crateProfileSignal(data)) {
+            observeReceiverProfile(data);
+            trusted = true;
+          }
+        } catch (e) { /* malformed signal: fail closed below, then poll */ }
+      }
+      if (!trusted) markCrateProfileUnknown();
+      poll("sse");
+    };
     source.addEventListener("playback", signalUpdate);
     source.addEventListener("update", signalUpdate); // compatible with older prototypes
     source.onmessage = signalUpdate;
@@ -4377,6 +4674,7 @@
       eventSource = null;
       sseConnected = false;
       diagnostics.transport = "polling";
+      markCrateProfileUnknown();
       renderDiagnostics();
       schedulePoll(0);
       if (sseRetryTimer) clearTimeout(sseRetryTimer);

@@ -281,6 +281,24 @@ def test_setup_requires_hashed_lockfile_for_dependencies():
     assert "OS_PACKAGES+=(nodejs)" in source
 
 
+def test_setup_scopes_touch_calibration_to_the_waveshare_touchscreen():
+    source = (ROOT / "setup.sh").read_text()
+    assert 'TOUCH_ROTATION="${TOUCH_ROTATION:-180}"' in source
+    assert '180) TOUCH_CALIBRATION_MATRIX="-1 0 1 0 -1 1"' in source
+    assert 'TOUCH_ROTATION must be 0, 90, 180 or 270' in source
+
+    rule = source.split('UDEV_TOUCH_RULE=', 1)[1].split(
+        'if command -v udevadm', 1
+    )[0]
+    assert 'SUBSYSTEM==\\"input\\"' in rule
+    assert 'KERNEL==\\"event*\\"' in rule
+    assert 'ATTRS{idVendor}==\\"0712\\"' in rule
+    assert 'ATTRS{idProduct}==\\"000a\\"' in rule
+    assert 'ENV{ID_INPUT_TOUCHSCREEN}==\\"1\\"' in rule
+    assert 'ENV{LIBINPUT_CALIBRATION_MATRIX}' in rule
+    assert '/etc/udev/rules.d/70-spotify-display-touch.rules' in rule
+
+
 def test_setup_does_not_stop_live_legacy_services_before_cutover():
     source = (ROOT / "setup.sh").read_text()
     assert "disable --now raspotify.service" not in source
