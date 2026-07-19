@@ -15,7 +15,35 @@ log() {
 }
 
 has_network() {
-    ip route get "$ROUTE_TARGET" 2>/dev/null | grep -qE 'dev [^ ]+'
+    # A route alone is not reachability: a router reboot can leave the default
+    # route intact while DNS/uplink stay dead for hours (seen 2026-07-19,
+    # 03:02-10:03), so probe name resolution the receiver actually depends on.
+    ip route get "$ROUTE_TARGET" 2>/dev/null | grep -qE 'dev [^ ]+' || return 1
+    local host
+    for host in apresolve.spotify.com accounts.spotify.com; do
+        if timeout 4 getent hosts "$host" >/dev/null 2>&1; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+receiver_pid() {
+    local pid
+    pid="$(systemctl show go-librespot.service -p MainPID --value 2>/dev/null)"
+    [ -n "$pid" ] && [ "$pid" != "0" ] || return 1
+    printf '%s' "$pid"
+}
+
+receiver_has_session() {
+    # go-librespot keeps a dealer websocket (443) or AP link (4070) open while
+    # registered with Spotify Connect. After a long outage it gives up
+    # reconnecting permanently ("failed reconnecting accesspoint") yet stays
+    # running with a live local API — sockets are the only honest signal.
+    local pid
+    pid="$(receiver_pid)" || return 1
+    ss -Htnp state established '( dport = :443 or dport = :4070 )' 2>/dev/null \
+        | grep -q "pid=$pid,"
 }
 
 wifi_device() {
@@ -53,7 +81,7 @@ reconnect_wifi() {
 
 mark_display_idle() {
     PLAYER_EVENT=network_down TRACK_ID='' DURATION_MS='' POSITION_MS='' VOLUME='' \
-        "$SCRIPT_DIR/onevent.sh" \
+        timeout 15 "$SCRIPT_DIR/onevent.sh" \
         || log "warning: could not publish network-down playback state"
 }
 
@@ -100,6 +128,8 @@ else
 fi
 candidate_state="$network_state"
 candidate_count=0
+stuck_count=0
+STUCK_SAMPLES="${STUCK_SAMPLES:-4}"
 log "initial network state=$network_state; no boot-time restart performed"
 
 while true; do
@@ -129,7 +159,26 @@ while true; do
         else
             clear_user_wifi_prompts
             recover_receiver || true
+            stuck_count=0
         fi
+    fi
+
+    # Even without a detected transition, a receiver that lost its Spotify
+    # session and gave up must be kicked once the network is demonstrably up.
+    if [ "$observed" = "up" ] && [ "$network_state" = "up" ] \
+            && systemctl is-active --quiet go-librespot.service; then
+        if receiver_has_session; then
+            stuck_count=0
+        else
+            stuck_count=$((stuck_count + 1))
+            if [ "$stuck_count" -ge "$STUCK_SAMPLES" ]; then
+                log "receiver has no Spotify session despite network up; restarting go-librespot"
+                systemctl restart go-librespot.service || true
+                stuck_count=0
+            fi
+        fi
+    else
+        stuck_count=0
     fi
 
     sleep "$CHECK_INTERVAL"

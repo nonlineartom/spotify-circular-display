@@ -90,8 +90,8 @@ def test_cancelled_primary_pointer_does_not_finalize_gesture():
 def test_single_finger_swipe_survives_capture_transfer_and_keeps_physical_direction():
     source = "\n".join((
         _js_function("swipeActionForDelta"),
-        "if (swipeActionForDelta(200) !== 'next') throw new Error('right swipe no longer skips next');",
-        "if (swipeActionForDelta(-200) !== 'previous') throw new Error('left swipe no longer skips previous');",
+        "if (swipeActionForDelta(-200) !== 'next') throw new Error('left swipe no longer skips next');",
+        "if (swipeActionForDelta(200) !== 'previous') throw new Error('right swipe no longer goes previous');",
     ))
     _run_node(source)
     pointer_move = INDEX.split(

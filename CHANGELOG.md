@@ -6,6 +6,17 @@ numbers, so audit remediation is recorded under `Unreleased`.
 
 ## Unreleased
 
+### Fixed
+
+- Swipe skip direction now follows carousel convention: swipe left skips to
+  the next track, swipe right returns to the previous one (live feedback was
+  that the restored right-for-next mapping was backwards).
+- The network watchdog now probes real name resolution instead of trusting
+  route presence, so router reboots that leave a dead uplink behind are
+  detected; it also restarts go-librespot whenever the network is up but the
+  receiver has abandoned its Spotify session (permanent reconnect give-up
+  observed after the 2026-07-19 03:02–10:03 outage left casting dead).
+
 ### Security
 
 - Added an explicit owner boundary for private library data, OAuth management,

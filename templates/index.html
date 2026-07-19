@@ -4787,9 +4787,9 @@
   }
 
   function swipeActionForDelta(dx) {
-    // Preserve the panel's established physical gesture after correcting its
-    // formerly inverted X axis: swipe right for next, left for previous.
-    return dx > 0 ? "next" : "previous";
+    // Standard carousel convention on the corrected X axis: swipe left
+    // (content pushed away) skips next, swipe right goes back.
+    return dx > 0 ? "previous" : "next";
   }
 
   function clearSwipeFeedback() {
