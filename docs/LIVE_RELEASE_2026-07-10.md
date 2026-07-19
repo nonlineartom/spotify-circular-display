@@ -188,3 +188,43 @@ the receiver advance to a different track. The probe device was destroyed
 after the gesture. Display, receiver and kiosk remained active with zero failed
 system or user units, and the real Waveshare device retained calibration matrix
 `-1 0 1 0 -1 1`.
+
+## Stability incident and fixes — 2026-07-19
+
+An overnight outage exposed three separate faults, all fixed and deployed the
+same day (commits `c6e0b50` and `0fca6af`, live in
+`/home/admin/spotify-circular-display-auth-touch-413dfff`, all services
+restarted; host suite 220 tests passing).
+
+**Casting dead after the nightly router reboot.** Wi-Fi dropped 03:02–10:03.
+go-librespot abandoned reconnection permanently at 08:24 (`failed reconnecting
+accesspoint`) while staying "active" with a healthy local API, so Pi Display
+vanished from Spotify Connect. The watchdog never noticed because its
+`has_network` only tested route presence, and the default route survived the
+outage. The watchdog now probes real DNS resolution of Spotify hosts, and
+independently restarts the receiver when the network is up but go-librespot
+has held no established connection to port 443/4070 for four consecutive
+20-second samples. Verified live: after restart the receiver re-authenticated
+and re-established six Spotify connections, with no false watchdog restarts.
+
+**Swipe direction reversed.** Live feedback was that the restored
+right-for-next mapping was backwards. `swipeActionForDelta` now follows
+carousel convention — swipe left skips next, swipe right goes previous — with
+the frontend contract test updated to pin it.
+
+**Periodic crashes.** Two distinct causes were identified. The installed
+go-librespot binary panics roughly nightly (`panic: send on closed channel`,
+`daemon/app.go:375`, triggered by playback transfer); systemd restarts it in
+5 s but active casts drop — a binary upgrade is tracked separately. The Pi
+also recorded three unclean reboots since 2026-07-10 (journal end overlapping
+the next boot's start: 07-10 ~07:02, 07-14 ~08:26, 07-17 ~15:48), consistent
+with the 1-minute hardware watchdog resetting a hung system; power was healthy
+at inspection (5.05 V, 53.8 °C, `throttled=0x0`) and swap is zram, so
+memory-pressure hangs on the 1 GB board remain the leading suspect to watch.
+
+**Idle shelf reverting to House picks.** By owner request, with no receiver
+session at all the context now falls back to the most recently authenticated
+household profile indefinitely instead of the generic shelf. Guest grants
+never persist this way; an active but unlinked listener still receives House
+picks only. Verified live with the receiver stopped: `/api/idle/playlists`
+kept returning the household shelf.

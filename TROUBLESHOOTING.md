@@ -217,11 +217,27 @@ sudo systemctl restart NetworkManager
 
 This is usually the Spotify Connect receiver failing to re-advertise after a
 confirmed network transition. The remediated `spotify-network-watchdog`
-debounces route state, reactivates the selected Wi-Fi device while offline and
-restarts **only the receiver** after the route has recovered. It performs no
+debounces network state, reactivates the selected Wi-Fi device while offline and
+restarts **only the receiver** after the network has recovered. It performs no
 boot-time restart and does not kill/restart the healthy Flask or graphical
 session. A legacy Raspotify fallback is attempted only when installed and the
 go-librespot health check actually fails.
+
+Since 2026-07-19 the watchdog's "network up" check probes real DNS resolution
+of Spotify hosts rather than trusting route presence — a router reboot can
+leave the default route intact while the uplink is dead for hours (observed
+03:02–10:03 that morning), which the old check never saw. It also detects the
+receiver's permanent give-up mode: after a long outage go-librespot can log
+`failed reconnecting accesspoint` and stop retrying forever while its local
+API stays healthy. The watchdog now treats "network up but go-librespot holds
+no established connection to port 443/4070" for ~80 s as stuck and restarts
+just the receiver, logging `receiver has no Spotify session despite network
+up`.
+
+Separately, the installed go-librespot binary has a known crash
+(`panic: send on closed channel` in `withAppPlayer` during playback transfer,
+roughly nightly). systemd restarts it within 5 s, but an active cast drops;
+upgrading go-librespot is the fix being tracked.
 
 Manual recovery:
 
@@ -337,6 +353,14 @@ the public origin, verify `/api/auth/status` returns 401 or 404 without an owner
 token; a 200 response means the proxy has accidentally inherited kiosk trust.
 
 ## The crate shows House picks instead of my library
+
+Since 2026-07-19 the idle shelf no longer reverts to House picks merely
+because the receiver has no session: with nobody casting, the server falls
+back to the most recently authenticated **household** profile indefinitely
+(owner preference). House picks with an idle receiver therefore now means no
+valid household profile exists — check `/api/auth/status` below. Guest grants
+never persist this way, and an active but unlinked listener still sees House
+picks only.
 
 House picks are the privacy-safe result whenever the active Spotify Connect
 account has no verified Web API profile. Start playback from the intended
