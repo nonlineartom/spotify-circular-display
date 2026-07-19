@@ -2380,6 +2380,44 @@ def test_receiver_context_is_read_only_while_crate_lock_is_held(client, monkeypa
     assert context["profile_state"] == "no_receiver"
 
 
+def test_idle_receiver_falls_back_to_last_household_profile(client):
+    _web, config_path = client
+    store_profile(config_path, account_id="account-a", alias="alias-a")
+    server._observe_receiver_identity(None, active=False)
+
+    context = server._receiver_context()
+    assert context["profile_state"] == "linked"
+    assert context["account_id"] == "account-a"
+    assert context["receiver_alias"] is None
+
+    # An active but unknown listener still gets House picks only.
+    server._observe_receiver_identity("stranger")
+    context = server._receiver_context()
+    assert context["profile_state"] == "unlinked"
+    assert context["account_id"] is None
+
+
+def test_idle_receiver_never_falls_back_to_guest_profiles(client):
+    _web, config_path = client
+    config = json.loads(config_path.read_text())
+    profiles = config.setdefault("spotify_profiles", {}).setdefault("profiles", {})
+    profiles["guest-a"] = {
+        "account_id": "guest-a",
+        "display_name": "guest-a",
+        "refresh_token": "refresh",
+        "kind": "guest",
+        "connected_at": time.time(),
+        "expires_at": time.time() + 3600,
+        "authorized_at": time.time(),
+        "scopes": ["user-library-read"],
+        "receiver_aliases": ["guest-alias"],
+    }
+    config_path.write_text(json.dumps(config))
+    server._observe_receiver_identity(None, active=False)
+
+    assert server._receiver_context()["profile_state"] == "no_receiver"
+
+
 def test_top_tracks_are_deduplicated_to_rotation_albums(client, monkeypatch):
     _web, config_path = client
     store_profile(config_path, account_id="account-a", alias="alias-a")

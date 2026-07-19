@@ -6,6 +6,13 @@ numbers, so audit remediation is recorded under `Unreleased`.
 
 ## Unreleased
 
+### Changed
+
+- While the receiver has no session at all, the idle shelf now stays on the
+  most recently authenticated household profile indefinitely (owner request)
+  instead of reverting to generic House picks. Guests never persist this way,
+  and an active but unlinked listener still sees House picks only.
+
 ### Fixed
 
 - Swipe skip direction now follows carousel convention: swipe left skips to

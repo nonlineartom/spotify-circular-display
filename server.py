@@ -478,6 +478,27 @@ def _grant_reauthorization_due(profile, now=None):
     return reauthorize_at is not None and now >= reauthorize_at
 
 
+def _last_household_profile(store):
+    """Most recently authenticated household grant, if any.
+
+    Owner preference: while the receiver has no session at all, the idle shelf
+    keeps the last household user's crates indefinitely instead of reverting
+    to House picks. Guest grants never persist this way, and an active but
+    unknown listener still gets House picks only.
+    """
+    best = None
+    for profile in store["profiles"].values():
+        if profile.get("kind") != "household":
+            continue
+        seen = max(
+            profile.get("connected_at") or 0,
+            profile.get("authorized_at") or 0,
+        )
+        if best is None or seen > best[1]:
+            best = (profile, seen)
+    return dict(best[0]) if best else None
+
+
 def _legacy_grant(config=None):
     """Return the pre-profile grant without ever binding it implicitly."""
     config = load_config() if config is None else config
@@ -1548,11 +1569,12 @@ def _receiver_context(config=None):
         "expired_account_id": None,
         "reauthorize_account_id": None,
     }
-    if not identity["active"] or not identity["alias"]:
-        return base
-    base["profile_state"] = "unlinked"
-    base["receiver_alias"] = identity["alias"]
-    profile = profile_for_alias(_profile_store(config), identity["alias"])
+    if identity["active"] and identity["alias"]:
+        base["profile_state"] = "unlinked"
+        base["receiver_alias"] = identity["alias"]
+        profile = profile_for_alias(_profile_store(config), identity["alias"])
+    else:
+        profile = _last_household_profile(_profile_store(config))
     if not profile:
         return base
     if _grant_is_expired(profile):
