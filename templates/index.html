@@ -1123,14 +1123,14 @@
     transform: translateX(-50%) translateY(0);
   }
 
-  /* ── Standby clock (flagged: ?standby=clock) — ultra-dim watch face while
-     the screen is dimmed, reusing the progress ring's tick language. One
+  /* ── Standby clock (flagged: ?standby=clock) — large digital time while
+     the screen is dimmed, framed by the progress ring's tick language. One
      canvas redraw per minute; the GPU stays essentially idle. ── */
   #standby-clock {
     position: absolute;
     top: 50%; left: 50%;
     transform: translate(-50%, -50%);
-    width: 440px; height: 440px;
+    width: 900px; height: 900px;
     z-index: 101;              /* the only content above the wake shield */
     pointer-events: none;
     opacity: 0;
@@ -1555,7 +1555,7 @@
   <div id="dimmer" aria-hidden="true"></div>
 
   <!-- Standby clock (flagged: ?standby=clock) — drawn only while dimmed -->
-  <canvas id="standby-clock" width="440" height="440"></canvas>
+  <canvas id="standby-clock" width="900" height="900"></canvas>
 
   <!-- WLED setup affordance (only appears when idle and a new device is seen) -->
   <button type="button" id="wled-chip" class="chip" aria-hidden="true" tabindex="-1"><span class="dot" aria-hidden="true"></span><span class="label">WLED device found — tap to set up</span></button>
@@ -1803,7 +1803,7 @@
     ctx.stroke();
   }
 
-  // ── Standby clock (flagged: ?standby=clock) ──
+  // ── Standby clock (flagged: ?standby=clock) — large digital time ──
   let lastClockMin = -1;
   function drawStandbyClock() {
     const t = new Date();
@@ -1811,30 +1811,65 @@
     if (mins === lastClockMin) return; // one redraw per minute
     lastClockMin = mins;
     const ctx = standbyClock.getContext("2d");
-    const C = 220, R = 190;
-    ctx.clearRect(0, 0, 440, 440);
+    const S = 900, C = S / 2, R = 430;
+    const [ar, ag, ab] = uiAccentArr;
+    ctx.clearRect(0, 0, S, S);
+
+    // Minute tick ring — the frame stays in the record's design language,
+    // with the current minute lit in the album accent.
     for (let i = 0; i < 60; i++) {
       const a = (i / 60) * Math.PI * 2 - Math.PI / 2;
       const major = i % 5 === 0;
-      const len = major ? 14 : 5;
+      const lit = i === t.getMinutes();
+      const len = lit ? 22 : major ? 16 : 6;
       ctx.beginPath();
       ctx.moveTo(C + (R - len) * Math.cos(a), C + (R - len) * Math.sin(a));
       ctx.lineTo(C + R * Math.cos(a), C + R * Math.sin(a));
-      ctx.strokeStyle = major ? "rgba(255,255,255,0.10)" : "rgba(255,255,255,0.04)";
-      ctx.lineWidth = major ? 2 : 1;
+      ctx.strokeStyle = lit
+        ? `rgba(${ar},${ag},${ab},0.6)`
+        : major ? "rgba(255,255,255,0.10)" : "rgba(255,255,255,0.04)";
+      ctx.lineWidth = lit ? 3 : major ? 2 : 1;
+      ctx.lineCap = "round";
       ctx.stroke();
     }
-    ctx.beginPath();
-    ctx.arc(C, C - R + 24, 3, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(${uiAccentArr[0]},${uiAccentArr[1]},${uiAccentArr[2]},0.35)`;
-    ctx.fill();
-    const h = (((t.getHours() % 12) + t.getMinutes() / 60) / 12) * Math.PI * 2 - Math.PI / 2;
-    const m = (t.getMinutes() / 60) * Math.PI * 2 - Math.PI / 2;
-    ctx.lineCap = "round";
-    ctx.beginPath(); ctx.moveTo(C, C); ctx.lineTo(C + 92 * Math.cos(h), C + 92 * Math.sin(h));
-    ctx.strokeStyle = "rgba(255,255,255,0.12)"; ctx.lineWidth = 5; ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(C, C); ctx.lineTo(C + 148 * Math.cos(m), C + 148 * Math.sin(m));
-    ctx.strokeStyle = "rgba(255,255,255,0.09)"; ctx.lineWidth = 3; ctx.stroke();
+
+    // HH:MM — bold hours, light minutes, accent colon, soft accent glow.
+    // Mixed weights need manual centering across three measured runs.
+    const hh = String(t.getHours()).padStart(2, "0");
+    const mm = String(t.getMinutes()).padStart(2, "0");
+    const hoursFont = "600 232px 'Montserrat', sans-serif";
+    const colonFont = "300 232px 'Montserrat', sans-serif";
+    const minsFont = "300 232px 'Montserrat', sans-serif";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.font = hoursFont; const wH = ctx.measureText(hh).width;
+    ctx.font = colonFont; const wC = ctx.measureText(":").width;
+    ctx.font = minsFont; const wM = ctx.measureText(mm).width;
+    let x = C - (wH + wC + wM) / 2;
+    const yTime = C - 26;
+    ctx.shadowColor = `rgba(${ar},${ag},${ab},0.45)`;
+    ctx.shadowBlur = 56;
+    ctx.font = hoursFont;
+    ctx.fillStyle = "rgba(255,255,255,0.60)";
+    ctx.fillText(hh, x, yTime); x += wH;
+    ctx.font = colonFont;
+    ctx.fillStyle = `rgba(${ar},${ag},${ab},0.55)`;
+    ctx.fillText(":", x, yTime); x += wC;
+    ctx.font = minsFont;
+    ctx.fillStyle = "rgba(255,255,255,0.42)";
+    ctx.fillText(mm, x, yTime);
+    ctx.shadowBlur = 0;
+
+    // Date line — quiet, spaced small caps below the time.
+    ctx.textAlign = "center";
+    ctx.letterSpacing = "7px";
+    ctx.font = "500 34px 'Montserrat', sans-serif";
+    ctx.fillStyle = "rgba(255,255,255,0.26)";
+    const date = t.toLocaleDateString(undefined, {
+      weekday: "long", day: "numeric", month: "long",
+    }).toUpperCase();
+    ctx.fillText(date, C, C + 138);
+    ctx.letterSpacing = "0px";
   }
 
   // ── Helpers ──

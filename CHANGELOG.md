@@ -8,6 +8,11 @@ numbers, so audit remediation is recorded under `Unreleased`.
 
 ### Changed
 
+- The standby clock is now a large digital face: 232px mixed-weight Montserrat
+  time with an accent-glow colon, a spaced date line, and the minute tick ring
+  retained as a frame with the current minute lit in the album accent. Still
+  one canvas redraw per minute.
+
 - While the receiver has no session at all, the idle shelf now stays on the
   most recently authenticated household profile indefinitely (owner request)
   instead of reverting to generic House picks. Guests never persist this way,
