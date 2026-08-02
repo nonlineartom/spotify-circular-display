@@ -37,7 +37,11 @@ numbers, so audit remediation is recorded under `Unreleased`.
     killer (`OOMScoreAdjust=-500`), WLED is sacrificed first
     (`OOMScoreAdjust=500`), and the server (350 MB) and kiosk (600 MB) get
     `MemoryHigh` throttles so Chromium is pushed into reclaim before the
-    receiver is at risk.
+    receiver is at risk. The throttles need the host's memory cgroup
+    controller: Pi firmware disables it on ≤1 GB boards, so add
+    `cgroup_enable=memory` to `/boot/firmware/cmdline.txt` and reboot to arm
+    them (`docs/LIVE_RELEASE_2026-08-02.md`); the OOM-score ordering works
+    regardless.
   - Chromium launches with a 192 MB old-space cap, GPU rasterization, and
     background networking disabled; Waitress serves with 10 threads.
   - The boot groove sweep and crate floor reflection are now opt-in
