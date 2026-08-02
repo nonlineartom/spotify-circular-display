@@ -130,6 +130,12 @@ candidate_state="$network_state"
 candidate_count=0
 stuck_count=0
 STUCK_SAMPLES="${STUCK_SAMPLES:-4}"
+# Exponential backoff between consecutive stuck-receiver restarts so a
+# receiver that refuses to re-join is not kicked every check interval.
+RESTART_BACKOFF_BASE="${RESTART_BACKOFF_BASE:-15}"
+RESTART_BACKOFF_CAP="${RESTART_BACKOFF_CAP:-300}"
+restart_backoff="$RESTART_BACKOFF_BASE"
+next_restart_at=0
 log "initial network state=$network_state; no boot-time restart performed"
 
 while true; do
@@ -169,11 +175,28 @@ while true; do
             && systemctl is-active --quiet go-librespot.service; then
         if receiver_has_session; then
             stuck_count=0
+            if [ "$restart_backoff" -ne "$RESTART_BACKOFF_BASE" ]; then
+                log "receiver session recovered; restart backoff reset to ${RESTART_BACKOFF_BASE}s"
+                restart_backoff="$RESTART_BACKOFF_BASE"
+                next_restart_at=0
+            fi
         else
             stuck_count=$((stuck_count + 1))
             if [ "$stuck_count" -ge "$STUCK_SAMPLES" ]; then
-                log "receiver has no Spotify session despite network up; restarting go-librespot"
-                systemctl restart go-librespot.service || true
+                if [ "$SECONDS" -lt "$next_restart_at" ]; then
+                    log "receiver still without Spotify session; restart deferred $((next_restart_at - SECONDS))s by backoff"
+                else
+                    log "receiver has no Spotify session despite network up; restarting go-librespot"
+                    systemctl restart go-librespot.service || true
+                    next_restart_at=$((SECONDS + restart_backoff))
+                    log "next stuck-receiver restart deferred for ${restart_backoff}s"
+                    if [ "$restart_backoff" -lt "$RESTART_BACKOFF_CAP" ]; then
+                        restart_backoff=$((restart_backoff * 2))
+                        if [ "$restart_backoff" -gt "$RESTART_BACKOFF_CAP" ]; then
+                            restart_backoff="$RESTART_BACKOFF_CAP"
+                        fi
+                    fi
+                fi
                 stuck_count=0
             fi
         fi

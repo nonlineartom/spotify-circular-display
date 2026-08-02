@@ -8,6 +8,61 @@ numbers, so audit remediation is recorded under `Unreleased`.
 
 ### Changed
 
+- Panel performance and memory pass for the 1 GB Pi:
+  - All outbound HTTP (Spotify API, LRCLIB, the go-librespot loopback, WLED
+    probes) now shares one process-wide pooled keep-alive session, ending the
+    per-call TCP/TLS setup and socket churn from the 1s playback monitor.
+  - Recent-spins persistence is batched: in-memory updates land immediately,
+    the SD card sees at most one atomic write per 30 s interval plus one flush
+    on shutdown or SIGTERM (a failed write stays dirty for retry).
+  - Parsed configuration is cached keyed by the file's (mtime, size); atomic
+    config writes always change the key, so edits are picked up without
+    explicit invalidation.
+  - Each SSE stream now has a hard lifetime cap (default 600 s,
+    `SSE_MAX_LIFETIME_SECONDS`); EventSource auto-reconnects, so a half-dead
+    socket can never pin one of the bounded stream slots forever.
+  - In-memory user tokens and per-profile generations/crate caches are swept
+    once their profile leaves the config or the token expires, keeping the
+    dicts bounded over months-long uptimes.
+  - The kiosk reconnects to the event stream with jittered exponential
+    backoff (2 s → 60 s, reset on a clean open) instead of a flat 30 s.
+  - The backlight controller stretches the write cadence for repeated
+    identical at-rest writes (up to 1 s apart) and snaps back instantly on
+    any set(), error or disconnect; ramp steps are never delayed.
+  - The network watchdog backs off exponentially between consecutive
+    stuck-receiver restarts (15 s → 300 s cap) so a receiver that refuses to
+    re-join is not kicked every check interval; the backoff resets once a
+    session is observed again.
+  - systemd memory policy: go-librespot is strongly protected from the OOM
+    killer (`OOMScoreAdjust=-500`), WLED is sacrificed first
+    (`OOMScoreAdjust=500`), and the server (350 MB) and kiosk (600 MB) get
+    `MemoryHigh` throttles so Chromium is pushed into reclaim before the
+    receiver is at risk.
+  - Chromium launches with a 192 MB old-space cap, GPU rasterization, and
+    background networking disabled; Waitress serves with 10 threads.
+  - The boot groove sweep and crate floor reflection are now opt-in
+    (`?boot=1`, `?reflect=1`) instead of default-on.
+
+### Removed
+
+- The animated lava-blob backdrop behind the record crate (four composited
+  ~840 px blobs plus hue-bucket palette analysis) is replaced by one static
+  accent-tinted radial field. Every animated `blur`/`backdrop-filter` is
+  gone: the tracklist defocus is now a static opacity scrim over the frozen
+  platter, which stays a cached layer at 60 fps.
+- The progress ring's 60 tick marks and background track — identical every
+  frame — are pre-rendered to an offscreen canvas once per accent change
+  and blitted; the per-interval redraw now paints only the progress arc,
+  leading dot and pause glyph. The passed-ticks glow effect went with the
+  old per-frame path.
+- Lyric rows are recycled from a pooled set of divs instead of an innerHTML
+  teardown/rebuild per track.
+- Montserrat is down to the latin subset only; cyrillic, cyrillic-ext,
+  vietnamese and latin-ext faces were dropped so the kiosk never decodes or
+  caches script subsets the English UI never uses.
+
+### Changed
+
 - The standby clock is now a large digital face: 232px mixed-weight Montserrat
   time with an accent-glow colon, a spaced date line, and the minute tick ring
   retained as a frame with the current minute lit in the album accent. Still

@@ -159,7 +159,7 @@
     z-index: 1;
     transform-origin: 50% 50%;
     will-change: transform;
-    transition: transform 680ms var(--ease-glide), opacity 480ms ease, filter 480ms ease;
+    transition: transform 680ms var(--ease-glide), opacity 480ms ease;
   }
   /* Browse mode: platter shrinks to a square album cover parked at the top,
      the crate fills the screen beneath it. (The circle→square morph and
@@ -392,7 +392,7 @@
     transform: translateX(-50%) translateY(0);
   }
 
-  /* Subtle text shadow — backdrop-filter handles contrast now */
+  /* Subtle text shadow keeps the type legible over any artwork */
   #pill-track, #pill-artist, #time-row {
     text-shadow: 0 1px 3px rgba(0,0,0,0.5);
   }
@@ -407,7 +407,7 @@
     max-width: min(500px, calc(100vw - 330px));
     text-align: center;
     padding-bottom: 2px;
-    transition: opacity 0.28s ease, transform 0.36s ease, filter 0.36s ease;
+    transition: opacity 0.28s ease, transform 0.36s ease;
   }
   /* Overflowing titles: right edge-fade instead of an ellipsis, plus ONE
      gentle marquee pass on track change (transform-only), then settle. */
@@ -437,14 +437,13 @@
     text-overflow: ellipsis;
     max-width: min(470px, calc(100vw - 350px));
     text-align: center;
-    transition: opacity 0.28s ease, transform 0.36s ease, filter 0.36s ease;
+    transition: opacity 0.28s ease, transform 0.36s ease;
   }
 
   #pill.metadata-out #pill-track,
   #pill.metadata-out #pill-artist {
     opacity: 0;
     transform: translateY(10px) scale(0.985);
-    filter: blur(7px);
   }
 
   #pill.metadata-in #pill-track,
@@ -662,12 +661,10 @@
     0% {
       opacity: 0;
       transform: translateY(-10px) scale(0.985);
-      filter: blur(8px);
     }
     100% {
       opacity: 1;
       transform: translateY(0) scale(1);
-      filter: blur(0);
     }
   }
 
@@ -693,42 +690,21 @@
       rgba(0,0,0,0.62) 0%, rgba(0,0,0,0.44) 52%, rgba(0,0,0,0.28) 100%);
   }
 
-  /* ── Lava — ambient blobs in the playing record's palette ──
-     Pure-CSS motion: four pre-diffused radial-gradient blobs (no blur filter,
-     which is costly on the Pi) drifting via compositor-only transforms, so
-     there's zero per-frame JS. They only animate while the crate is on screen
-     and the #viewport's circular clip trims their edges. */
-  #lava {
+  /* ── Crate aura — one static radial field tinted by the playing record's
+     accent at low opacity over the dark shelf surface. No motion, no blend
+     mode, one cached layer: the tint flips with --ui-accent-rgb and costs
+     nothing per frame. The #viewport's circular clip trims its edges. ── */
+  #crate-aura {
     position: absolute;
     inset: 0;
     z-index: 1;
-    opacity: 0.55;
     pointer-events: none;
-    /* calm default until a record's palette loads */
-    --lava-1: rgb(58,40,120);
-    --lava-2: rgb(122,42,92);
-    --lava-3: rgb(28,72,122);
+    background: radial-gradient(circle at 50% 46%,
+      rgba(var(--ui-accent-rgb), 0.18) 0%,
+      rgba(var(--ui-accent-rgb), 0.07) 45%,
+      rgba(var(--ui-accent-rgb), 0) 72%);
   }
-  #lava .blob {
-    position: absolute;
-    width: 78%; height: 78%;
-    border-radius: 50%;
-    mix-blend-mode: screen;
-    will-change: transform;
-  }
-  #lava .b1 { left: -8%;  top: -6%;  background: radial-gradient(circle at 50% 50%, var(--lava-1), rgba(0,0,0,0) 60%); animation: lava1 33s ease-in-out infinite; }
-  #lava .b2 { left: 30%;  top: -10%; background: radial-gradient(circle at 50% 50%, var(--lava-2), rgba(0,0,0,0) 60%); animation: lava2 41s ease-in-out infinite; }
-  #lava .b3 { left: -12%; top: 28%;  background: radial-gradient(circle at 50% 50%, var(--lava-3), rgba(0,0,0,0) 58%); animation: lava3 37s ease-in-out infinite; }
-  #lava .b4 { left: 26%;  top: 30%;  background: radial-gradient(circle at 50% 50%, var(--lava-1), rgba(0,0,0,0) 62%); animation: lava4 47s ease-in-out infinite; }
-  /* Only animate while the crate is visible and the screen is awake — no cost
-     during playback, and none once dimmed (rendering is paused then). */
-  #shelf:not(.visible) #lava .blob,
-  #viewport.dimmed #lava .blob { animation-play-state: paused; }
   #viewport.dimmed * { animation-play-state: paused !important; }
-  @keyframes lava1 { 0%{transform:translate(0,0) scale(1)}    50%{transform:translate(16%,20%) scale(1.22)}  100%{transform:translate(0,0) scale(1)} }
-  @keyframes lava2 { 0%{transform:translate(0,0) scale(1.1)}  50%{transform:translate(-18%,16%) scale(0.92)} 100%{transform:translate(0,0) scale(1.1)} }
-  @keyframes lava3 { 0%{transform:translate(0,0) scale(0.95)} 50%{transform:translate(22%,-14%) scale(1.2)}  100%{transform:translate(0,0) scale(0.95)} }
-  @keyframes lava4 { 0%{transform:translate(0,0) scale(1.05)} 50%{transform:translate(-14%,-18%) scale(1.28)} 100%{transform:translate(0,0) scale(1.05)} }
   #shelf.visible {
     opacity: 1;
     visibility: visible;
@@ -776,7 +752,7 @@
     top: 360px;
     left: 0; right: 0;
     height: 560px;
-    z-index: 5; /* above the lava layer */
+    z-index: 5; /* above the crate aura */
     perspective: 1500px;
     perspective-origin: 50% 42%;
     touch-action: none;
@@ -818,7 +794,7 @@
     width: 620px;
     text-align: center;
     pointer-events: none;
-    z-index: 5; /* above the lava layer */
+    z-index: 5; /* above the crate aura */
   }
   #crate-caption .cap-title {
     font-size: 23px;
@@ -940,12 +916,11 @@
   }
 
   /* ── Track list — pinch-out album browser over the spinning record ── */
-  /* Defocus the platter: shrink it a touch and blur it so the still-spinning
-     record reads as sunk into the background (iOS-style depth), dimmed enough
-     that the tracklist stays legible over it. */
+  /* Recess the platter: shrink it a touch and dim it so the frozen record
+     reads as sunk into the background (iOS-style depth). No filter — the
+     static #tl-scrim below supplies the defocus, as a pure opacity layer. */
   #viewport.tracklisting #platter {
     transform: scale(0.86);
-    filter: blur(7px);
     opacity: 0.5;
   }
   #viewport.tracklisting #pill,
@@ -973,7 +948,7 @@
     inset: 0;
     pointer-events: none;
     background: radial-gradient(circle at 50% 50%,
-      rgba(0,0,0,0.42) 0%, rgba(0,0,0,0.48) 46%, rgba(0,0,0,0.70) 100%);
+      rgba(0,0,0,0.55) 0%, rgba(0,0,0,0.62) 46%, rgba(0,0,0,0.78) 100%);
   }
   #tl-head {
     position: absolute;
@@ -1138,8 +1113,9 @@
   }
   #standby-clock.on { opacity: 1; }
 
-  /* ── Crate reflection (flagged: ?reflect=1) — mirrored slice of the
-     focused sleeve floating on the lava. Updated only when focus changes. ── */
+  /* ── Crate reflection (flagged: ?reflect=1, default off) — mirrored slice
+     of the focused sleeve on the crate floor. Updated only when focus
+     changes. ── */
   #crate-reflection {
     position: absolute;
     top: 782px;
@@ -1218,12 +1194,10 @@
     position: absolute;
     inset: 0;
     z-index: 70;
-    background: rgba(0, 0, 0, 0.82);
+    background: rgba(8, 8, 9, 0.72);
     display: none;
     align-items: center;
     justify-content: center;
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
     font-family: "Montserrat", -apple-system, BlinkMacSystemFont, sans-serif;
     color: rgba(255, 255, 255, 0.92);
   }
@@ -1395,8 +1369,7 @@
 
   #viewport.quality-low #sheen,
   #viewport.quality-low #crate-reflection { display: none !important; }
-  #viewport.quality-low #lava .blob { mix-blend-mode: normal; }
-  #viewport.quality-low.tracklisting #platter { filter: none; opacity: 0.34; }
+  #viewport.quality-low.tracklisting #platter { opacity: 0.34; }
 
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after {
@@ -1406,7 +1379,6 @@
       scroll-behavior: auto !important;
     }
     #vinyl { will-change: auto; }
-    #lava .blob { animation: none !important; }
   }
 </style>
 </head>
@@ -1474,13 +1446,8 @@
 
   <!-- Record Shelf — the crate: riffle through records, tap to put one on -->
   <div id="shelf">
-    <!-- Lava — ambient blobs in the playing record's palette (pure CSS motion) -->
-    <div id="lava" aria-hidden="true">
-      <div class="blob b1"></div>
-      <div class="blob b2"></div>
-      <div class="blob b3"></div>
-      <div class="blob b4"></div>
-    </div>
+    <!-- Crate aura — one static accent-tinted radial field (no animation) -->
+    <div id="crate-aura" aria-hidden="true"></div>
     <div id="crate-chips" role="tablist" aria-label="Record shelf sections"></div>
     <div id="crate" role="listbox" aria-label="Record shelf" tabindex="0"><div id="crate-belt"></div></div>
     <div id="crate-reflection"></div>
@@ -1695,12 +1662,12 @@
   // ── Flourishes (Phase 6) — default ON since 2026-07-02; URL params
   // disable individually if the live trial argues against one:
   //   ?standby=off  no analog clock while the screen is dimmed
-  //   ?boot=0       no groove sweep-in on load
-  //   ?reflect=0    no floor reflection under the crate's focused sleeve
+  //   ?boot=1       groove sweep-in on load (default off)
+  //   ?reflect=1    floor reflection under the crate's focused sleeve (default off)
   const FLAGS = new URLSearchParams(location.search);
   const FLAG_STANDBY_CLOCK = FLAGS.get("standby") !== "off";
-  const FLAG_BOOT = FLAGS.get("boot") !== "0";
-  const FLAG_REFLECT = FLAGS.get("reflect") !== "0";
+  const FLAG_BOOT = FLAGS.get("boot") === "1";
+  const FLAG_REFLECT = FLAGS.get("reflect") === "1";
   const FLAG_DIAGNOSTICS = FLAGS.get("diag") === "1";
   const REDUCED_MOTION = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -1723,6 +1690,7 @@
 
   // Lyrics state
   let lyricsLines = [];      // [{time: ms, text: ""}, ...]
+  const lyricLinePool = [];  // recycled .lyric-line divs — never torn down per track
   let lyricsTrackId = null;
   let currentLyricIdx = -1;
   let lyricsStatusTimer = null;
@@ -2026,29 +1994,15 @@
   // an RPM marque, the release year, a side marker that alternates A/B with
   // each record flip, and a faint dead-wax etching in the run-out band.
   const labelSvg = $("label");
-  let labelPalette = null;   // {base, edge, ink, accent, lava} from album art, or null
+  let labelPalette = null;   // {base, edge, ink, accent} from album art, or null
   let sideB = false;
   let lastLabelKey = "";
-
-  // ── Lava background palette ──
-  const lavaEl = $("lava");
-  const LAVA_FALLBACK = ["rgb(58,40,120)", "rgb(122,42,92)", "rgb(28,72,122)"];
-  let lavaKey = "";
-  function setLava(palette) {
-    const cols = (palette && palette.lava && palette.lava.length) ? palette.lava : LAVA_FALLBACK;
-    const key = cols.join("|");
-    if (key === lavaKey) return;          // no churn when the colours are unchanged
-    lavaKey = key;
-    lavaEl.style.setProperty("--lava-1", cols[0]);
-    lavaEl.style.setProperty("--lava-2", cols[1] || cols[0]);
-    lavaEl.style.setProperty("--lava-3", cols[2] || cols[0]);
-  }
 
   // ── Per-record UI accent ──
   // Publishes the album accent as --ui-accent / --ui-accent-rgb on the
   // viewport, lifted through a legibility guard (value ≥ 0.72, saturation
-  // ≤ 0.8) so muddy artwork never yields muddy chrome. Applied at the same
-  // moments as the lava palette, so chrome tint flips with the artwork.
+  // ≤ 0.8) so muddy artwork never yields muddy chrome. Applied with the
+  // label palette, so chrome tint flips with the artwork.
   let uiAccentKey = "";
   let uiAccentArr = [240, 168, 104];              // canvas ring reads these
   let uiAccentCss = "rgb(240,168,104)";           // guarded accent as CSS string
@@ -2123,20 +2077,14 @@
           const d = x.getImageData(0, 0, 24, 24).data;
           let best = null, bestScore = -1;
           let rSum = 0, gSum = 0, bSum = 0, n = 0;
-          // Hue buckets (12 × 30°) → vivid lava swatches, WLED-style: weight
-          // each colour by chroma × value so punchy accents beat muddy fills.
-          const buckets = {};
+          // Weight each colour by chroma × value so punchy accents beat muddy
+          // fills when picking the record's accent.
           for (let i = 0; i < d.length; i += 4) {
             const r = d[i], g = d[i + 1], b = d[i + 2];
             rSum += r; gSum += g; bSum += b; n++;
             const [h, s, v] = rgbToHsv(r, g, b);
             const score = s * v * (0.35 + 0.65 * Math.min(1, v * 1.4));
             if (score > bestScore) { bestScore = score; best = [h, s, v]; }
-            if (s > 0.2 && v > 0.16) {
-              const hb = Math.floor(h / 30);
-              const bk = buckets[hb] || (buckets[hb] = { w: 0, h: 0, s: 0, v: 0 });
-              bk.w += score; bk.h += h * score; bk.s += s * score; bk.v += v * score;
-            }
           }
           const [ah, as, av] = rgbToHsv(rSum / n, gSum / n, bSum / n);
           // Prefer the punchiest accent; fall back to the average hue.
@@ -2144,20 +2092,11 @@
           const sat = (best && best[1] > 0.18) ? best[1] : as;
           const baseV = 0.58 + Math.min(0.2, av * 0.25);
           const baseS = Math.min(0.62, sat * 0.75 + 0.08);
-          // Top 3 distinct vivid hues for the lava blobs; pad with hue rotations
-          // if the artwork is near-monochrome so the background still has life.
-          const lava = Object.values(buckets).filter(bk => bk.w > 0)
-            .sort((a, b) => b.w - a.w).slice(0, 3)
-            .map(bk => hsvToCss(bk.h / bk.w,
-              Math.min(1, bk.s / bk.w * 1.15 + 0.14),
-              Math.min(0.82, Math.max(0.5, bk.v / bk.w * 1.08))));
-          while (lava.length < 3) lava.push(hsvToCss((hue + lava.length * 42) % 360, Math.min(0.85, baseS + 0.25), Math.max(0.5, baseV)));
           resolve({
             base: hsvToCss(hue, baseS, baseV),
             edge: hsvToCss(hue, Math.min(0.7, baseS * 1.15), baseV * 0.66),
             ink: baseV * (1 - baseS * 0.45) > 0.42 ? "#181208" : "#f3ecdc",
             accent: hsvToCss(hue, Math.min(1, sat * 1.2), Math.min(0.9, Math.max(0.4, (best ? best[2] : av)))),
-            lava,
           });
         } catch (e) { resolve(null); }
       };
@@ -2318,18 +2257,25 @@
   }
 
   function renderLyricLines() {
-    lyricsInner.innerHTML = "";
-    if (!lyricsLines.length) {
-      lyricsWrap.classList.remove("visible");
-      return;
-    }
-    for (const line of lyricsLines) {
+    // Recycle pooled line divs: grow the pool to fit, retext the rows in use
+    // and hide the rest — no innerHTML teardown/rebuild per track.
+    while (lyricLinePool.length < lyricsLines.length) {
       const div = document.createElement("div");
       div.className = "lyric-line";
-      div.textContent = line.text;
+      lyricLinePool.push(div);
       lyricsInner.appendChild(div);
     }
-    lyricsWrap.classList.add("visible");
+    for (let i = 0; i < lyricLinePool.length; i++) {
+      const div = lyricLinePool[i];
+      if (i < lyricsLines.length) {
+        div.textContent = lyricsLines[i].text;
+        div.classList.remove("active", "past");
+        div.hidden = false;
+      } else {
+        div.hidden = true;
+      }
+    }
+    lyricsWrap.classList.toggle("visible", lyricsLines.length > 0);
     currentLyricIdx = -1;
   }
 
@@ -2349,18 +2295,17 @@
     if (idx === currentLyricIdx) return;
     currentLyricIdx = idx;
 
-    const els = lyricsInner.children;
-    for (let i = 0; i < els.length; i++) {
-      els[i].classList.toggle("active", i === idx);
-      els[i].classList.toggle("past", i < idx);
+    for (let i = 0; i < lyricsLines.length; i++) {
+      lyricLinePool[i].classList.toggle("active", i === idx);
+      lyricLinePool[i].classList.toggle("past", i < idx);
     }
 
     // Scroll so the active line sits in the focus lane. Line heights vary
     // (some lyrics wrap to two rows) but they're STABLE — emphasis is a
     // transform scale, never a font-size change — so this single offsetTop
     // read is exact and the column can't drift mid-transition.
-    if (idx >= 0 && els[idx]) {
-      const offset = els[idx].offsetTop - 118; // keep the active line in the focus lane
+    if (idx >= 0 && lyricLinePool[idx]) {
+      const offset = lyricLinePool[idx].offsetTop - 118; // keep the active line in the focus lane
       lyricsInner.style.transform = `translateY(${-offset}px)`;
     }
   }
@@ -2395,7 +2340,7 @@
           flipArtSwapped = true;
           artworkEl.src = pendingArt;
           pendingArt = null;
-          if (pendingPalette !== undefined) { labelPalette = pendingPalette; pendingPalette = undefined; setLava(labelPalette); setUiAccent(labelPalette); }
+          if (pendingPalette !== undefined) { labelPalette = pendingPalette; pendingPalette = undefined; setUiAccent(labelPalette); }
           sideB = !sideB;
           lastLabelKey = "";
           renderLabel();
@@ -2497,7 +2442,7 @@
 
   // Artwork and its sampled palette are one versioned bundle. A slow CDN
   // response from a skipped track can never recolour or overwrite the current
-  // record, and the label/lava change in the same frame as the decoded image.
+  // record, and the label/accent change in the same frame as the decoded image.
   function commitArtworkBundle(url, palette) {
     if (flipStartTime && !flipArtSwapped) {
       pendingArt = url;
@@ -2507,7 +2452,6 @@
       labelPalette = palette;
       lastLabelKey = "";
       renderLabel();
-      setLava(palette);
       setUiAccent(palette);
     }
   }
@@ -2817,14 +2761,55 @@
     }
 
     // While the tracklist is up, the record is frozen and its furniture is
-    // hidden under the scrim — skip the per-frame canvas redraws so the blurred
-    // platter stays a cached layer (keeps the panel at 60fps under the blur).
+    // hidden under the scrim — skip the per-frame canvas redraws so the
+    // platter stays a cached layer (keeps the panel at 60fps).
     if (!state.tracklisting) {
       updateProgressRing(now); // progress ring
       updateLyrics(now);       // lyrics
       updateCrate(now, dt);    // crate glide/snap
     }
     scheduleAnimation();
+  }
+
+  // ── Static ring furniture, pre-rendered once per accent palette ──
+  // The 60 ticks and the background track never move, so they're rendered to
+  // an offscreen canvas once (and again only when the accent changes) and
+  // blitted; each PROGRESS_DRAW_INTERVAL tick redraws just the progress arc,
+  // the leading dot and the pause glyph.
+  const ringStaticCanvas = document.createElement("canvas");
+  ringStaticCanvas.width = ringStaticCanvas.height = 296;
+  let ringStaticKey = "";
+  function renderRingStatic() {
+    ringStaticKey = uiAccentKey;
+    const ctx = ringStaticCanvas.getContext("2d");
+    const cx = RING_CX, cy = RING_CY, r = RING_R;
+    const startAngle = -Math.PI / 2; // 12 o'clock
+    ctx.clearRect(0, 0, 296, 296);
+
+    // ── Tick marks (watch-style) ──
+    for (let i = 0; i < TICK_COUNT; i++) {
+      const angle = startAngle + (i / TICK_COUNT) * Math.PI * 2;
+      const major = i % TICK_MAJOR_EVERY === 0;
+      const len = major ? 10 : 4;
+      const gap = 4;
+      const tickR1 = r + gap;
+      const tickR2 = r + gap + len;
+      ctx.beginPath();
+      ctx.moveTo(cx + tickR1 * Math.cos(angle), cy + tickR1 * Math.sin(angle));
+      ctx.lineTo(cx + tickR2 * Math.cos(angle), cy + tickR2 * Math.sin(angle));
+      ctx.strokeStyle = major
+        ? `rgba(${uiAccentArr[0]},${uiAccentArr[1]},${uiAccentArr[2]},0.34)`
+        : `rgba(${uiAccentArr[0]},${uiAccentArr[1]},${uiAccentArr[2]},0.13)`;
+      ctx.lineWidth = major ? 1.5 : 0.8;
+      ctx.stroke();
+    }
+
+    // ── Background track ──
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(255,255,255,0.1)";
+    ctx.lineWidth = RING_TRACK_W;
+    ctx.stroke();
   }
 
   function updateProgressRing(now) {
@@ -2854,46 +2839,8 @@
     const startAngle = -Math.PI / 2; // 12 o'clock
 
     ctx.clearRect(0, 0, 296, 296);
-
-    // ── Tick marks (watch-style) ──
-    for (let i = 0; i < TICK_COUNT; i++) {
-      const angle = startAngle + (i / TICK_COUNT) * Math.PI * 2;
-      const major = i % TICK_MAJOR_EVERY === 0;
-      const len = major ? 10 : 4;
-      const gap = 4;
-      const tickR1 = r + gap;
-      const tickR2 = r + gap + len;
-      const x1 = cx + tickR1 * Math.cos(angle);
-      const y1 = cy + tickR1 * Math.sin(angle);
-      const x2 = cx + tickR2 * Math.cos(angle);
-      const y2 = cy + tickR2 * Math.sin(angle);
-
-      // Ticks that have been "passed" by progress glow brighter
-      const tickPct = i / TICK_COUNT;
-      const passed = tickPct <= pct;
-
-      ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y2);
-      if (passed) {
-        // Passed ticks glow in the record's accent (a touch brighter than the
-        // old white — coloured light reads dimmer at equal alpha).
-        ctx.strokeStyle = major
-          ? `rgba(${uiAccentArr[0]},${uiAccentArr[1]},${uiAccentArr[2]},0.55)`
-          : `rgba(${uiAccentArr[0]},${uiAccentArr[1]},${uiAccentArr[2]},0.26)`;
-      } else {
-        ctx.strokeStyle = major ? "rgba(255,255,255,0.15)" : "rgba(255,255,255,0.06)";
-      }
-      ctx.lineWidth = major ? 1.5 : 0.8;
-      ctx.stroke();
-    }
-
-    // ── Background track ──
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.strokeStyle = "rgba(255,255,255,0.1)";
-    ctx.lineWidth = RING_TRACK_W;
-    ctx.stroke();
+    if (ringStaticKey !== uiAccentKey) renderRingStatic();
+    ctx.drawImage(ringStaticCanvas, 0, 0);
 
     if (pct <= 0) {
       timeElapsed.textContent = fmt(p);
@@ -4422,6 +4369,10 @@
   let eventSource = null;
   let sseConnected = false;
   let sseRetryTimer = null;
+  // Reconnect backoff: 2s → 60s max with ±20% jitter, reset on a clean open.
+  const SSE_RETRY_MIN_MS = 2000;
+  const SSE_RETRY_MAX_MS = 60000;
+  let sseRetryDelayMs = SSE_RETRY_MIN_MS;
   let pendingManualDirection = null;
   let pendingManualAt = -Infinity;
   let pendingManualProgress = 0;
@@ -4478,7 +4429,7 @@
       if (lyricsLoadingTimer) clearTimeout(lyricsLoadingTimer);
       lyricsLoadingTimer = null;
       showLyricsStatus("", 0);
-      lyricsInner.innerHTML = "";
+      for (const div of lyricLinePool) div.hidden = true;
       lyricsWrap.classList.remove("visible");
       setSingleMode(false);
       setSpinTarget(0);
@@ -4714,6 +4665,7 @@
     source.onopen = () => {
       if (source !== eventSource) return;
       sseConnected = true;
+      sseRetryDelayMs = SSE_RETRY_MIN_MS;
       diagnostics.transport = "sse";
       renderDiagnostics();
       schedulePoll(POLL_SSE_SAFETY_MS);
@@ -4745,7 +4697,9 @@
       renderDiagnostics();
       schedulePoll(0);
       if (sseRetryTimer) clearTimeout(sseRetryTimer);
-      sseRetryTimer = setTimeout(connectPlaybackEvents, 30000);
+      const retryDelay = Math.round(sseRetryDelayMs * (0.8 + Math.random() * 0.4));
+      sseRetryTimer = setTimeout(connectPlaybackEvents, retryDelay);
+      sseRetryDelayMs = Math.min(sseRetryDelayMs * 2, SSE_RETRY_MAX_MS);
     };
   }
 

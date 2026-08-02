@@ -51,7 +51,7 @@ the last account that authorized the display.
 | Two-finger twist | Seek; one full turn is 60 seconds |
 | Two-finger vertical drag | Playback volume |
 | Two-finger tap | Play or pause |
-| Pinch in | Open/close the record crate |
+| Pinch in | Open the record crate (tap the parked mini-cover, press Escape, or wait for the timeout to close it) |
 | Pinch out | Open the current album tracklist |
 | Three-finger vertical drag | Hardware panel brightness |
 | `D` | Toggle diagnostics |

@@ -14,6 +14,8 @@ ExecStart="@PROJECT_DIR@/wled-launch.sh"
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=10
+# Ambient lighting is cosmetic; sacrifice it before the receiver or server.
+OOMScoreAdjust=500
 Environment=PYTHONUNBUFFERED=1
 Environment=WLED_NOW_PLAYING_URL=http://127.0.0.1:@DISPLAY_PORT@/api/now-playing
 Environment=WLED_STATUS_FILE=/run/spotify-display/wled-status.json

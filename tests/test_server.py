@@ -317,8 +317,8 @@ def test_oauth_uses_state_and_pkce_and_stores_persistent_household_profile(clien
             "scope": "playlist-read-private user-library-read user-top-read",
         })
 
-    monkeypatch.setattr(server.requests, "post", token_exchange)
-    monkeypatch.setattr(server.requests, "get", spotify_get_for_identity())
+    monkeypatch.setattr(server._http, "post", token_exchange)
+    monkeypatch.setattr(server._http, "get", spotify_get_for_identity())
     callback = phone_get(web, f"/callback?code=abc&state={query['state'][0]}")
     assert callback.status_code == 302
     assert captured["data"]["code_verifier"]
@@ -337,7 +337,7 @@ def test_oauth_uses_state_and_pkce_and_stores_persistent_household_profile(clien
 def test_oauth_rejects_wrong_state_without_token_exchange(client, monkeypatch):
     web, _ = client
     web.get("/login")
-    monkeypatch.setattr(server.requests, "post", lambda *_a, **_k: pytest.fail("must not exchange"))
+    monkeypatch.setattr(server._http, "post", lambda *_a, **_k: pytest.fail("must not exchange"))
     response = web.get("/callback?code=abc&state=wrong")
     assert response.status_code == 400
 
@@ -352,7 +352,7 @@ def test_oauth_malformed_token_payload_degrades_to_502(client, monkeypatch, payl
     login = web.get("/login")
     query = parse_qs(urlsplit(login.location).query)
     monkeypatch.setattr(
-        server.requests,
+        server._http,
         "post",
         lambda *_args, **_kwargs: FakeResponse(payload=payload),
     )
@@ -368,7 +368,7 @@ def test_oauth_invalid_expiry_uses_bounded_default(client, monkeypatch):
     login = web.get("/login")
     query = parse_qs(urlsplit(login.location).query)
     monkeypatch.setattr(
-        server.requests,
+        server._http,
         "post",
         lambda *_args, **_kwargs: FakeResponse(payload={
             "access_token": "access",
@@ -376,7 +376,7 @@ def test_oauth_invalid_expiry_uses_bounded_default(client, monkeypatch):
             "expires_in": "not-a-number",
         }),
     )
-    monkeypatch.setattr(server.requests, "get", spotify_get_for_identity())
+    monkeypatch.setattr(server._http, "get", spotify_get_for_identity())
     before = time.time()
 
     response = web.get(f"/callback?code=abc&state={query['state'][0]}")
@@ -420,7 +420,7 @@ def test_pairing_defaults_to_household_even_without_playlist_query(client, monke
         assert oauth_session["spotify_oauth"]["profile_kind"] == "household"
 
     monkeypatch.setattr(
-        server.requests,
+        server._http,
         "post",
         lambda *_a, **_k: FakeResponse(payload={
             "access_token": "guest-access",
@@ -428,7 +428,7 @@ def test_pairing_defaults_to_household_even_without_playlist_query(client, monke
             "expires_in": 3600,
         }),
     )
-    monkeypatch.setattr(server.requests, "get", spotify_get_for_identity())
+    monkeypatch.setattr(server._http, "get", spotify_get_for_identity())
     callback = phone_get(web, f"/callback?code=abc&state={query['state'][0]}")
     assert callback.status_code == 302
     grant = json.loads(config_path.read_text())["spotify_profiles"]["profiles"]["account-stable"]
@@ -459,7 +459,7 @@ def test_owner_can_explicitly_mint_a_bounded_guest_pairing(client, monkeypatch):
         assert oauth_session["spotify_oauth"]["guest"] is True
 
     monkeypatch.setattr(
-        server.requests,
+        server._http,
         "post",
         lambda *_a, **_k: FakeResponse(payload={
             "access_token": "guest-access",
@@ -467,7 +467,7 @@ def test_owner_can_explicitly_mint_a_bounded_guest_pairing(client, monkeypatch):
             "expires_in": 3600,
         }),
     )
-    monkeypatch.setattr(server.requests, "get", spotify_get_for_identity())
+    monkeypatch.setattr(server._http, "get", spotify_get_for_identity())
     assert phone_get(web, f"/callback?code=abc&state={state}").status_code == 302
 
     grant = json.loads(config_path.read_text())["spotify_profiles"]["profiles"]["account-stable"]
@@ -884,8 +884,8 @@ def test_gesture_rate_limits_allow_final_volume_and_backlight_values(client, mon
             return FakeResponse(payload={"volume_steps": 100})
         return FakeResponse(status_code=200)
 
-    monkeypatch.setattr(server.requests, "get", fake_request)
-    monkeypatch.setattr(server.requests, "post", fake_request)
+    monkeypatch.setattr(server._http, "get", fake_request)
+    monkeypatch.setattr(server._http, "post", fake_request)
     for percent in range(60):
         response = web.post("/api/control/volume", json={"percent": percent})
         assert response.status_code == 200
@@ -1290,7 +1290,7 @@ def test_now_playing_distinguishes_receiver_outage_from_idle(client, monkeypatch
 ])
 def test_go_librespot_wrong_schema_degrades_to_unavailable(client, monkeypatch, payload):
     web, _ = client
-    monkeypatch.setattr(server.requests, "get", lambda *_a, **_k: FakeResponse(payload=payload))
+    monkeypatch.setattr(server._http, "get", lambda *_a, **_k: FakeResponse(payload=payload))
     monkeypatch.setattr(
         server,
         "_read_legacy_state_file",
@@ -1317,7 +1317,7 @@ def test_go_librespot_valid_numeric_schema_is_normalized(client, monkeypatch):
             "position": 1234.0,
         },
     }
-    monkeypatch.setattr(server.requests, "get", lambda *_a, **_k: FakeResponse(payload=payload))
+    monkeypatch.setattr(server._http, "get", lambda *_a, **_k: FakeResponse(payload=payload))
     available, state = server.read_go_librespot_state()
     assert available is True
     assert state["progress_ms"] == 1234
@@ -1328,13 +1328,13 @@ def test_go_librespot_valid_numeric_schema_is_normalized(client, monkeypatch):
 def test_volume_control_tolerates_wrong_receiver_status_shape(client, monkeypatch):
     web, _ = client
     monkeypatch.setattr(
-        server.requests,
+        server._http,
         "get",
         lambda *_args, **_kwargs: FakeResponse(payload=["wrong-shape"]),
     )
     sent = []
     monkeypatch.setattr(
-        server.requests,
+        server._http,
         "post",
         lambda *_args, **kwargs: sent.append(kwargs["json"]) or FakeResponse(status_code=204),
     )
@@ -1357,7 +1357,7 @@ def test_private_crate_fetchers_tolerate_wrong_upstream_shapes(client, monkeypat
     monkeypatch.setattr(server, "get_client_token", lambda: "client-token")
     monkeypatch.setattr(server, "load_idle_playlists", lambda: [])
     monkeypatch.setattr(
-        server.requests,
+        server._http,
         "get",
         lambda *_args, **_kwargs: FakeResponse(payload=payload),
     )
@@ -1380,7 +1380,7 @@ def test_album_track_pagination_never_follows_upstream_url(client, monkeypatch):
             "next": "https://attacker.example/steal-token",
         })
 
-    monkeypatch.setattr(server.requests, "get", fetch)
+    monkeypatch.setattr(server._http, "get", fetch)
 
     tracks = server.lookup_album_tracks("album-id")
 
@@ -1405,7 +1405,7 @@ def test_lyrics_are_current_track_scoped_and_cached(client, monkeypatch):
     monkeypatch.setattr(server, "read_playback_state", lambda: state)
     calls = []
     monkeypatch.setattr(
-        server.requests,
+        server._http,
         "get",
         lambda *args, **kwargs: calls.append((args, kwargs)) or FakeResponse(payload={"syncedLyrics": "[00:01]Hi"}),
     )
@@ -1427,7 +1427,7 @@ def test_lyrics_circuit_breaker_stops_repeated_timeouts(client, monkeypatch):
         calls.append(True)
         raise server.requests.Timeout("slow")
 
-    monkeypatch.setattr(server.requests, "get", timeout)
+    monkeypatch.setattr(server._http, "get", timeout)
     url = "/api/lyrics?track=Song&artist=Artist&duration=180"
     for _ in range(3):
         assert web.get(url).get_json()["status"] == "upstream_error"
@@ -1451,7 +1451,7 @@ def test_lyrics_same_track_requests_are_singleflight(client, monkeypatch):
         assert release.wait(2)
         return FakeResponse(payload={"syncedLyrics": "[00:01]Hi"})
 
-    monkeypatch.setattr(server.requests, "get", fetch)
+    monkeypatch.setattr(server._http, "get", fetch)
     results = []
     leader = threading.Thread(target=lambda: results.append(
         server.app.test_client().get("/api/lyrics?track=Song&artist=Artist")
@@ -1537,7 +1537,7 @@ def test_user_token_refresh_is_singleflight(client, monkeypatch):
         time.sleep(0.05)
         return FakeResponse(payload={"access_token": "shared", "expires_in": 3600})
 
-    monkeypatch.setattr(server.requests, "post", refresh)
+    monkeypatch.setattr(server._http, "post", refresh)
     results = []
     threads = [threading.Thread(target=lambda: results.append(server.get_user_token())) for _ in range(5)]
     for thread in threads:
@@ -1556,7 +1556,7 @@ def test_expired_guest_grant_is_removed_without_refresh(client, monkeypatch):
         "spotify_session": {"kind": "guest", "expires_at": time.time() - 1},
     })
     config_path.write_text(json.dumps(config))
-    monkeypatch.setattr(server.requests, "post", lambda *_a, **_k: pytest.fail("must not refresh"))
+    monkeypatch.setattr(server._http, "post", lambda *_a, **_k: pytest.fail("must not refresh"))
     assert server.get_user_token() is None
     saved = json.loads(config_path.read_text())
     assert "refresh_token" not in saved
@@ -1604,7 +1604,7 @@ def test_already_expired_legacy_owner_is_removed_without_refresh(client, monkeyp
     config_path.write_text(json.dumps(config))
     server._observe_receiver_identity("legacy-alias")
     monkeypatch.setattr(
-        server.requests, "post", lambda *_a, **_k: pytest.fail("must not refresh")
+        server._http, "post", lambda *_a, **_k: pytest.fail("must not refresh")
     )
 
     assert server.get_user_token() is None
@@ -1629,7 +1629,7 @@ def test_manual_refresh_token_removal_invalidates_cached_access(client, monkeypa
     config_path.write_text(json.dumps(config))
     server._observe_receiver_identity("receiver-user")
     monkeypatch.setattr(
-        server.requests,
+        server._http,
         "post",
         lambda *_a, **_k: FakeResponse(payload={"access_token": "access", "expires_in": 3600}),
     )
@@ -1685,7 +1685,7 @@ def test_receiver_username_selects_context_but_is_never_public(client, monkeypat
     web, _ = client
     monkeypatch.setattr(server, "queue_track_enrichment", lambda _track_id: None)
     monkeypatch.setattr(
-        server.requests,
+        server._http,
         "get",
         lambda *_args, **_kwargs: FakeResponse(payload=receiver_status("PrivateAlias")),
     )
@@ -1707,7 +1707,7 @@ def test_receiver_outage_rotates_epoch_and_returns_only_opaque_context(client, m
     def offline(*_args, **_kwargs):
         raise server.requests.RequestException("offline")
 
-    monkeypatch.setattr(server.requests, "get", offline)
+    monkeypatch.setattr(server._http, "get", offline)
     monkeypatch.setattr(
         server,
         "_read_legacy_state_file",
@@ -1766,7 +1766,7 @@ def test_oauth_handoff_during_provider_io_cannot_publish_old_profile(client, mon
     login = phone_get(web, "/login")
     state = parse_qs(urlsplit(login.location).query)["state"][0]
     monkeypatch.setattr(
-        server.requests,
+        server._http,
         "post",
         lambda *_args, **_kwargs: FakeResponse(payload={
             "access_token": "access",
@@ -1791,7 +1791,7 @@ def test_oauth_handoff_during_provider_io_cannot_publish_old_profile(client, mon
             return FakeResponse(payload=receiver_status("receiver-user"))
         raise AssertionError(url)
 
-    monkeypatch.setattr(server.requests, "get", provider_get)
+    monkeypatch.setattr(server._http, "get", provider_get)
     callback = phone_get(web, f"/callback?code=abc&state={state}")
 
     assert callback.status_code == 409
@@ -1808,7 +1808,7 @@ def test_oauth_rechecks_epoch_after_waiting_for_token_lock(client, monkeypatch):
     login = phone_get(web, "/login")
     state = parse_qs(urlsplit(login.location).query)["state"][0]
     monkeypatch.setattr(
-        server.requests,
+        server._http,
         "post",
         lambda *_args, **_kwargs: FakeResponse(payload={
             "access_token": "access",
@@ -1830,7 +1830,7 @@ def test_oauth_rechecks_epoch_after_waiting_for_token_lock(client, monkeypatch):
             return FakeResponse(payload=receiver_status("receiver-user"))
         raise AssertionError(url)
 
-    monkeypatch.setattr(server.requests, "get", provider_get)
+    monkeypatch.setattr(server._http, "get", provider_get)
     original_binding_matches = server._receiver_binding_matches
     binding_checks = 0
 
@@ -1867,8 +1867,8 @@ def test_stale_profile_epoch_makes_no_user_token_or_api_call(client, monkeypatch
     old_epoch = server._observe_receiver_identity("alias-a")["epoch"]
     server._observe_receiver_identity("alias-b")
     calls = []
-    monkeypatch.setattr(server.requests, "post", lambda *_a, **_k: calls.append("post"))
-    monkeypatch.setattr(server.requests, "get", lambda *_a, **_k: calls.append("get"))
+    monkeypatch.setattr(server._http, "post", lambda *_a, **_k: calls.append("post"))
+    monkeypatch.setattr(server._http, "get", lambda *_a, **_k: calls.append("get"))
 
     assert server.fetch_user_playlists(
         account_id="account-a", profile_epoch=old_epoch
@@ -2069,7 +2069,7 @@ def test_invalid_grant_removes_only_affected_profile(client, monkeypatch):
     store_profile(config_path, account_id="account-b", alias="alias-b", token="refresh-b")
     epoch = server._observe_receiver_identity("alias-a")["epoch"]
     monkeypatch.setattr(
-        server.requests,
+        server._http,
         "post",
         lambda *_args, **_kwargs: FakeResponse(
             status_code=400, payload={"error": "invalid_grant"}
@@ -2088,10 +2088,10 @@ def test_reauthorization_due_fails_closed_without_deleting_household_mapping(cli
     mark_profile_reauth_due(config_path)
     server._observe_receiver_identity("receiver-user")
     monkeypatch.setattr(
-        server.requests, "post", lambda *_a, **_k: pytest.fail("must not refresh")
+        server._http, "post", lambda *_a, **_k: pytest.fail("must not refresh")
     )
     monkeypatch.setattr(
-        server.requests, "get", lambda *_a, **_k: pytest.fail("must not fetch user data")
+        server._http, "get", lambda *_a, **_k: pytest.fail("must not fetch user data")
     )
 
     context = server._receiver_context()
@@ -2152,7 +2152,7 @@ def test_reauthorizing_due_household_profile_replaces_grant_and_restores_link(cl
     login = phone_get(web, "/login")
     state = parse_qs(urlsplit(login.location).query)["state"][0]
     monkeypatch.setattr(
-        server.requests,
+        server._http,
         "post",
         lambda *_a, **_k: FakeResponse(payload={
             "access_token": "new-access",
@@ -2160,7 +2160,7 @@ def test_reauthorizing_due_household_profile_replaces_grant_and_restores_link(cl
             "expires_in": 3600,
         }),
     )
-    monkeypatch.setattr(server.requests, "get", spotify_get_for_identity())
+    monkeypatch.setattr(server._http, "get", spotify_get_for_identity())
 
     response = phone_get(web, f"/callback?code=abc&state={state}")
     assert response.status_code == 302
@@ -2198,7 +2198,7 @@ def test_disconnect_removes_reauth_due_profile_and_revokes_inflight_callback(cli
 
     monkeypatch.setattr(server, "read_go_librespot_state", lambda: (True, None))
     monkeypatch.setattr(
-        server.requests, "post", lambda *_a, **_k: pytest.fail("must not exchange")
+        server._http, "post", lambda *_a, **_k: pytest.fail("must not exchange")
     )
     callback = phone_get(web, f"/callback?code=abc&state={state}")
     assert callback.status_code == 409
@@ -2239,7 +2239,7 @@ def test_legacy_rotation_is_preserved_when_alias_does_not_match(client, monkeypa
     config_path.write_text(json.dumps(config))
     server._observe_receiver_identity("current-user")
     monkeypatch.setattr(
-        server.requests,
+        server._http,
         "post",
         lambda *_args, **_kwargs: FakeResponse(payload={
             "access_token": "access",
@@ -2248,7 +2248,7 @@ def test_legacy_rotation_is_preserved_when_alias_does_not_match(client, monkeypa
         }),
     )
     monkeypatch.setattr(
-        server.requests,
+        server._http,
         "get",
         lambda *_args, **_kwargs: FakeResponse(payload={
             "id": "different-user",
@@ -2275,7 +2275,7 @@ def test_exact_legacy_identity_migrates_atomically(client, monkeypatch):
     config_path.write_text(json.dumps(config))
     server._observe_receiver_identity("legacy-user")
     monkeypatch.setattr(
-        server.requests,
+        server._http,
         "post",
         lambda *_args, **_kwargs: FakeResponse(payload={
             "access_token": "access",
@@ -2285,7 +2285,7 @@ def test_exact_legacy_identity_migrates_atomically(client, monkeypatch):
         }),
     )
     monkeypatch.setattr(
-        server.requests,
+        server._http,
         "get",
         spotify_get_for_identity("legacy-user", "stable-legacy-account"),
     )
@@ -2311,12 +2311,12 @@ def test_unlinked_receiver_gets_generic_crate_without_user_api_calls(client, mon
         "id": "house", "title": "House", "uri": "spotify:playlist:house"
     }])
     monkeypatch.setattr(
-        server.requests,
+        server._http,
         "post",
         lambda *_args, **_kwargs: pytest.fail("must not request a user token"),
     )
     monkeypatch.setattr(
-        server.requests,
+        server._http,
         "get",
         lambda *_args, **_kwargs: pytest.fail("must not call a private user API"),
     )
@@ -2435,7 +2435,7 @@ def test_top_tracks_are_deduplicated_to_rotation_albums(client, monkeypatch):
         "artists": [{"name": "Artist"}],
     }
     monkeypatch.setattr(
-        server.requests,
+        server._http,
         "get",
         lambda *_args, **_kwargs: FakeResponse(payload={
             "items": [{"album": album}, {"album": dict(album)}]

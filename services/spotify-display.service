@@ -15,6 +15,9 @@ ExecStart="@PROJECT_DIR@/serve.sh"
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=15
+# Bound the Flask/Waitress server; the kiosk and receiver take precedence
+# when the 1 GB panel is under memory pressure.
+MemoryHigh=350M
 Environment=PYTHONUNBUFFERED=1
 Environment=DISPLAY_HOST=0.0.0.0
 Environment=DISPLAY_PORT=@DISPLAY_PORT@
@@ -25,6 +28,10 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
+# Sandbox tradeoff: the server must persist config.json (Spotify credentials,
+# atomic-write alongside its sibling files) inside the project tree, so the
+# whole project dir stays writable rather than a narrower runtime-only path.
+# /run/spotify-display carries the published playback state files.
 ReadWritePaths="@PROJECT_DIR@" /run/spotify-display
 ProtectKernelTunables=true
 ProtectKernelModules=true

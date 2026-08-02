@@ -79,6 +79,11 @@ exec "$CHROMIUM" \
     --password-store=basic \
     --overscroll-history-navigation=0 \
     --disk-cache-size=48000000 \
+    --js-flags=--max-old-space-size=192 \
+    --enable-gpu-rasterization \
+    --ignore-gpu-blocklist \
+    --disable-background-networking \
+    --no-pings \
     --window-size=1080,1080 \
     --window-position=0,0 \
     "${OZONE_ARGS[@]}" \

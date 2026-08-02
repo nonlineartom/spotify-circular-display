@@ -34,6 +34,12 @@ LOGICAL_STEP_PERCENT = 10
 # cadence this produces small reports every 15 ms instead of visible ten-point
 # jumps every 150 ms without changing the overall slew rate.
 RAMP_STEP_PERCENT = 1
+# When repeated writes carry the identical brightness with no ramp in flight
+# (e.g. periodic at-rest re-applies), the write cadence is progressively
+# stretched from the fast ramp interval up to this ceiling.
+STEADY_BACKOFF_MAX_SECONDS = 1.0
+# Consecutive identical steady-state writes tolerated before stretching.
+STEADY_BACKOFF_THRESHOLD = 3
 DEFAULT_SAFE_MAX_PERCENT = 80
 # This build targets the existing Pi 5 3 A supply.  Configuration may lower
 # this ceiling, but cannot silently raise it to the panel's highest draw.
@@ -217,6 +223,11 @@ class BacklightController:
         self._last_error: Optional[str] = "not_started" if self.enabled else "disabled"
         self._force_apply = self.enabled
         self._write_in_progress = False
+        # Steady-state write backoff: identical at-rest writes progressively
+        # stretch the write interval; any set()/error/disconnect snaps back.
+        self._last_written_percent: Optional[int] = None
+        self._steady_same_count = 0
+        self._steady_backoff_until = 0.0
 
     @classmethod
     def from_application_config(cls, config: Optional[Mapping] = None, **kwargs):
@@ -284,6 +295,8 @@ class BacklightController:
                 self._contact_trusted = False
                 if had_contact:
                     self._force_apply = True
+                    self._steady_same_count = 0
+                    self._steady_backoff_until = 0.0
                 if not self._write_in_progress:
                     self._last_error = "device_not_found"
                 self._condition.notify_all()
@@ -296,6 +309,8 @@ class BacklightController:
                 self._device_identity = None
                 self._contact_trusted = False
                 self._force_apply = True
+                self._steady_same_count = 0
+                self._steady_backoff_until = 0.0
                 self._last_error = "device_contact_changed"
                 self._condition.notify_all()
                 return True
@@ -404,6 +419,8 @@ class BacklightController:
             self._active_percent = logical
             self._mode = "active"
             self._force_apply = self._force_apply or self._applied_percent != logical
+            self._steady_same_count = 0
+            self._steady_backoff_until = 0.0
             self._ensure_worker_locked()
             self._condition.notify_all()
             return self._status_locked()
@@ -415,6 +432,8 @@ class BacklightController:
             self._desired_percent = idle_target
             self._mode = "idle"
             self._force_apply = self._force_apply or self._applied_percent != idle_target
+            self._steady_same_count = 0
+            self._steady_backoff_until = 0.0
             self._ensure_worker_locked()
             self._condition.notify_all()
             return self._status_locked()
@@ -425,6 +444,8 @@ class BacklightController:
             self._desired_percent = self._active_percent
             self._mode = "active"
             self._force_apply = self._force_apply or self._applied_percent != self._active_percent
+            self._steady_same_count = 0
+            self._steady_backoff_until = 0.0
             self._ensure_worker_locked()
             self._condition.notify_all()
             return self._status_locked()
@@ -440,7 +461,11 @@ class BacklightController:
                         return
                     needs_apply = self._force_apply or self._applied_percent != self._desired_percent
                     now = self._monotonic()
-                    if needs_apply and now >= next_attempt_at:
+                    # Steady-state identical writes are throttled by the
+                    # backoff deadline; ramp steps never wait on it because
+                    # the backoff counter stays at zero while values change.
+                    apply_deadline = max(next_attempt_at, self._steady_backoff_until)
+                    if needs_apply and now >= apply_deadline:
                         target = self._desired_percent
                         origin = self._applied_percent if self._contact_trusted else None
                         step = self._next_logical_step(origin, target, self._first_contact_percent)
@@ -451,7 +476,7 @@ class BacklightController:
                         break
                     deadlines = [next_contact_check_at]
                     if needs_apply:
-                        deadlines.append(next_attempt_at)
+                        deadlines.append(apply_deadline)
                     wait_for = max(0.01, min(deadlines) - now)
                     self._condition.wait(wait_for)
 
@@ -471,6 +496,8 @@ class BacklightController:
                     self._last_error = str(error)[:80]
                     self._force_apply = True
                     self._write_in_progress = False
+                    self._steady_same_count = 0
+                    self._steady_backoff_until = 0.0
                     next_attempt_at = self._monotonic() + self.retry_interval_seconds
                     next_contact_check_at = self._monotonic() + self._contact_poll_seconds
                     self._condition.notify_all()
@@ -486,7 +513,23 @@ class BacklightController:
                     self._last_error = None
                     self._force_apply = self._applied_percent != self._desired_percent
                     self._write_in_progress = False
-                    next_attempt_at = self._monotonic() + self.ramp_write_interval_seconds
+                    now = self._monotonic()
+                    next_attempt_at = now + self.ramp_write_interval_seconds
+                    ramp_active = self._applied_percent != self._desired_percent
+                    if not ramp_active and self._last_written_percent == applied_logical:
+                        self._steady_same_count += 1
+                    else:
+                        self._steady_same_count = 0
+                    self._last_written_percent = applied_logical
+                    if self._steady_same_count >= STEADY_BACKOFF_THRESHOLD:
+                        stretch = min(
+                            STEADY_BACKOFF_MAX_SECONDS,
+                            self.ramp_write_interval_seconds
+                            * (1 << (self._steady_same_count - (STEADY_BACKOFF_THRESHOLD - 1))),
+                        )
+                        self._steady_backoff_until = now + stretch
+                    else:
+                        self._steady_backoff_until = 0.0
                     next_contact_check_at = self._monotonic() + self._contact_poll_seconds
                     self._condition.notify_all()
 

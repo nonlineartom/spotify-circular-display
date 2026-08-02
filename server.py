@@ -9,8 +9,10 @@ Controls: the Pi's touch controls call the local Spotify Connect receiver API.
 The legacy Spotify Web API OAuth path is retained only as a fallback.
 """
 
+import atexit
 import base64
 import concurrent.futures
+import copy
 import hashlib
 import hmac
 import ipaddress
@@ -20,6 +22,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import socket
 import stat
 import threading
@@ -30,6 +33,7 @@ from functools import wraps
 from tempfile import NamedTemporaryFile
 
 import requests
+from requests.adapters import HTTPAdapter
 from flask import (
     Flask,
     Response,
@@ -101,6 +105,15 @@ STOPPED_IDLE_EVENTS = {
     "session_disconnected",
     "network_down",
 }
+
+# One process-wide session for every outbound call (Spotify API, LRCLIB, the
+# go-librespot loopback, WLED probes). The 1s playback monitor hits the
+# loopback constantly; pooled keep-alive connections avoid per-call TCP/TLS
+# setup and the socket churn that came with it.
+_http = requests.Session()
+_http_adapter = HTTPAdapter(pool_connections=8, pool_maxsize=16)
+_http.mount("http://", _http_adapter)
+_http.mount("https://", _http_adapter)
 
 # ── In-memory caches ────────────────────────────────────────
 
@@ -189,6 +202,11 @@ _uri_image_failed = BoundedTTLCache(1024, 10 * 60)
 _artist_albums_cache = BoundedTTLCache(512, 6 * 60 * 60)
 _recent_spins = {"loaded": False, "items": []}  # newest first
 _recent_spins_lock = threading.Lock()
+_recent_spins_dirty = False
+_recent_spins_flusher_started = False
+# Spin writes are batched: in-memory updates land immediately, the SD card
+# sees at most one atomic write per interval plus one at shutdown.
+RECENT_SPINS_FLUSH_INTERVAL_SECONDS = 30
 _last_spin_album = None
 _crate_cache = {"built_at": 0, "payload": None}  # generic/legacy test alias
 _crate_caches = {"generic": _crate_cache}
@@ -203,6 +221,11 @@ _enrich_last_attempt = BoundedTTLCache(2048, 10 * 60)
 _enrich_lock = threading.Lock()
 
 _config_lock = threading.RLock()
+# Parsed-config cache keyed by (mtime_ns, size): update_config's atomic
+# replace always changes the key, so writes are picked up on the next read
+# without explicit invalidation. Unreadable/missing files are never cached.
+_config_cache_key = None
+_config_cache_value = None
 _client_token_lock = threading.Lock()
 _user_token_lock = threading.RLock()
 
@@ -250,6 +273,9 @@ _event_signal = {
 }
 _event_clients = 0
 MAX_SSE_CLIENTS = max(1, min(int(os.environ.get("MAX_SSE_CLIENTS", "2")), 8))
+# Hard cap on one stream's lifetime: EventSource auto-reconnects, so ending
+# the generator guarantees a half-dead socket can never pin a slot forever.
+SSE_MAX_LIFETIME_SECONDS = max(60, int(os.environ.get("SSE_MAX_LIFETIME_SECONDS", "600")))
 
 # WLED discovery cache: ip -> {"name": str, "ip": str, "port": int, "last_seen": float}
 _wled_devices = {}
@@ -400,9 +426,21 @@ def _normalize_config(config):
 
 
 def load_config():
+    global _config_cache_key, _config_cache_value
     with _config_lock:
+        try:
+            info = os.stat(CONFIG_FILE)
+            key = (info.st_mtime_ns, info.st_size)
+        except OSError:
+            key = None
+        if key is not None and key == _config_cache_key:
+            return copy.deepcopy(_config_cache_value)
         config, _status = _read_config_file()
-        return _normalize_config(config) if config is not None else {}
+        normalized = _normalize_config(config) if config is not None else {}
+        if key is not None:
+            _config_cache_key = key
+            _config_cache_value = normalized
+        return copy.deepcopy(normalized)
 
 
 def save_config(config):
@@ -640,7 +678,7 @@ def resolve_uri_image(uri):
         return ""
 
     try:
-        resp = requests.get(
+        resp = _http.get(
             f"{SPOTIFY_API_BASE}{endpoint}",
             headers={"Authorization": f"Bearer {token}"},
             timeout=5,
@@ -723,7 +761,7 @@ def get_client_token():
             return None
 
         try:
-            resp = requests.post(SPOTIFY_TOKEN_URL, data={
+            resp = _http.post(SPOTIFY_TOKEN_URL, data={
                 "grant_type": "client_credentials",
             }, auth=(client_id, client_secret), timeout=5)
             if resp.status_code != 200:
@@ -759,7 +797,7 @@ def lookup_track(track_id):
         return None
 
     try:
-        resp = requests.get(
+        resp = _http.get(
             f"{SPOTIFY_API_BASE}/tracks/{track_id}",
             headers={"Authorization": f"Bearer {token}"},
             timeout=5,
@@ -808,7 +846,7 @@ def lookup_album(album_id):
         return None
 
     try:
-        resp = requests.get(
+        resp = _http.get(
             f"{SPOTIFY_API_BASE}/albums/{album_id}",
             headers={"Authorization": f"Bearer {token}"},
             timeout=5,
@@ -849,7 +887,7 @@ def lookup_album_tracks(album_id):
         # `next` URL with an Authorization header. This keeps the bearer token
         # on api.spotify.com and bounds even a malformed pagination loop.
         for _page in range(10):
-            resp = requests.get(
+            resp = _http.get(
                 url,
                 params={"limit": 50, "offset": offset},
                 headers={"Authorization": f"Bearer {token}"},
@@ -990,15 +1028,67 @@ def record_spin(item, cached_album):
         "ts": time.time(),
     }
 
+    global _recent_spins_dirty
     _load_recent_spins()
     with _recent_spins_lock:
         items = [e for e in _recent_spins["items"] if e.get("uri") != entry["uri"]]
         items.insert(0, entry)
         _recent_spins["items"] = items[:40]
+        _recent_spins_dirty = True
+    _ensure_recent_spins_flusher()
+
+
+def _flush_recent_spins():
+    """Persist pending spin changes; a failed write stays dirty for retry."""
+    global _recent_spins_dirty
+    with _recent_spins_lock:
+        if not _recent_spins_dirty:
+            return
         try:
             _atomic_write_json(RECENT_SPINS_FILE, {"items": _recent_spins["items"]})
         except OSError as e:
             print(f"Could not persist recent spins: {e}")
+            return
+        _recent_spins_dirty = False
+
+
+def _ensure_recent_spins_flusher():
+    global _recent_spins_flusher_started
+    with _recent_spins_lock:
+        if _recent_spins_flusher_started:
+            return
+        _recent_spins_flusher_started = True
+
+    def flush_loop():
+        while True:
+            time.sleep(RECENT_SPINS_FLUSH_INTERVAL_SECONDS)
+            _flush_recent_spins()
+
+    threading.Thread(target=flush_loop, name="recent-spins-flush", daemon=True).start()
+
+
+def _install_recent_spins_shutdown_flush():
+    """Flush on process exit and on SIGTERM (systemd's stop signal)."""
+    atexit.register(_flush_recent_spins)
+    try:
+        previous = signal.getsignal(signal.SIGTERM)
+    except (ValueError, OSError):
+        return  # Not the main thread; nothing safe to install.
+
+    def flush_then_forward(signum, frame):
+        _flush_recent_spins()
+        if callable(previous):
+            previous(signum, frame)
+        else:
+            raise SystemExit(128 + signum)
+
+    try:
+        signal.signal(signal.SIGTERM, flush_then_forward)
+    except (ValueError, OSError):
+        pass
+
+
+_install_recent_spins_shutdown_flush()
 
 
 def recent_spin_items():
@@ -1048,7 +1138,7 @@ def fetch_artist_albums(artist_id, fallback_artist_name=""):
         return []
 
     try:
-        resp = requests.get(
+        resp = _http.get(
             f"{SPOTIFY_API_BASE}/artists/{artist_id}/albums",
             params={"include_groups": "album", "limit": 10},
             headers={"Authorization": f"Bearer {token}"},
@@ -1349,7 +1439,7 @@ def fetch_user_playlists(limit=6, account_id=None, profile_epoch=None):
         return []
 
     try:
-        resp = requests.get(
+        resp = _http.get(
             f"{SPOTIFY_API_BASE}/me/playlists",
             params={"limit": min(50, limit), "offset": 0},
             headers={"Authorization": f"Bearer {token}"},
@@ -1402,7 +1492,7 @@ def fetch_saved_albums(limit=50, account_id=None, profile_epoch=None):
         return []
 
     try:
-        resp = requests.get(
+        resp = _http.get(
             f"{SPOTIFY_API_BASE}/me/albums",
             params={"limit": min(50, limit), "offset": 0},
             headers={"Authorization": f"Bearer {token}"},
@@ -1455,7 +1545,7 @@ def fetch_top_albums(limit=50, account_id=None, profile_epoch=None):
     if account_id is not None and not _profile_epoch_matches(account_id, profile_epoch):
         return []
     try:
-        response = requests.get(
+        response = _http.get(
             f"{SPOTIFY_API_BASE}/me/top/tracks",
             params={"limit": min(50, limit), "offset": 0, "time_range": "medium_term"},
             headers={"Authorization": f"Bearer {token}"},
@@ -1698,7 +1788,7 @@ def read_go_librespot_state():
         return False, None
 
     try:
-        resp = requests.get(f"{GO_LIBRESPOT_API_BASE}/status", timeout=0.8)
+        resp = _http.get(f"{GO_LIBRESPOT_API_BASE}/status", timeout=0.8)
     except requests.RequestException:
         return unavailable()
 
@@ -1916,7 +2006,7 @@ def _granted_scopes(value, fallback=()):
 
 def _spotify_current_user(access_token):
     try:
-        response = requests.get(
+        response = _http.get(
             f"{SPOTIFY_API_BASE}/me",
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=8,
@@ -2148,6 +2238,26 @@ def _prune_expired_profiles(config=None):
     return load_config()
 
 
+def _sweep_stale_profile_state():
+    """Evict in-memory token/generation entries that outlived their profile.
+
+    Tokens past expiry are re-fetched on demand anyway, and entries for
+    profiles no longer in config can never authorize again; dropping both
+    keeps the dicts bounded on a months-long uptime.
+    """
+    configured = set(_profile_store()["profiles"])
+    now = time.time()
+    with _user_token_lock:
+        for account_id, token in list(_user_tokens.items()):
+            if account_id not in configured or token.get("expires_at", 0) <= now:
+                _user_tokens.pop(account_id, None)
+    with _crate_build_lock:
+        for account_id in list(_profile_generations):
+            if account_id not in configured:
+                _profile_generations.pop(account_id, None)
+                _crate_caches.pop(f"profile:{account_id}", None)
+
+
 def _maybe_prune_expired_profiles(now=None, interval=60):
     """Bound pruning work at a request boundary with a single lock order."""
     global _profile_prune_next
@@ -2157,6 +2267,7 @@ def _maybe_prune_expired_profiles(now=None, interval=60):
             return
         _profile_prune_next = now + max(1, interval)
     _prune_expired_profiles()
+    _sweep_stale_profile_state()
 
 
 def _remove_profile_grant(account_id, expected_refresh_token=None):
@@ -2215,7 +2326,7 @@ def _disconnect_user_account(account_id=None, expected_refresh_token=None):
 
 def _refresh_token_response(refresh_token, config):
     try:
-        response = requests.post(SPOTIFY_TOKEN_URL, data={
+        response = _http.post(SPOTIFY_TOKEN_URL, data={
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
         }, auth=(config.get("client_id", ""), config.get("client_secret", "")), timeout=5)
@@ -2582,7 +2693,7 @@ def control_playback_local(action):
         return False, "Unknown action"
 
     try:
-        resp = requests.post(f"{GO_LIBRESPOT_API_BASE}{path}", timeout=1.5)
+        resp = _http.post(f"{GO_LIBRESPOT_API_BASE}{path}", timeout=1.5)
     except requests.RequestException as e:
         return False, f"Local player API unavailable: {e}"
 
@@ -2608,7 +2719,7 @@ def play_uri_local(uri, skip_to_uri=None):
         payload["skip_to_uri"] = skip_to_uri
 
     try:
-        resp = requests.post(
+        resp = _http.post(
             f"{GO_LIBRESPOT_API_BASE}/player/play",
             json=payload,
             timeout=2.5,
@@ -2634,7 +2745,7 @@ def control_playback_web_api(action):
     if not expected_device_id:
         return False, "Legacy fallback requires legacy_web_api_device_id"
     try:
-        state_resp = requests.get(f"{SPOTIFY_API_BASE}/me/player", headers=headers, timeout=5)
+        state_resp = _http.get(f"{SPOTIFY_API_BASE}/me/player", headers=headers, timeout=5)
         if state_resp.status_code != 200:
             return False, f"Could not verify active player: {state_resp.status_code}"
         state = state_resp.json()
@@ -2644,14 +2755,14 @@ def control_playback_web_api(action):
         params = {"device_id": expected_device_id}
 
         if action == "next":
-            r = requests.post(f"{SPOTIFY_API_BASE}/me/player/next", headers=headers, params=params, timeout=5)
+            r = _http.post(f"{SPOTIFY_API_BASE}/me/player/next", headers=headers, params=params, timeout=5)
         elif action == "previous":
-            r = requests.post(f"{SPOTIFY_API_BASE}/me/player/previous", headers=headers, params=params, timeout=5)
+            r = _http.post(f"{SPOTIFY_API_BASE}/me/player/previous", headers=headers, params=params, timeout=5)
         elif action == "play-pause":
             if state.get("is_playing", False):
-                r = requests.put(f"{SPOTIFY_API_BASE}/me/player/pause", headers=headers, params=params, timeout=5)
+                r = _http.put(f"{SPOTIFY_API_BASE}/me/player/pause", headers=headers, params=params, timeout=5)
             else:
-                r = requests.put(f"{SPOTIFY_API_BASE}/me/player/play", headers=headers, params=params, timeout=5)
+                r = _http.put(f"{SPOTIFY_API_BASE}/me/player/play", headers=headers, params=params, timeout=5)
         else:
             return False, "Unknown action"
 
@@ -3185,7 +3296,7 @@ def callback():
     redirect_uri = get_oauth_redirect_uri(config)
 
     try:
-        resp = requests.post(SPOTIFY_TOKEN_URL, data={
+        resp = _http.post(SPOTIFY_TOKEN_URL, data={
             "grant_type": "authorization_code",
             "code": code,
             "redirect_uri": redirect_uri,
@@ -3547,7 +3658,7 @@ def control_seek():
         return jsonify({"error": "position_ms required"}), 400
 
     try:
-        resp = requests.post(
+        resp = _http.post(
             f"{GO_LIBRESPOT_API_BASE}/player/seek",
             json={"position": position_ms},
             timeout=2.5,
@@ -3575,7 +3686,7 @@ def control_volume():
     # Translate percent to go-librespot volume steps.
     steps_max = 100
     try:
-        status = requests.get(f"{GO_LIBRESPOT_API_BASE}/status", timeout=1.5)
+        status = _http.get(f"{GO_LIBRESPOT_API_BASE}/status", timeout=1.5)
         if status.status_code == 200:
             status_payload = status.json()
             if isinstance(status_payload, dict):
@@ -3584,7 +3695,7 @@ def control_volume():
         pass
 
     try:
-        resp = requests.post(
+        resp = _http.post(
             f"{GO_LIBRESPOT_API_BASE}/player/volume",
             json={"volume": int(round(percent / 100 * steps_max))},
             timeout=2.5,
@@ -3880,11 +3991,15 @@ def events():
     @stream_with_context
     def generate():
         seen = -1
+        deadline = time.monotonic() + SSE_MAX_LIFETIME_SECONDS
         try:
             while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return
                 with _event_condition:
                     if seen == _event_version:
-                        _event_condition.wait(timeout=15)
+                        _event_condition.wait(timeout=min(15, remaining))
                     signal = dict(_event_signal)
                     version = _event_version
                 if version != seen:
@@ -3964,7 +4079,7 @@ def _is_wled_info(info):
 
 def _probe_wled(host):
     try:
-        resp = requests.get(f"http://{host}/json/info", timeout=WLED_PROBE_TIMEOUT)
+        resp = _http.get(f"http://{host}/json/info", timeout=WLED_PROBE_TIMEOUT)
     except requests.RequestException:
         return None
     if resp.status_code != 200:
@@ -4529,7 +4644,7 @@ def lyrics():
         _lyrics_inflight.add(cache_key)
     try:
         try:
-            resp = requests.get("https://lrclib.net/api/get", params={
+            resp = _http.get("https://lrclib.net/api/get", params={
                 "track_name": track_name,
                 "artist_name": artist_name,
                 "album_name": album_name,
