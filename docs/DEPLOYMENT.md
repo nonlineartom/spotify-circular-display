@@ -15,6 +15,29 @@ Do not copy files over the running directory and reboot blindly. Use a versioned
 release, retain config/service backups, and do not declare success until the
 hardware acceptance table is complete.
 
+## 0. Routine updates of the accepted release
+
+The staged procedure below is for migrating between releases. Once a release
+directory has passed acceptance, a routine fast-forward of that same checkout
+(no config-schema or dependency change) is:
+
+```bash
+cd <live release directory>
+git fetch origin && git reset --hard origin/<deployed-branch>
+sudo systemctl restart spotify-display
+XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user restart spotify-kiosk
+```
+
+Restart both every time: Jinja caches templates inside the Flask process and
+Chromium caches the page. When the update also touches `services/*`,
+`display-launch.sh`, `serve.sh` or `network_watchdog.sh`, additionally render
+and verify the unit templates (§3), install them over the live copies, run
+`sudo systemctl daemon-reload` plus `systemctl --user daemon-reload`, and
+restart the affected services — unit properties such as `MemoryHigh` and
+`OOMScoreAdjust` only apply from the next start of that service. A
+go-librespot restart interrupts playback, so schedule it for an idle moment;
+`requirements*.lock` changes need the §4 staged installer instead.
+
 ## 1. Record the current appliance
 
 Run these on the Pi before changing anything. Replace the path/user if needed.
