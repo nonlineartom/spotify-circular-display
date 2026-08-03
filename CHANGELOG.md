@@ -8,6 +8,22 @@ numbers, so audit remediation is recorded under `Unreleased`.
 
 ### Added
 
+- The artist shelf: while a record plays, the pinch-out tracklist grows a
+  rail of mini-sleeves — the playing artist's other albums. Tap a sleeve to
+  flip the modal to that record's tracklist (back chevron returns), then
+  **Put it on** (play it), tap any row (play it from that track), or
+  **Stack next** (queue the whole record on the receiver, in order, via
+  go-librespot's `/player/add_to_queue`).
+  - Server: `GET /api/artist/albums` (the playing artist's other records,
+    from the existing six-hour artist cache, excluding the record on the
+    platter), `POST /api/artist/play` and `POST /api/control/queue`. All
+    three validate against that bounded shelf — plus current-album tracks
+    for the queue — so none of them opens an arbitrary catalogue proxy;
+    `/api/album/tracks` accepts shelf albums under the same rule.
+  - The mock display fixture grows a second Test Pressings record, an
+    album-aware tracklist stub and a `/__mock/queued` capture so the whole
+    flow is exercisable in local browser checks.
+
 - "Living Record" front-end overhaul — every surface now shows something
   alive about the music, and every touch gets a physical response:
   - Sleeve notes: the now-playing pill is tappable (and slowly auto-cycles

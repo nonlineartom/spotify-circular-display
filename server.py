@@ -3868,7 +3868,11 @@ def album_tracks():
     if not album_id:
         return jsonify({"album_id": None, "tracks": []})  # not enriched yet
     if requested and requested != playing:
-        return jsonify({"error": "Album is not currently playing"}), 409
+        # The artist shelf may browse the playing artist's other records —
+        # still a bounded set, never an open metadata proxy.
+        _aid, _aname, shelf = artist_shelf_albums()
+        if requested not in {a["album_id"] for a in shelf}:
+            return jsonify({"error": "Album is not currently playing"}), 409
 
     tracks = lookup_album_tracks(album_id)
     return jsonify({"album_id": album_id, "tracks": tracks})
@@ -3901,6 +3905,140 @@ def album_play_track():
         return jsonify({"status": "ok"})
     status = 503 if "unavailable" in msg.lower() or "not ready" in msg.lower() else 502
     return jsonify({"error": msg}), status
+
+
+def current_artist():
+    """(id, name) of the playing track's primary artist, or (None, "").
+
+    Prefers ids already on the playback item; falls back to the enrichment
+    cache, mirroring current_album_id(). Scopes the artist shelf."""
+    state = read_playback_state()
+    item = (state or {}).get("item") or {}
+    candidates = list(item.get("artists") or [])
+    track_id = item.get("id")
+    cached = _track_cache.get(track_id) if track_id else None
+    candidates.extend((cached or {}).get("artists") or [])
+    for a in candidates:
+        if isinstance(a, dict) and a.get("id"):
+            return a["id"], a.get("name") or ""
+    return None, ""
+
+
+def artist_shelf_albums():
+    """The playing artist's other records — the bounded set every artist-shelf
+    endpoint validates against, so none of them becomes an open proxy."""
+    artist_id, artist_name = current_artist()
+    if not artist_id:
+        return None, "", []
+    playing_album = current_album_id()
+    albums = []
+    for item in fetch_artist_albums(artist_id, artist_name):
+        album_id = item["uri"].rsplit(":", 1)[-1]
+        if playing_album and album_id == playing_album:
+            continue
+        albums.append({
+            "album_id": album_id,
+            "uri": item["uri"],
+            "title": item["title"],
+            "subtitle": item["subtitle"],
+            "image": item["image"],
+        })
+    return artist_id, artist_name, albums
+
+
+@app.route("/api/artist/albums")
+def artist_albums_route():
+    """Other albums by the playing artist — fuels the tracklist's artist shelf."""
+    artist_id, artist_name, albums = artist_shelf_albums()
+    if not artist_id:
+        return jsonify({"artist": None, "albums": []})
+    return jsonify({"artist": {"id": artist_id, "name": artist_name}, "albums": albums})
+
+
+@app.route("/api/artist/play", methods=["POST"])
+def artist_play():
+    """Put on one of the playing artist's other records, optionally starting
+    from a given track. Accepts only albums on the current artist shelf."""
+    data = _request_json_object()
+    if data is None:
+        return jsonify({"error": "JSON object required"}), 400
+    uri = data.get("uri", "")
+    skip_to = data.get("skip_to_uri") or None
+    if not isinstance(uri, str) or not uri.startswith("spotify:album:"):
+        return jsonify({"error": "Invalid album URI"}), 400
+    if skip_to is not None and (
+        not isinstance(skip_to, str) or not skip_to.startswith("spotify:track:")
+    ):
+        return jsonify({"error": "Invalid track URI"}), 400
+    _aid, _aname, shelf = artist_shelf_albums()
+    if uri not in {a["uri"] for a in shelf}:
+        return jsonify({"error": "Album is not on the artist shelf"}), 400
+    if skip_to and skip_to not in {
+        t["uri"] for t in lookup_album_tracks(uri.rsplit(":", 1)[-1])
+    }:
+        return jsonify({"error": "Track is not on that album"}), 400
+    ok, msg = play_uri_local(uri, skip_to_uri=skip_to)
+    if ok:
+        return jsonify({"status": "ok"})
+    status = 503 if "unavailable" in msg.lower() or "not ready" in msg.lower() else 502
+    return jsonify({"error": msg}), status
+
+
+def _queue_uri_local(track_uri):
+    """Append one track to the receiver's play queue."""
+    try:
+        resp = _http.post(
+            f"{GO_LIBRESPOT_API_BASE}/player/add_to_queue",
+            json={"uri": track_uri},
+            timeout=1.5,
+        )
+    except requests.RequestException as e:
+        return False, f"Local player API unavailable: {e}"
+    if resp.status_code in (200, 204):
+        return True, "ok"
+    return False, f"Local player API error: {resp.status_code}"
+
+
+@app.route("/api/control/queue", methods=["POST"])
+def control_queue():
+    """Stack a record (or a current-album track) to play next.
+
+    Album URIs must sit on the artist shelf; track URIs must be on the record
+    currently playing — the queue can't reach arbitrary catalogue."""
+    data = _request_json_object()
+    if data is None:
+        return jsonify({"error": "JSON object required"}), 400
+    uri = data.get("uri", "")
+    if not isinstance(uri, str):
+        return jsonify({"error": "uri must be a string"}), 400
+
+    if uri.startswith("spotify:album:"):
+        _aid, _aname, shelf = artist_shelf_albums()
+        if uri not in {a["uri"] for a in shelf}:
+            return jsonify({"error": "Album is not on the artist shelf"}), 400
+        tracks = [t["uri"] for t in lookup_album_tracks(uri.rsplit(":", 1)[-1])]
+        if not tracks:
+            return jsonify({"error": "No tracks are available for this album"}), 502
+    elif uri.startswith("spotify:track:"):
+        album_id = current_album_id()
+        if not album_id or uri not in {t["uri"] for t in lookup_album_tracks(album_id)}:
+            return jsonify({"error": "Track is not on the current album"}), 400
+        tracks = [uri]
+    else:
+        return jsonify({"error": "Invalid Spotify URI"}), 400
+
+    queued = 0
+    failure = None
+    for track_uri in tracks:
+        ok, msg = _queue_uri_local(track_uri)
+        if not ok:
+            failure = msg  # partial stack: report what landed
+            break
+        queued += 1
+    if queued == 0:
+        status = 503 if failure and "unavailable" in failure.lower() else 502
+        return jsonify({"error": failure or "Nothing was queued"}), status
+    return jsonify({"status": "ok", "queued": queued, "of": len(tracks)})
 
 
 @app.route("/api/info")

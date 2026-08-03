@@ -1053,6 +1053,103 @@
     text-transform: uppercase;
     color: rgba(255,255,255,0.46);
   }
+  /* Back chevron — appears while browsing another of the artist's records. */
+  #tl-back {
+    position: absolute;
+    left: 92px;
+    top: -4px;
+    width: 46px;
+    height: 46px;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    pointer-events: auto;
+    background: rgba(8, 9, 11, 0.72);
+    border: 1px solid rgba(255,255,255,0.18);
+    border-radius: 50%;
+    color: rgba(255,255,255,0.85);
+    font-size: 26px;
+    line-height: 1;
+    padding: 0 0 3px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #tracklist.tl-browsing #tl-back { display: flex; }
+  #tl-back:active { transform: scale(0.9); }
+
+  /* Actions for a browsed record: put it on, or stack it next in the queue. */
+  #tl-actions {
+    position: absolute;
+    top: 232px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: none;
+    gap: 16px;
+    z-index: 4;
+  }
+  #tracklist.tl-browsing #tl-actions { display: flex; }
+  .tl-action {
+    pointer-events: auto;
+    font-family: inherit;
+    font-size: 15px;
+    letter-spacing: 1.2px;
+    padding: 11px 24px;
+    color: rgba(255,255,255,0.88);
+    background: rgba(8, 9, 11, 0.74);
+    border: 1px solid rgba(var(--ui-accent-rgb), 0.38);
+    border-radius: 24px;
+    -webkit-tap-highlight-color: transparent;
+    transition: transform 140ms var(--ease-pop);
+  }
+  .tl-action:active { transform: scale(0.93); }
+
+  /* The artist shelf — mini-sleeves of the playing artist's other records,
+     hugging the lower rim under the picker. */
+  #tl-rail {
+    position: absolute;
+    top: 848px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 700px;
+    text-align: center;
+    z-index: 4;
+    display: none;
+  }
+  #tracklist.has-rail #tl-rail { display: block; }
+  #tl-rail .rail-label {
+    font-size: 11.5px;
+    font-weight: 400;
+    letter-spacing: 2.6px;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.44);
+    margin-bottom: 9px;
+    text-shadow: 0 1px 6px rgba(0,0,0,0.8);
+  }
+  #tl-rail-sleeves {
+    display: flex;
+    justify-content: center;
+    gap: 11px;
+    pointer-events: auto;
+  }
+  .tl-sleeve {
+    width: 58px;
+    height: 58px;
+    flex: 0 0 auto;
+    padding: 0;
+    border-radius: 5px;
+    background-color: #17181c;
+    background-size: cover;
+    background-position: center;
+    border: 1px solid rgba(255,255,255,0.12);
+    box-shadow: 0 5px 12px rgba(0,0,0,0.55);
+    -webkit-tap-highlight-color: transparent;
+    transition: transform 140ms var(--ease-pop);
+  }
+  .tl-sleeve:active { transform: scale(0.9); }
+  .tl-sleeve.sel {
+    outline: 2px solid var(--ui-accent);
+    outline-offset: 2px;
+  }
+
   /* Side gutters — the "tap aside to close" zones. */
   .tl-gutter {
     position: absolute;
@@ -1602,8 +1699,17 @@
   <div id="tracklist" role="dialog" aria-modal="true" aria-labelledby="tl-album-title" aria-describedby="tl-status" aria-hidden="true" tabindex="-1">
     <div id="tl-scrim"></div>
     <div id="tl-head">
+      <button id="tl-back" type="button" aria-label="Back to the playing record">‹</button>
       <div class="tl-album" id="tl-album-title"></div>
       <div class="tl-artist"></div>
+    </div>
+    <div id="tl-actions">
+      <button class="tl-action" id="tl-put-on" type="button">Put it on</button>
+      <button class="tl-action" id="tl-stack" type="button">Stack next</button>
+    </div>
+    <div id="tl-rail" aria-label="More records by this artist">
+      <div class="rail-label" id="tl-rail-label"></div>
+      <div id="tl-rail-sleeves"></div>
     </div>
     <div id="tl-gutter-l" class="tl-gutter"></div>
     <div id="tl-gutter-r" class="tl-gutter"></div>
@@ -4056,6 +4162,20 @@
   let tlAbortController = null;
   let tlRestoreFocus = null;
 
+  // ── The artist shelf — browse the playing artist's other records ──
+  const tlBackBtn = $("tl-back");
+  const tlPutOnBtn = $("tl-put-on");
+  const tlStackBtn = $("tl-stack");
+  const tlRailLabel = $("tl-rail-label");
+  const tlRailSleeves = $("tl-rail-sleeves");
+  let tlShelf = { artistName: "", albums: [] };
+  let tlShelfEpoch = 0;
+  let tlViewAlbum = null;      // null → the playing record; else a shelf album
+
+  function tlViewKey() {
+    return tlViewAlbum ? tlViewAlbum.album_id : (state.albumId || "");
+  }
+
   // Tracklist highlight uses the guarded UI accent — same tint as the rest of
   // the chrome, and never goes muddy on dark artwork like the raw accent could.
   function tlAccent() { return uiAccentCss; }
@@ -4103,7 +4223,9 @@
     tlRows = [];
     if (tlTracks.length) tlStatus.textContent = "";
     else if (!tlStatus.textContent) tlStatus.textContent = "No tracks are available for this album.";
-    const curUri = state.trackUri || "";
+    // The EQ marker belongs only to the record actually on the platter.
+    const viewingPlaying = !tlViewAlbum || tlViewAlbum.album_id === state.albumId;
+    const curUri = viewingPlaying ? (state.trackUri || "") : "";
     let curIdx = 0;
     tlTracks.forEach((t, i) => {
       const row = document.createElement("button");
@@ -4149,7 +4271,7 @@
   }
 
   async function loadTracklist() {
-    const key = state.albumId || "";
+    const key = tlViewKey();
     const epoch = ++tlRequestEpoch;
     if (tlAbortController) tlAbortController.abort();
     tlAbortController = new AbortController();
@@ -4168,7 +4290,7 @@
     try {
       const url = key ? "/api/album/tracks?album_id=" + encodeURIComponent(key) : "/api/album/tracks";
       const r = await fetch(url, { signal: tlAbortController.signal, credentials: "same-origin" });
-      if (epoch !== tlRequestEpoch || key !== (state.albumId || "") || !state.tracklisting) return;
+      if (epoch !== tlRequestEpoch || key !== tlViewKey() || !state.tracklisting) return;
       if (r.ok) {
         const d = await r.json();
         tlTracks = (d && d.tracks) || [];
@@ -4201,10 +4323,123 @@
 
   function refreshTracklist() {
     if (!state.tracklisting) return;
+    if (tlViewAlbum) {
+      // The browsed record just went on (Put it on / a row tap that didn't
+      // close us) — fold back to the playing view. Otherwise keep browsing:
+      // a track change elsewhere shouldn't yank the shelf out of your hands.
+      if (tlViewAlbum.album_id === state.albumId) { tlSetView(null); return; }
+      renderTlRail();
+      return;
+    }
     tlAlbumEl.textContent = state.albumName || "";
     tlArtistEl.textContent = state.artistName || "";
     loadTracklist();
   }
+
+  // Re-target the modal at a shelf album (or back to the playing record).
+  function tlSetView(album) {
+    tlViewAlbum = album;
+    tlEl.classList.toggle("tl-browsing", !!album);
+    tlAlbumEl.textContent = album ? (album.title || "") : (state.albumName || "");
+    tlArtistEl.textContent = album
+      ? (album.subtitle || tlShelf.artistName || "")
+      : (state.artistName || "");
+    renderTlRail();
+    loadTracklist();
+    armTlTimeout();
+  }
+
+  async function loadTlShelf() {
+    const epoch = ++tlShelfEpoch;
+    try {
+      const r = await fetch("/api/artist/albums", { credentials: "same-origin" });
+      if (epoch !== tlShelfEpoch || !state.tracklisting) return;
+      const d = r.ok ? await r.json() : null;
+      tlShelf = {
+        artistName: d && d.artist ? (d.artist.name || "") : "",
+        albums: (d && d.albums) || [],
+      };
+    } catch (e) {
+      if (epoch !== tlShelfEpoch) return;
+      tlShelf = { artistName: "", albums: [] };
+    }
+    renderTlRail();
+  }
+
+  function renderTlRail() {
+    const albums = tlShelf.albums.slice(0, 9);
+    tlEl.classList.toggle("has-rail", albums.length > 0);
+    if (!albums.length) { tlRailSleeves.innerHTML = ""; return; }
+    tlRailLabel.textContent = tlShelf.artistName
+      ? "More by " + tlShelf.artistName : "More by this artist";
+    tlRailSleeves.innerHTML = "";  // ≤9 tiny buttons per open/view change
+    for (const a of albums) {
+      const s = document.createElement("button");
+      s.type = "button";
+      s.className = "tl-sleeve";
+      s.title = a.title || "";
+      s.setAttribute("aria-label", a.title || "Album");
+      if (a.image) s.style.backgroundImage = cssUrl(a.image);
+      if (tlViewAlbum && tlViewAlbum.album_id === a.album_id) s.classList.add("sel");
+      s.addEventListener("click", e => {
+        // Stop here: tlSetView rebuilds this rail mid-dispatch, and a
+        // detached target would read as a "tap aside" to the dismiss handler.
+        e.stopPropagation();
+        tlSetView(tlViewAlbum && tlViewAlbum.album_id === a.album_id ? null : a);
+      });
+      tlRailSleeves.appendChild(s);
+    }
+  }
+
+  // The shelf's own controls must not read as wheel scrolls or gutter taps.
+  for (const el of [tlRailSleeves, tlBackBtn, tlPutOnBtn, tlStackBtn]) {
+    el.addEventListener("pointerdown", e => e.stopPropagation());
+  }
+  tlBackBtn.addEventListener("click", e => { e.stopPropagation(); tlSetView(null); });
+
+  tlPutOnBtn.addEventListener("click", async e => {
+    e.stopPropagation();
+    if (!tlViewAlbum || performance.now() - tlLaunchAt < 1500) return;
+    tlLaunchAt = performance.now();
+    const album = tlViewAlbum;
+    try {
+      const r = await fetch("/api/artist/play", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uri: album.uri }),
+      });
+      if (!r.ok) throw new Error("artist-play failed: " + r.status);
+      closeTracklist();
+      startRecordFlip("next");   // pull the chosen record onto the platter
+      setTimeout(poll, 600);
+      setTimeout(poll, 1800);
+    } catch (e) {
+      tlLaunchAt = -Infinity;
+      showWledToast("Couldn't put that record on");
+    }
+  });
+
+  tlStackBtn.addEventListener("click", async e => {
+    e.stopPropagation();
+    if (!tlViewAlbum || performance.now() - tlLaunchAt < 1500) return;
+    tlLaunchAt = performance.now();
+    const album = tlViewAlbum;
+    try {
+      const r = await fetch("/api/control/queue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uri: album.uri }),
+      });
+      const d = r.ok ? await r.json() : null;
+      if (!d || d.status !== "ok") throw new Error("queue failed: " + r.status);
+      showWledToast("Stacked next · " + (album.title || "album") +
+        (d.queued ? " (" + d.queued + " tracks)" : ""));
+      armTlTimeout();
+    } catch (e) {
+      tlLaunchAt = -Infinity;
+      showWledToast("Couldn't stack that record");
+    }
+  });
 
   function openTracklist() {
     if (state.tracklisting || state.browsing || !state.trackId) return;
@@ -4221,15 +4456,21 @@
       $("tl-hint").style.display = seen >= 3 ? "none" : "";
       localStorage.tlHintSeen = seen + 1;
     } catch (e) { /* storage unavailable — keep the hint */ }
+    tlViewAlbum = null;
+    tlEl.classList.remove("tl-browsing");
     tlAlbumEl.textContent = state.albumName || "";
     tlArtistEl.textContent = state.artistName || "";
     loadTracklist();
+    loadTlShelf();
     armTlTimeout();
   }
 
   function closeTracklist() {
     const wasOpen = state.tracklisting;
     state.tracklisting = false;
+    tlViewAlbum = null;
+    tlEl.classList.remove("tl-browsing", "has-rail");
+    tlShelfEpoch++;
     setModalLayersInert("tracklist", tracklistBackgroundLayers, false);
     viewport.classList.remove("tracklisting");
     tlEl.classList.remove("visible");
@@ -4258,11 +4499,19 @@
     if (performance.now() - tlLaunchAt < 1500) return;
     tlLaunchAt = performance.now();
     try {
-      const r = await fetch("/api/album/play-track", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uri }),
-      });
+      // A row on a browsed shelf album starts THAT record from this track;
+      // a row on the playing record keeps today's behaviour.
+      const r = tlViewAlbum
+        ? await fetch("/api/artist/play", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ uri: tlViewAlbum.uri, skip_to_uri: uri }),
+          })
+        : await fetch("/api/album/play-track", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ uri }),
+          });
       if (!r.ok) {
         let msg = "";
         try { msg = (await r.json()).error || ""; } catch (e2) {}
@@ -4345,10 +4594,11 @@
     tlPicker._wt = setTimeout(tlSnap, 140);
   }, { passive: false });
 
-  // Tap anywhere off the list column (gutters, scrim, header band) dismisses.
+  // Tap anywhere off the list column (gutters, scrim, header band) dismisses —
+  // except the artist shelf's own controls.
   tlEl.addEventListener("click", e => {
     if (tlDragMoved) return;
-    if (e.target.closest("#tl-picker")) return;
+    if (e.target.closest("#tl-picker, #tl-rail, #tl-actions, #tl-back")) return;
     closeTracklist();
   });
 

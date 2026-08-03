@@ -49,7 +49,8 @@ def _track(track_id="mock-track-a", art="/static/mock-album.svg"):
         "id": track_id,
         "uri": f"spotify:track:{track_id}",
         "name": title,
-        "artists": [{"name": "The Test Pressings"}],
+        # The id feeds current_artist() — the artist shelf hangs off it.
+        "artists": [{"name": "The Test Pressings", "id": "mock-artist"}],
         "duration_ms": 244000,
         "album": {
             "id": "mock-album",
@@ -186,15 +187,41 @@ def mock_control(action):
 server.control_playback = mock_control
 server.play_uri_local = lambda *_args, **_kwargs: (True, "ok")
 server.current_album_id = lambda: "mock-album"
-server.lookup_album_tracks = lambda _album: [
-    {"number": number, "disc": 1, "name": name, "duration_ms": 210000,
-     # The playing fixture track IS "Midnight Geometry" — reuse its real URI
-     # so the kiosk's current-row marker (EQ bars) has something to match.
-     "uri": "spotify:track:mock-track-a" if name == "Midnight Geometry" else f"spotify:track:mock-{number}"}
-    for number, name in enumerate(
-        ["Needle Drop", "Midnight Geometry", "Copper Sunrise", "Last Groove"], start=1
-    )
+_MOCK_ALBUM_TRACKS = {
+    "mock-album": [
+        # The playing fixture track IS "Midnight Geometry" — reuse its real URI
+        # so the kiosk's current-row marker (EQ bars) has something to match.
+        ("Needle Drop", "spotify:track:mock-1"),
+        ("Midnight Geometry", "spotify:track:mock-track-a"),
+        ("Copper Sunrise", "spotify:track:mock-3"),
+        ("Last Groove", "spotify:track:mock-4"),
+    ],
+    "mock-b": [
+        ("Second Stylus", "spotify:track:mock-b-1"),
+        ("Cartridge Blues", "spotify:track:mock-b-2"),
+        ("Anti-Skate", "spotify:track:mock-b-3"),
+    ],
+}
+server.lookup_album_tracks = lambda album_id: [
+    {"number": number, "disc": 1, "name": name, "duration_ms": 210000, "uri": uri}
+    for number, (name, uri) in enumerate(_MOCK_ALBUM_TRACKS.get(album_id, []), start=1)
 ]
+
+# The artist shelf: one other record by The Test Pressings, so the tracklist
+# rail, re-targeted tracklists, Put it on and Stack next are all exercisable.
+server.fetch_artist_albums = lambda artist_id, fallback_artist_name="": ([
+    {"id": "deep-mock-b", "uri": "spotify:album:mock-b", "title": "Second Fixture",
+     "subtitle": "The Test Pressings", "image": "/static/mock-album-b.svg",
+     "accent": "#4c7fbd", "type": "album"},
+] if artist_id == "mock-artist" else [])
+
+# Record queue calls so browser checks can assert what got stacked.
+_queued_uris = []
+
+
+@server.app.route("/__mock/queued")
+def mock_queued_route():
+    return server.jsonify({"queued": list(_queued_uris)})
 server.crate_payload = lambda: {
     "profile_state": "linked",
     "profile_epoch": "mock-epoch",
@@ -271,8 +298,14 @@ def fake_get(url, *args, **kwargs):
 
 # Outbound calls go through the pooled session since the efficiency pass —
 # patch it (patching the requests module no longer intercepts anything).
+def fake_post(url, *args, **kwargs):
+    if url.endswith("/player/add_to_queue"):
+        _queued_uris.append(((kwargs.get("json") or {}).get("uri")) or "")
+    return FakeResponse(204, {})
+
+
 server._http.get = fake_get
-server._http.post = lambda *_args, **_kwargs: FakeResponse(204, {})
+server._http.post = fake_post
 
 
 @server.app.route("/__mock/state/<mode>", methods=["POST"])

@@ -2532,3 +2532,167 @@ def test_wled_runtime_status_rejects_oversize_or_unknown_schema(client, monkeypa
     assert server._read_wled_runtime_status()["reason"] == "invalid_size"
     status_file.write_text(json.dumps({"schema_version": 2, "updated_unix": time.time()}))
     assert server._read_wled_runtime_status()["reason"] == "unsupported_schema"
+
+
+# ── Artist shelf: browse/play/queue the playing artist's other records ──
+
+
+def _playing_state(track_id="t1", album_id="alb1", artist_id="art1"):
+    return {
+        "is_playing": True,
+        "progress_ms": 1000,
+        "item": {
+            "id": track_id,
+            "uri": f"spotify:track:{track_id}",
+            "name": "Track",
+            "artists": [{"name": "Artist", "id": artist_id}],
+            "duration_ms": 200000,
+            "album": {"id": album_id, "name": "Album", "images": []},
+        },
+    }
+
+
+def _shelf_fixture(monkeypatch, albums=("alb2",)):
+    monkeypatch.setattr(server, "read_playback_state", _playing_state)
+    monkeypatch.setattr(server, "fetch_artist_albums", lambda _aid, _name="": [
+        {"id": f"deep-{a}", "uri": f"spotify:album:{a}", "title": f"Album {a}",
+         "subtitle": "Artist", "image": "", "accent": "#888", "type": "album"}
+        for a in albums
+    ])
+
+
+def test_artist_albums_lists_other_records_by_playing_artist(client, monkeypatch):
+    web, _ = client
+    seen = {}
+
+    def fake_fetch(artist_id, fallback_artist_name=""):
+        seen["artist_id"] = artist_id
+        return [
+            {"id": "deep-alb1", "uri": "spotify:album:alb1", "title": "Playing",
+             "subtitle": "Artist", "image": "", "accent": "#888", "type": "album"},
+            {"id": "deep-alb2", "uri": "spotify:album:alb2", "title": "Other",
+             "subtitle": "Artist", "image": "/img.jpg", "accent": "#888", "type": "album"},
+        ]
+
+    monkeypatch.setattr(server, "read_playback_state", _playing_state)
+    monkeypatch.setattr(server, "fetch_artist_albums", fake_fetch)
+    response = web.get("/api/artist/albums")
+    assert response.status_code == 200
+    data = response.get_json()
+    assert seen["artist_id"] == "art1"
+    assert data["artist"] == {"id": "art1", "name": "Artist"}
+    # The record already on the platter is excluded from its own shelf.
+    assert [a["album_id"] for a in data["albums"]] == ["alb2"]
+    assert data["albums"][0]["uri"] == "spotify:album:alb2"
+    assert data["albums"][0]["title"] == "Other"
+
+
+def test_artist_albums_empty_when_nothing_playing(client, monkeypatch):
+    web, _ = client
+    monkeypatch.setattr(server, "read_playback_state", lambda: None)
+    monkeypatch.setattr(
+        server, "fetch_artist_albums",
+        lambda *_a, **_k: pytest.fail("must not fetch without a playing artist"),
+    )
+    response = web.get("/api/artist/albums")
+    assert response.status_code == 200
+    assert response.get_json() == {"artist": None, "albums": []}
+
+
+def test_album_tracks_serves_shelf_albums_but_not_arbitrary(client, monkeypatch):
+    web, _ = client
+    _shelf_fixture(monkeypatch)
+    monkeypatch.setattr(server, "lookup_album_tracks", lambda album_id: [
+        {"number": 1, "disc": 1, "name": "T", "duration_ms": 1000,
+         "uri": f"spotify:track:{album_id}-1"},
+    ])
+    on_shelf = web.get("/api/album/tracks?album_id=alb2")
+    assert on_shelf.status_code == 200
+    assert on_shelf.get_json()["tracks"][0]["uri"] == "spotify:track:alb2-1"
+    assert web.get("/api/album/tracks?album_id=alb9").status_code == 409
+
+
+def test_artist_play_scopes_to_shelf(client, monkeypatch):
+    web, _ = client
+    _shelf_fixture(monkeypatch)
+    monkeypatch.setattr(server, "lookup_album_tracks", lambda album_id: [
+        {"number": 1, "disc": 1, "name": "T", "duration_ms": 1000,
+         "uri": f"spotify:track:{album_id}-1"},
+    ])
+    played = []
+    monkeypatch.setattr(
+        server, "play_uri_local",
+        lambda uri, skip_to_uri=None: (played.append((uri, skip_to_uri)) or (True, "ok")),
+    )
+
+    whole = web.post("/api/artist/play", json={"uri": "spotify:album:alb2"})
+    assert whole.status_code == 200
+    from_track = web.post("/api/artist/play", json={
+        "uri": "spotify:album:alb2", "skip_to_uri": "spotify:track:alb2-1",
+    })
+    assert from_track.status_code == 200
+    assert played == [
+        ("spotify:album:alb2", None),
+        ("spotify:album:alb2", "spotify:track:alb2-1"),
+    ]
+
+    assert web.post("/api/artist/play", json={"uri": "spotify:album:alb9"}).status_code == 400
+    assert web.post("/api/artist/play", json={
+        "uri": "spotify:album:alb2", "skip_to_uri": "spotify:track:foreign",
+    }).status_code == 400
+    assert web.post("/api/artist/play", json={"uri": "spotify:playlist:x"}).status_code == 400
+    assert len(played) == 2
+
+
+def test_control_queue_expands_shelf_album_into_receiver_queue(client, monkeypatch):
+    web, _ = client
+    _shelf_fixture(monkeypatch)
+    monkeypatch.setattr(server, "lookup_album_tracks", lambda album_id: [
+        {"number": n, "disc": 1, "name": f"T{n}", "duration_ms": 1000,
+         "uri": f"spotify:track:{album_id}-{n}"}
+        for n in (1, 2, 3)
+    ])
+    posts = []
+
+    def fake_post(url, json=None, timeout=None):
+        posts.append((url, json))
+        return FakeResponse(status_code=200)
+
+    monkeypatch.setattr(server._http, "post", fake_post)
+    response = web.post("/api/control/queue", json={"uri": "spotify:album:alb2"})
+    assert response.status_code == 200
+    assert response.get_json() == {"status": "ok", "queued": 3, "of": 3}
+    assert [p[1]["uri"] for p in posts] == [
+        "spotify:track:alb2-1", "spotify:track:alb2-2", "spotify:track:alb2-3",
+    ]
+    assert all(p[0].endswith("/player/add_to_queue") for p in posts)
+
+
+def test_control_queue_scopes_uris_and_degrades_when_receiver_is_down(client, monkeypatch):
+    web, _ = client
+    _shelf_fixture(monkeypatch)
+    monkeypatch.setattr(server, "lookup_album_tracks", lambda album_id: [
+        {"number": 1, "disc": 1, "name": "T", "duration_ms": 1000,
+         "uri": f"spotify:track:{album_id}-1"},
+    ])
+
+    posts = []
+    monkeypatch.setattr(
+        server._http, "post",
+        lambda url, json=None, timeout=None: (posts.append(json) or FakeResponse(status_code=200)),
+    )
+    # A track on the current album may be stacked; anything else may not.
+    on_album = web.post("/api/control/queue", json={"uri": "spotify:track:alb1-1"})
+    assert on_album.status_code == 200
+    assert on_album.get_json()["queued"] == 1
+    assert web.post("/api/control/queue", json={"uri": "spotify:track:foreign"}).status_code == 400
+    assert web.post("/api/control/queue", json={"uri": "spotify:album:alb9"}).status_code == 400
+    assert web.post("/api/control/queue", json={"uri": "spotify:playlist:x"}).status_code == 400
+    assert len(posts) == 1
+
+    def down(_url, json=None, timeout=None):
+        raise server.requests.RequestException("receiver offline")
+
+    monkeypatch.setattr(server._http, "post", down)
+    outage = web.post("/api/control/queue", json={"uri": "spotify:album:alb2"})
+    assert outage.status_code == 503
