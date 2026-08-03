@@ -6,6 +6,50 @@ numbers, so audit remediation is recorded under `Unreleased`.
 
 ## Unreleased
 
+### Added
+
+- "Living Record" front-end overhaul — every surface now shows something
+  alive about the music, and every touch gets a physical response:
+  - Sleeve notes: the now-playing pill is tappable (and slowly auto-cycles
+    while playing) through three faces — title/artist, album · year · label,
+    and pressing facts (33⅓/45 RPM · Side A/B). Track changes always return
+    to the title face; `?faces=0` disables the auto-cycle.
+  - Karaoke lyrics: the active line sweeps an accent-coloured fill across
+    its own duration, re-syncing mid-line after seeks and freezing on pause
+    (`?karaoke=0` disables; off entirely under reduced-motion).
+  - The record crate marks the album currently on the turntable: a mini-disc
+    peeks out of its sleeve and turns while playback runs, the card gets an
+    accent outline, and its caption reads "Now spinning". Matching is by
+    album URI, so it works across saved, rotation and recent-spin sections.
+  - The tracklist's current row swaps its number for animated EQ bars,
+    frozen while paused.
+  - Twist-seek now ghosts the landing spot on the progress ring — a faint
+    bridge arc and a hollow accent marker track your fingers and vanish on
+    release.
+  - Skip arrows compress on press.
+- The mock display fixture now publishes a linked profile signal and uses
+  the playing track's real URI in the album tracklist, so the crate and the
+  current-row marker are exercisable in local browser checks. It also patches
+  the pooled `_http` session (the module-level `requests` patch stopped
+  intercepting anything after the efficiency pass) and ships full-length
+  synced fixture lyrics, so the karaoke sweep is exercisable locally too.
+- Review-pass tuning on the above, from the pre-deploy audit:
+  - The sleeve-notes cycle is title-biased — the title/artist face rests 45 s,
+    each sleeve-note face holds 11 s (the primary readout owns ~2/3 of the
+    loop), a tap restarts the dwell clock, a pause or stale receiver settles
+    the pill back onto the title face, and the cycle never fires mid
+    track-change crossfade (which could previously swallow the new title).
+  - The peek disc and EQ bars pause behind a hidden shelf/closed tracklist
+    (the rule the lava blobs lived by) and freeze on a stale receiver like
+    the lyrics do; ending playback retires the shelf marker instead of
+    leaving it spinning on the idle shelf.
+  - An open crate's "Now spinning" caption re-resolves when the playing
+    record changes instead of waiting for a scroll.
+  - Twist-ghost redraws are coalesced to ~30 fps (raw pointermove rate can
+    exceed 120 Hz), and rewinding dims the bridged span instead of drawing
+    an invisible white-on-white arc; the karaoke twin hints `will-change`
+    only while animating so the sweep can stay on the compositor.
+
 ### Changed
 
 - Panel performance and memory pass for the 1 GB Pi:

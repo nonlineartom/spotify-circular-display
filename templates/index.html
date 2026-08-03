@@ -377,6 +377,8 @@
     align-items: center;
     z-index: 30;
     pointer-events: auto;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
     background: rgba(5, 7, 8, 0.78);
     border: 1px solid rgba(var(--ui-accent-rgb), 0.18);
     border-radius: 22px;
@@ -390,6 +392,13 @@
   #pill.visible {
     opacity: 1;
     transform: translateX(-50%) translateY(0);
+  }
+  /* Sleeve notes: the pill is tappable (cycles title/artist → album/label →
+     pressing facts). Keyboard focus gets the same accent hairline language
+     as the rest of the chrome. */
+  #pill:focus-visible {
+    outline: 2px solid rgba(var(--ui-accent-rgb), 0.6);
+    outline-offset: 3px;
   }
 
   /* Subtle text shadow keeps the type legible over any artwork */
@@ -527,6 +536,10 @@
     pointer-events: none;
   }
   .skip-btn.visible { opacity: 0.22; }
+  /* Press feedback: the arrow itself compresses (the button's own transform
+     is busy with positioning and swipe drags, so the svg takes the press). */
+  .skip-btn svg { transition: transform 160ms var(--ease-pop); }
+  .skip-btn:active svg { transform: scale(0.8); transition-duration: 60ms; }
   /* Quiet chrome: after 8s without a touch the arrows retire; any touch
      brings them back instantly (swipes work regardless of visibility). */
   #viewport.controls-idle .skip-btn.visible { opacity: 0; }
@@ -650,6 +663,37 @@
   }
   .lyric-line.past {
     color: rgba(255,255,255,0.38);
+  }
+
+  /* Karaoke fill — an accent-coloured twin of the active line, revealed
+     left-to-right over the line's own duration via a clipped overlay.
+     clip-path animation repaints one text line only; duration/negative
+     delay are set inline per activation so seeks land mid-sweep. */
+  .lyric-line { position: relative; }
+  .lyric-line .ly-fill {
+    position: absolute;
+    inset: 0;
+    padding: 7px 20px;              /* match .lyric-line padding exactly */
+    color: rgb(var(--ui-accent-rgb));
+    white-space: normal;
+    overflow: hidden;
+    clip-path: inset(0 100% 0 0);   /* hidden until the line activates */
+    pointer-events: none;
+  }
+  .lyric-line.ly-filling .ly-fill {
+    animation-name: ly-fill;
+    animation-timing-function: linear;
+    animation-fill-mode: forwards;
+    /* Promote only the one animating twin so Chromium can run the clip-path
+       sweep on the compositor instead of repainting the line per frame. */
+    will-change: clip-path;
+  }
+  #lyrics-wrap.lyrics-paused .lyric-line.ly-filling .ly-fill {
+    animation-play-state: paused;
+  }
+  @keyframes ly-fill {
+    from { clip-path: inset(0 100% 0 0); }
+    to   { clip-path: inset(0 0% 0 0); }
   }
 
   @keyframes edge-confirm {
@@ -784,6 +828,39 @@
       0 0 36px rgba(255,255,255,0.06),
       inset 0 1px 0 rgba(255,255,255,0.16);
   }
+
+  /* Now-spinning marker: the record currently on the turntable peeks out of
+     its sleeve as a slowly turning mini-disc (one compositor-only rotation,
+     only ever attached to a single card). The accent outline ties the shelf
+     back to the chrome's tint. */
+  .crate-card.now-playing {
+    outline: 2px solid var(--accent, #fff);
+    outline-offset: 2px;
+  }
+  .crate-peek {
+    position: absolute;
+    top: -56px;                 /* disc centre lands 10px below the sleeve edge */
+    left: 50%;
+    width: 132px;
+    height: 66px;
+    margin-left: -66px;
+    overflow: hidden;
+    pointer-events: none;
+  }
+  .crate-peek-disc {
+    width: 132px;
+    height: 132px;
+    border-radius: 50%;
+    background:
+      radial-gradient(circle at 50% 50%, var(--accent, #888) 0 15px, #101013 16px 20px, transparent 21px),
+      repeating-radial-gradient(circle at 50% 50%, #141419 0 3px, #1e1e25 3px 6px);
+    box-shadow: 0 5px 16px rgba(0,0,0,0.6);
+    animation: crate-peek-spin 3.4s linear infinite;
+  }
+  .crate-card.peek-paused .crate-peek-disc { animation-play-state: paused; }
+  /* No ticking behind a hidden shelf — same rule the lava blobs lived by. */
+  #shelf:not(.visible) .crate-peek-disc { animation-play-state: paused; }
+  @keyframes crate-peek-spin { to { transform: rotate(360deg); } }
 
   /* Caption for the focused record */
   #crate-caption {
@@ -1066,6 +1143,32 @@
   }
   .tl-row.tl-current .tl-title { font-weight: 500; }
   .tl-row.tl-current .tl-num i { font-size: 22px; }
+
+  /* EQ bars on the currently-playing row — compositor-only scaleY bounce,
+     tinted by the row's accent currentColor; frozen while paused. */
+  .tl-eq {
+    display: inline-flex;
+    align-items: flex-end;
+    gap: 3px;
+    height: 22px;
+  }
+  .tl-eq i {
+    width: 4px;
+    height: 100%;
+    background: currentColor;
+    border-radius: 1.5px;
+    transform-origin: 50% 100%;
+    animation: tl-eq-bounce 0.92s ease-in-out infinite;
+  }
+  .tl-eq i:nth-child(2) { animation-delay: -0.31s; }
+  .tl-eq i:nth-child(3) { animation-delay: -0.58s; }
+  #tl-picker.eq-paused .tl-eq i { animation-play-state: paused; }
+  /* No ticking behind a closed tracklist — rows persist until the next open. */
+  #tracklist:not(.visible) .tl-eq i { animation-play-state: paused; }
+  @keyframes tl-eq-bounce {
+    0%, 100% { transform: scaleY(0.22); }
+    50%      { transform: scaleY(1); }
+  }
   /* Gesture hint set on an arc hugging the lower rim (SVG textPath — same
      move as the label's dead-wax etching). Retires after 3 viewings. */
   #tl-hint {
@@ -1413,7 +1516,7 @@
 	  <!-- Static overlay layer -->
 	  <div id="static-layer">
     <!-- Lyrics -->
-    <div id="lyrics-wrap">
+    <div id="lyrics-wrap" class="lyrics-paused">
       <div id="lyrics-inner"></div>
     </div>
     <div id="lyrics-status" role="status" aria-live="polite"></div>
@@ -1505,7 +1608,7 @@
     <div id="tl-gutter-l" class="tl-gutter"></div>
     <div id="tl-gutter-r" class="tl-gutter"></div>
     <div id="tl-focus"></div>
-    <div id="tl-picker" role="listbox" aria-label="Album tracks"></div>
+    <div id="tl-picker" class="eq-paused" role="listbox" aria-label="Album tracks"></div>
     <div id="tl-status" role="status" aria-live="polite"></div>
     <svg id="tl-hint" viewBox="0 0 1080 1080" xmlns="http://www.w3.org/2000/svg">
       <defs><path id="tl-hint-arc" d="M 238 900 A 470 470 0 0 0 842 900"/></defs>
@@ -1664,12 +1767,16 @@
   //   ?standby=off  no analog clock while the screen is dimmed
   //   ?boot=1       groove sweep-in on load (default off)
   //   ?reflect=1    floor reflection under the crate's focused sleeve (default off)
+  //   ?faces=0      no sleeve-notes auto-cycle in the pill (tap still cycles)
+  //   ?karaoke=0    no per-line lyric fill sweep
   const FLAGS = new URLSearchParams(location.search);
   const FLAG_STANDBY_CLOCK = FLAGS.get("standby") !== "off";
   const FLAG_BOOT = FLAGS.get("boot") === "1";
   const FLAG_REFLECT = FLAGS.get("reflect") === "1";
+  const FLAG_FACES = FLAGS.get("faces") !== "0";
   const FLAG_DIAGNOSTICS = FLAGS.get("diag") === "1";
   const REDUCED_MOTION = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const FLAG_KARAOKE = FLAGS.get("karaoke") !== "0" && !REDUCED_MOTION;
 
   // Local diagnostics deliberately contain no account or track metadata.
   // Press D (or use ?diag=1) to toggle the overlay.
@@ -1693,6 +1800,7 @@
   const lyricLinePool = [];  // recycled .lyric-line divs — never torn down per track
   let lyricsTrackId = null;
   let currentLyricIdx = -1;
+  let lyricsLastP = 0;     // last lyric-clock position — seek detection
   let lyricsStatusTimer = null;
   let lyricsLoadingTimer = null;
 
@@ -1738,6 +1846,10 @@
   let lastProgressDraw = 0;
   let lastProgressEmpty = false;
   const PROGRESS_DRAW_INTERVAL = 125;
+  // Twist-seek ghost target (fraction of the track), null when no twist is
+  // live. Drawn by updateProgressRing, set by the twist branch of the
+  // gesture engine, cleared on release/abort.
+  let seekPreviewPct = null;
 
   // ── Draw grooves on canvas (redrawn when the label size changes) ──
   // reveal < 1 draws only the innermost fraction — used by the flagged boot
@@ -2258,18 +2370,26 @@
 
   function renderLyricLines() {
     // Recycle pooled line divs: grow the pool to fit, retext the rows in use
-    // and hide the rest — no innerHTML teardown/rebuild per track.
+    // and hide the rest — no innerHTML teardown/rebuild per track. Each line
+    // carries a base span and an accent twin (.ly-fill) for the karaoke sweep.
     while (lyricLinePool.length < lyricsLines.length) {
       const div = document.createElement("div");
       div.className = "lyric-line";
+      const base = document.createElement("span");
+      base.className = "ly-base";
+      const fill = document.createElement("span");
+      fill.className = "ly-fill";
+      fill.setAttribute("aria-hidden", "true");
+      div.append(base, fill);
       lyricLinePool.push(div);
       lyricsInner.appendChild(div);
     }
     for (let i = 0; i < lyricLinePool.length; i++) {
       const div = lyricLinePool[i];
       if (i < lyricsLines.length) {
-        div.textContent = lyricsLines[i].text;
-        div.classList.remove("active", "past");
+        div.firstChild.textContent = lyricsLines[i].text;
+        div.lastChild.textContent = lyricsLines[i].text;
+        div.classList.remove("active", "past", "ly-filling");
         div.hidden = false;
       } else {
         div.hidden = true;
@@ -2286,18 +2406,38 @@
     if (state.isPlaying && !state.stale) p += nowMs - state.lastUpdate;
     p = Math.min(p, state.durationMs);
 
+    // A jump larger than a poll's drift means a seek landed — re-trigger the
+    // active line so the karaoke sweep restarts from the seek position.
+    const jumped = Math.abs(p - lyricsLastP) > 1500;
+    lyricsLastP = p;
+
     // Find current line
     let idx = -1;
     for (let i = lyricsLines.length - 1; i >= 0; i--) {
       if (p >= lyricsLines[i].time) { idx = i; break; }
     }
 
-    if (idx === currentLyricIdx) return;
+    if (idx === currentLyricIdx && !jumped) return;
     currentLyricIdx = idx;
 
     for (let i = 0; i < lyricsLines.length; i++) {
       lyricLinePool[i].classList.toggle("active", i === idx);
       lyricLinePool[i].classList.toggle("past", i < idx);
+      if (i !== idx) lyricLinePool[i].classList.remove("ly-filling");
+    }
+
+    // Karaoke fill: sweep the accent twin across the active line over the
+    // line's own duration, starting partway when a seek lands mid-line.
+    if (FLAG_KARAOKE && idx >= 0) {
+      const line = lyricLinePool[idx];
+      const fill = line.lastChild;
+      const start = lyricsLines[idx].time;
+      const end = idx + 1 < lyricsLines.length ? lyricsLines[idx + 1].time : state.durationMs;
+      line.classList.remove("ly-filling");
+      void fill.offsetWidth; // restart the animation
+      fill.style.animationDuration = Math.max(400, end - start) + "ms";
+      fill.style.animationDelay = "-" + Math.max(0, Math.min(p - start, end - start)) + "ms";
+      line.classList.add("ly-filling");
     }
 
     // Scroll so the active line sits in the focus lane. Line heights vary
@@ -2541,6 +2681,8 @@
       window.clearTimeout(metadataTimer);
       metadataTimer = null;
     }
+    pillFace = 0; // a new record always opens on its title/artist face
+    pillFaceChangedAt = performance.now();
 
     if (!animateChange) {
       pill.classList.remove("metadata-out", "metadata-in");
@@ -2562,6 +2704,94 @@
       }, 560);
     }, 190);
   }
+
+  // ── Sleeve notes — the pill's rich-metadata faces ──
+  // Face 0 is title/artist (the resting state). Tap the pill, or wait for
+  // the slow auto-cycle, to see the record's sleeve notes: album · year ·
+  // label, then the pressing facts (speed, side, year). Every face reuses
+  // the metadata-out/in crossfade so the swap reads as one calm motion.
+  let pillFace = 0;
+  let pillFaceChangedAt = 0;         // timestamp of the last face swap (tap or ambient)
+  const PILL_FACE_REST_MS = 45000;   // dwell on the title/artist face — the resting state
+  const PILL_FACE_DWELL_MS = 11000;  // dwell on each sleeve-note face
+
+  function pillFaces() {
+    const faces = [{ title: state.trackName, sub: state.artistName }];
+    if (!state.trackId) return faces;
+    const year = (state.releaseDate || "").slice(0, 4);
+    if (state.albumName && state.albumName !== state.trackName) {
+      faces.push({
+        title: state.albumName,
+        sub: [year, state.recordLabel].filter(Boolean).join("  ·  "),
+      });
+    }
+    const pressing = [state.isSingle ? "45 RPM" : "33⅓ RPM", "Side " + (sideB ? "B" : "A")].join("  ·  ");
+    const pressingSub = [state.recordLabel, year].filter(Boolean).join("  ·  ");
+    if (pressingSub || !faces.length) faces.push({ title: pressing, sub: pressingSub });
+    return faces;
+  }
+
+  function showPillFace(idx) {
+    const faces = pillFaces();
+    pillFace = ((idx % faces.length) + faces.length) % faces.length;
+    pillFaceChangedAt = performance.now();
+    const face = faces[pillFace];
+    if (metadataTimer) {
+      window.clearTimeout(metadataTimer);
+      metadataTimer = null;
+      pill.classList.remove("metadata-out", "metadata-in");
+    }
+    pill.classList.add("metadata-out");
+    metadataTimer = window.setTimeout(() => {
+      setTrackTitle(face.title);
+      pillArtist.textContent = face.sub;
+      pill.classList.remove("metadata-out");
+      pill.classList.add("metadata-in");
+      metadataTimer = window.setTimeout(() => {
+        pill.classList.remove("metadata-in");
+        metadataTimer = null;
+      }, 560);
+    }, 190);
+  }
+
+  function cyclePillFace() {
+    showPillFace(pillFace + 1);
+  }
+
+  // The ambient cycle is the appliance case: the rich content surfaces even
+  // when nobody touches the panel. Title/artist is the resting face — it
+  // holds 45s, each sleeve-note face holds 11s, so the primary readout owns
+  // roughly two thirds of the loop. Gated at fire time so nothing animates
+  // under a dimmed screen, a modal mode, or mid track-change crossfade; a
+  // pause or stale receiver settles the pill back onto the title face.
+  window.setInterval(() => {
+    if (!FLAG_FACES || !state.trackId) return;
+    if (screenDimmed || state.browsing || state.tracklisting) return;
+    if (metadataTimer) return; // never cancel an in-flight crossfade
+    const dwell = performance.now() - pillFaceChangedAt;
+    if (!state.isPlaying || state.stale || pillFaces().length < 2) {
+      if (pillFace !== 0 && dwell > PILL_FACE_DWELL_MS) showPillFace(0);
+      return;
+    }
+    if (dwell > (pillFace === 0 ? PILL_FACE_REST_MS : PILL_FACE_DWELL_MS)) cyclePillFace();
+  }, 2500);
+
+  pill.addEventListener("click", () => {
+    if (performance.now() < suppressTapUntil) return;
+    if (screenDimmed || state.browsing || state.tracklisting || !state.trackId) return;
+    if (metadataTimer) return; // a track change is mid-crossfade — let it land
+    if (pillFaces().length < 2) return;
+    cyclePillFace();
+  });
+  pill.tabIndex = 0;
+  pill.title = "Sleeve notes — tap to cycle album, label and pressing details";
+  pill.addEventListener("keydown", e => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    if (metadataTimer) return;
+    if (pillFaces().length < 2) return;
+    cyclePillFace();
+  });
 
   // ── Animation loop ──
   let animationRaf = null;
@@ -2812,7 +3042,7 @@
     ctx.stroke();
   }
 
-  function updateProgressRing(now) {
+  function updateProgressRing(now, force) {
     if (!state.trackId) {
       if (!lastProgressEmpty) {
         progressCtx.clearRect(0, 0, 296, 296);
@@ -2823,7 +3053,7 @@
       }
       return;
     }
-    if (now - lastProgressDraw < PROGRESS_DRAW_INTERVAL) return;
+    if (!force && now - lastProgressDraw < PROGRESS_DRAW_INTERVAL) return;
     lastProgressDraw = now;
     lastProgressEmpty = false;
 
@@ -2842,13 +3072,7 @@
     if (ringStaticKey !== uiAccentKey) renderRingStatic();
     ctx.drawImage(ringStaticCanvas, 0, 0);
 
-    if (pct <= 0) {
-      timeElapsed.textContent = fmt(p);
-      timeRemaining.textContent = "-" + fmt(state.durationMs - p);
-      timeFill.style.transform = "scaleX(0)";
-      return;
-    }
-
+    if (pct > 0) {
     // ── Progress arc with gradient ──
     const endAngle = startAngle + pct * Math.PI * 2;
 
@@ -2911,6 +3135,35 @@
     ctx.arc(dotX, dotY, 1.5, 0, Math.PI * 2);
     ctx.fillStyle = "rgba(255,255,255,0.7)";
     ctx.fill();
+    } // end pct > 0
+
+    // ── Twist-seek preview — ghost of where the needle will land ──
+    // Drawn while the twist gesture runs (forced redraws, not the idle
+    // cadence): a faint bridge arc from here to the target and a hollow
+    // accent marker on the target tick.
+    if (seekPreviewPct != null) {
+      const ppct = Math.max(0, Math.min(1, seekPreviewPct));
+      const curAngle = startAngle + pct * Math.PI * 2;
+      const targetAngle = startAngle + ppct * Math.PI * 2;
+      if (Math.abs(ppct - pct) > 0.002) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, Math.min(curAngle, targetAngle), Math.max(curAngle, targetAngle));
+        // Forward: a faint white bridge over unplayed track. Rewinding lands
+        // ON the bright progress arc, where white vanishes — dim that span
+        // instead, so it reads as "about to be un-played".
+        ctx.strokeStyle = ppct >= pct ? "rgba(255,255,255,0.22)" : "rgba(10,11,13,0.55)";
+        ctx.lineWidth = RING_ARC_W;
+        ctx.lineCap = "round";
+        ctx.stroke();
+      }
+      const gx = cx + r * Math.cos(targetAngle);
+      const gy = cy + r * Math.sin(targetAngle);
+      ctx.beginPath();
+      ctx.arc(gx, gy, RING_DOT_R - 1, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(${uiAccentArr[0]},${uiAccentArr[1]},${uiAccentArr[2]},0.95)`;
+      ctx.lineWidth = 3.5;
+      ctx.stroke();
+    }
 
     // Pause icon — two vertical bars in center when paused
     if (!state.isPlaying && state.trackId) {
@@ -3237,6 +3490,7 @@
     crateTarget = 0;
     crateCaptionIdx = -1;
     layoutCrate();
+    markCrateNowPlaying();
   }
 
   function layoutCrate() {
@@ -3276,17 +3530,62 @@
     if (focusIdx !== crateCaptionIdx && crateItems[focusIdx]) {
       crateEl.setAttribute("aria-activedescendant", crateCards[focusIdx].id);
       crateCaptionIdx = focusIdx;
-      capTitle.textContent = crateItems[focusIdx].title || "";
-      const subtitle = crateItems[focusIdx].subtitle || "";
-      capSub.textContent = crateRotationApproximation
-        ? "Top-listening approximation" + (subtitle ? " · " + subtitle : "")
-        : subtitle;
+      const focusedItem = crateItems[focusIdx];
+      capTitle.textContent = focusedItem.title || "";
+      const subtitle = focusedItem.subtitle || "";
+      const isNowPlaying = !!(crateNowPlayingUri() && focusedItem.uri === crateNowPlayingUri());
+      const prefix = isNowPlaying
+        ? "Now spinning"
+        : (crateRotationApproximation ? "Top-listening approximation" : "");
+      capSub.textContent = [prefix, subtitle].filter(Boolean).join(" · ");
       if (FLAG_REFLECT) {
-        const img = crateItems[focusIdx].image;
+        const img = focusedItem.image;
         crateReflection.style.display = img ? "block" : "none";
         if (img) crateReflection.style.backgroundImage = cssUrl(img);
       }
       preloadCrateWindow(focusIdx);
+    }
+  }
+
+  // The shelf card holding the playing record is matched by album URI —
+  // item ids are synthetic per section (saved-3, rotation-<id>, spin-<id>)
+  // but every album item carries uri spotify:album:<albumId>.
+  function crateNowPlayingUri() {
+    return state.albumId ? "spotify:album:" + state.albumId : "";
+  }
+
+  // Mark the shelf card that holds the record currently on the turntable:
+  // a mini-disc peeks out of its sleeve and turns while playback runs.
+  let crateLastNowUri = "";
+  function markCrateNowPlaying() {
+    const nowUri = crateNowPlayingUri();
+    for (let i = 0; i < crateCards.length; i++) {
+      const el = crateCards[i];
+      const item = crateItems[i];
+      const isNow = !!(nowUri && item && item.uri === nowUri);
+      if (isNow && !el.classList.contains("now-playing")) {
+        el.classList.add("now-playing");
+        const peek = document.createElement("div");
+        peek.className = "crate-peek";
+        peek.setAttribute("aria-hidden", "true");
+        const disc = document.createElement("div");
+        disc.className = "crate-peek-disc";
+        peek.appendChild(disc);
+        el.appendChild(peek);
+      } else if (!isNow && el.classList.contains("now-playing")) {
+        el.classList.remove("now-playing", "peek-paused");
+        const peek = el.querySelector(".crate-peek");
+        if (peek) peek.remove();
+      }
+      if (isNow) el.classList.toggle("peek-paused", !state.isPlaying || state.stale);
+    }
+    // The caption's "Now spinning" prefix is memoized on the focused index —
+    // when the playing record changes, invalidate it so an open shelf's
+    // caption agrees with the marker without waiting for a scroll.
+    if (nowUri !== crateLastNowUri) {
+      crateLastNowUri = nowUri;
+      crateCaptionIdx = -1;
+      if (state.browsing) layoutCrate();
     }
   }
 
@@ -3818,7 +4117,16 @@
       row.dataset.key = String(t.id || t.uri || [t.name || "", t.duration_ms || 0, i].join("|"));
       const num = document.createElement("span");
       num.className = "tl-num";
-      num.textContent = t.number || (i + 1);
+      if (isCur) {
+        // Animated EQ bars instead of the track number on the live row.
+        const eq = document.createElement("span");
+        eq.className = "tl-eq";
+        eq.setAttribute("aria-hidden", "true");
+        eq.append(document.createElement("i"), document.createElement("i"), document.createElement("i"));
+        num.appendChild(eq);
+      } else {
+        num.textContent = t.number || (i + 1);
+      }
       const title = document.createElement("span");
       title.className = "tl-title";
       title.textContent = t.name || "";
@@ -4441,6 +4749,7 @@
         shelfRetryAt = -Infinity;
       }
       updateShelf();
+      markCrateNowPlaying(); // albumId is cleared — retire the shelf's marker
       scheduleAnimation(true);
   }
 
@@ -4574,6 +4883,12 @@
     if (!state.browsing) setSpinTarget(state.isPlaying ? 1 : 0);
     pauseBtn.setAttribute("aria-label", state.isPlaying ? "Pause" : "Play");
     if (state.isPlaying && screenDimmed) setScreenDimmed(false);
+
+    // Living-state CSS hooks: freeze the karaoke sweep and the tracklist EQ
+    // while paused/stale, and keep the shelf's now-spinning marker current.
+    lyricsWrap.classList.toggle("lyrics-paused", !state.isPlaying || state.stale);
+    tlPicker.classList.toggle("eq-paused", !state.isPlaying || state.stale);
+    markCrateNowPlaying();
 
     // Show controls when track is loaded
     skipPrev.classList.toggle("visible", !!state.trackId);
@@ -4929,6 +5244,11 @@
         mtGesture.seekBase + (mtGesture.accumDeg / 360) * TWIST_SECONDS_PER_TURN * 1000,
         state.durationMs));
       mtGesture.seekPreview = preview;
+      // Ghost the landing spot on the progress ring — forced redraws while
+      // the twist is live, coalesced to ~30fps rather than raw pointermove
+      // rate (two touch points can report at 120Hz+).
+      seekPreviewPct = preview / Math.max(state.durationMs, 1);
+      if (performance.now() - lastProgressDraw > 33) updateProgressRing(performance.now(), true);
       showGestureChip((mtGesture.accumDeg >= 0 ? "⟳ " : "⟲ ") + fmt(preview));
     } else if (mtGesture.mode === "vdrag") {
       setVolume(mtGesture.volBase + (-dCy / 620) * 100);
@@ -4952,6 +5272,8 @@
       }
     } else if (g.mode === "twist") {
       hideGestureChip(550);
+      seekPreviewPct = null;
+      updateProgressRing(performance.now(), true);
       if (g.seekPreview !== null && Math.abs(g.seekPreview - g.seekBase) > 1500) {
         commitSeek(g.seekPreview);
       }
@@ -4976,6 +5298,8 @@
     if (!mtGesture) return false;
     if (mtGesture.mode === "twist") currentAngle = mtGesture.angleBase;
     if (mtGesture.mode === "vdrag") setVolume(mtGesture.volBase);
+    seekPreviewPct = null;
+    updateProgressRing(performance.now(), true);
     hideGestureChip(0);
     platter.classList.remove("no-transition");
     platter.style.transform = "";

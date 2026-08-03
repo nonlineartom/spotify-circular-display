@@ -85,6 +85,10 @@ def mock_playback_state():
         "volume_percent": volume,
         "source": "mock",
         "item": _track(track_id, art),
+        # The kiosk gates the record crate on this signal — without it the
+        # shelf degrades to the no-receiver prompt even though the fixture
+        # crate below is populated.
+        "profile": {"profile_state": "linked", "profile_epoch": "mock-epoch"},
     }
 
 
@@ -183,15 +187,20 @@ server.control_playback = mock_control
 server.play_uri_local = lambda *_args, **_kwargs: (True, "ok")
 server.current_album_id = lambda: "mock-album"
 server.lookup_album_tracks = lambda _album: [
-    {"number": number, "disc": 1, "name": name, "duration_ms": 210000, "uri": f"spotify:track:mock-{number}"}
+    {"number": number, "disc": 1, "name": name, "duration_ms": 210000,
+     # The playing fixture track IS "Midnight Geometry" — reuse its real URI
+     # so the kiosk's current-row marker (EQ bars) has something to match.
+     "uri": "spotify:track:mock-track-a" if name == "Midnight Geometry" else f"spotify:track:mock-{number}"}
     for number, name in enumerate(
         ["Needle Drop", "Midnight Geometry", "Copper Sunrise", "Last Groove"], start=1
     )
 ]
 server.crate_payload = lambda: {
+    "profile_state": "linked",
+    "profile_epoch": "mock-epoch",
     "sections": [
         {"id": "saved", "title": "Saved albums", "items": [
-            {"id": "crate-a", "title": "Integration Sessions", "subtitle": "The Test Pressings", "uri": "spotify:album:mock-album", "image": "/static/mock-album.svg", "accent": "#dc7945"},
+            {"id": "mock-album", "title": "Integration Sessions", "subtitle": "The Test Pressings", "uri": "spotify:album:mock-album", "image": "/static/mock-album.svg", "accent": "#dc7945"},
             {"id": "crate-b", "title": "Second Fixture", "subtitle": "Local Browser Band", "uri": "spotify:album:mock-b", "image": "/static/mock-album-b.svg", "accent": "#4c7fbd"},
         ]},
         {"id": "house", "title": "House picks", "items": []},
@@ -202,15 +211,49 @@ server.idle_launcher_payload = lambda include_private=True: {
     "playlists": server.crate_payload()["sections"][0]["items"],
 }
 
-for track_id, line in (
-    ("mock-track-a", "Midnight geometry turns"),
-    ("mock-track-b", "Copper light arrives"),
-    ("mock-track-noart", "No sleeve, no stale art"),
-    ("mock-track-badart", "A failed sleeve stays neutral"),
-):
-    server._lyrics_cache.set(track_id, {
-        "syncedLyrics": f"[00:00.00]Local browser fixture\n[00:52.00]{line}\n[00:56.50]Regression checks stay in time",
-        "plainLyrics": "",
+# Synced fixture lyrics: one line every ~8s across the whole 244s track so
+# every seek position has an active line — exercises the karaoke fill sweep.
+_MOCK_LYRIC_LINES = [
+    "Needle down on midnight geometry",
+    "Circles in the dust where the light should be",
+    "Thirty-three and a third of the way to dawn",
+    "Every groove a road the night drives on",
+    "Copper wires humming in the wall",
+    "Static like a tide in the hall",
+    "Turn the label toward the lamp and read",
+    "Pressed in nineteen-something, all we need",
+    "Side A carries what the day forgot",
+    "Side B answers whether asked or not",
+    "Dust sleeve whispers when the platter slows",
+    "Run-out etching only the stylus knows",
+    "Spindle holds the spinning world in place",
+    "Twenty minutes of recorded grace",
+    "Drop the tonearm, let the silence break",
+    "Every crackle is a choice we make",
+    "Midnight geometry, perfect and round",
+    "A circle is the shortest way back to the sound",
+    "Fold the night into a paper sleeve",
+    "Play it again before you leave",
+    "The last groove locks and holds us here",
+    "Spinning slow until the morning's clear",
+    "Needle up — the room remembers how",
+    "Midnight geometry, then and now",
+    "Coda: let the platter drift and slow",
+    "One more turn before we go",
+    "One more turn before we go (again)",
+    "Fade on the fifty-two second reprise",
+    "Hold the sleeve up to the light and see",
+    "Midnight geometry, you and me",
+]
+_MOCK_SYNCED = "\n".join(
+    f"[{(i * 8) // 60:02d}:{(i * 8) % 60:02d}.00] {text}"
+    for i, text in enumerate(_MOCK_LYRIC_LINES)
+)
+
+for _track_id in ("mock-track-a", "mock-track-b", "mock-track-noart", "mock-track-badart"):
+    server._lyrics_cache.set(_track_id, {
+        "syncedLyrics": _MOCK_SYNCED,
+        "plainLyrics": "\n".join(_MOCK_LYRIC_LINES),
         "status": "ok",
     })
 
@@ -218,11 +261,18 @@ for track_id, line in (
 def fake_get(url, *args, **kwargs):
     if url.endswith("/status"):
         return FakeResponse(200, {"volume_steps": 100, "volume": _volume})
+    if "lrclib.net" in url:
+        return FakeResponse(200, {
+            "syncedLyrics": _MOCK_SYNCED,
+            "plainLyrics": "\n".join(_MOCK_LYRIC_LINES),
+        })
     return FakeResponse(404, {})
 
 
-server.requests.get = fake_get
-server.requests.post = lambda *_args, **_kwargs: FakeResponse(204, {})
+# Outbound calls go through the pooled session since the efficiency pass —
+# patch it (patching the requests module no longer intercepts anything).
+server._http.get = fake_get
+server._http.post = lambda *_args, **_kwargs: FakeResponse(204, {})
 
 
 @server.app.route("/__mock/state/<mode>", methods=["POST"])

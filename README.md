@@ -53,6 +53,7 @@ the last account that authorized the display.
 | Two-finger tap | Play or pause |
 | Pinch in | Open the record crate (tap the parked mini-cover, press Escape, or wait for the timeout to close it) |
 | Pinch out | Open the current album tracklist |
+| Tap the now-playing pill | Cycle sleeve notes: title/artist, album · year · label, pressing facts (also auto-cycles while playing; `?faces=0` disables the auto-cycle) |
 | Three-finger vertical drag | Hardware panel brightness |
 | `D` | Toggle diagnostics |
 | Escape | Close the active modal, tracklist or crate |
