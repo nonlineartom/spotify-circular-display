@@ -190,7 +190,7 @@ server.current_album_id = lambda: "mock-album"
 _MOCK_ALBUM_TRACKS = {
     "mock-album": [
         # The playing fixture track IS "Midnight Geometry" — reuse its real URI
-        # so the kiosk's current-row marker (EQ bars) has something to match.
+        # so the tracklist can match the playing row.
         ("Needle Drop", "spotify:track:mock-1"),
         ("Midnight Geometry", "spotify:track:mock-track-a"),
         ("Copper Sunrise", "spotify:track:mock-3"),
@@ -238,49 +238,15 @@ server.idle_launcher_payload = lambda include_private=True: {
     "playlists": server.crate_payload()["sections"][0]["items"],
 }
 
-# Synced fixture lyrics: one line every ~8s across the whole 244s track so
-# every seek position has an active line — exercises the karaoke fill sweep.
-_MOCK_LYRIC_LINES = [
-    "Needle down on midnight geometry",
-    "Circles in the dust where the light should be",
-    "Thirty-three and a third of the way to dawn",
-    "Every groove a road the night drives on",
-    "Copper wires humming in the wall",
-    "Static like a tide in the hall",
-    "Turn the label toward the lamp and read",
-    "Pressed in nineteen-something, all we need",
-    "Side A carries what the day forgot",
-    "Side B answers whether asked or not",
-    "Dust sleeve whispers when the platter slows",
-    "Run-out etching only the stylus knows",
-    "Spindle holds the spinning world in place",
-    "Twenty minutes of recorded grace",
-    "Drop the tonearm, let the silence break",
-    "Every crackle is a choice we make",
-    "Midnight geometry, perfect and round",
-    "A circle is the shortest way back to the sound",
-    "Fold the night into a paper sleeve",
-    "Play it again before you leave",
-    "The last groove locks and holds us here",
-    "Spinning slow until the morning's clear",
-    "Needle up — the room remembers how",
-    "Midnight geometry, then and now",
-    "Coda: let the platter drift and slow",
-    "One more turn before we go",
-    "One more turn before we go (again)",
-    "Fade on the fifty-two second reprise",
-    "Hold the sleeve up to the light and see",
-    "Midnight geometry, you and me",
-]
-_MOCK_SYNCED = "\n".join(
-    f"[{(i * 8) // 60:02d}:{(i * 8) % 60:02d}.00] {text}"
-    for i, text in enumerate(_MOCK_LYRIC_LINES)
-)
-
-for _track_id in ("mock-track-a", "mock-track-b", "mock-track-noart", "mock-track-badart"):
-    server._lyrics_cache.set(_track_id, {
-        "syncedLyrics": _MOCK_SYNCED,
-        "plainLyrics": "\n".join(_MOCK_LYRIC_LINES),
+for track_id, line in (
+    ("mock-track-a", "Midnight geometry turns"),
+    ("mock-track-b", "Copper light arrives"),
+    ("mock-track-noart", "No sleeve, no stale art"),
+    ("mock-track-badart", "A failed sleeve stays neutral"),
+):
+    server._lyrics_cache.set(track_id, {
+        "syncedLyrics": f"[00:00.00]Local browser fixture\n[00:52.00]{line}\n[00:56.50]Regression checks stay in time",
+        "plainLyrics": "",
         "status": "ok",
     })
 
@@ -288,11 +254,6 @@ for _track_id in ("mock-track-a", "mock-track-b", "mock-track-noart", "mock-trac
 def fake_get(url, *args, **kwargs):
     if url.endswith("/status"):
         return FakeResponse(200, {"volume_steps": 100, "volume": _volume})
-    if "lrclib.net" in url:
-        return FakeResponse(200, {
-            "syncedLyrics": _MOCK_SYNCED,
-            "plainLyrics": "\n".join(_MOCK_LYRIC_LINES),
-        })
     return FakeResponse(404, {})
 
 
