@@ -1,0 +1,22 @@
+#vinyl-editor { position:absolute; inset:0; z-index:20; border-radius:50%; background:radial-gradient(ellipse at 25% 25%,#302920,#121314 72%); }
+.vinyl-editor-shell { position:absolute; top:136px; left:175px; width:730px; }
+.vinyl-editor-shell > header { padding:0 55px; }
+#vinyl-editor-heading { font-size:32px; margin-top:7px; }
+.vinyl-editor-intro { margin:23px 15px 20px; color:#bfb1a0; font-size:17px; text-align:center; }
+.vinyl-search-row { display:flex; gap:12px; }
+#vinyl-search { min-width:0; flex:1; height:58px; padding:0 18px; border-radius:14px; border:1px solid #6b5b47; background:#090a0b; color:#f7efdf; font:inherit; font-size:17px; }
+#vinyl-search::-webkit-search-cancel-button { display:none; }
+#vinyl-editor-status { margin:14px 10px; min-height:42px; text-align:center; }
+#vinyl-search-results { display:flex; flex-direction:column; gap:12px; height:428px; overflow-y:auto; overscroll-behavior:contain; touch-action:pan-y; padding:4px 7px 12px; scrollbar-width:thin; scrollbar-color:#817465 transparent; }
+.vinyl-result { display:flex; align-items:center; gap:18px; padding:14px; border:1px solid #4d453a; border-radius:16px; background:#24221e; }
+.vinyl-result-art { flex:0 0 90px; width:90px; height:90px; overflow:hidden; border-radius:7px; background:#393129; display:flex; align-items:center; justify-content:center; font-size:34px; color:#cdb391; }
+.vinyl-result-art img { width:100%; height:100%; object-fit:cover; }
+.vinyl-result-copy { min-width:0; flex:1; }
+.vinyl-result-copy strong { display:block; font-size:18px; font-weight:500; line-height:1.25; }
+.vinyl-result-copy p { margin-top:7px; color:#baad9b; font-size:14px; line-height:1.35; }
+.vinyl-result > button { flex:0 0 137px; padding:10px; min-height:54px; }
+#vinyl-keyboard { margin-top:4px; min-height:350px; }
+.vinyl-editor-note { color:#9c907f; text-align:center; font-size:13px; margin:14px 0; }
+#vinyl-editor-done { display:flex; margin:0 auto; min-height:54px; }
+.vinyl-editor-shell:has(#vinyl-keyboard:not([hidden])) #vinyl-search-results { display:none; }
+.vinyl-editor-shell:has(#vinyl-keyboard:not([hidden])) .vinyl-editor-note { margin-top:30px; }

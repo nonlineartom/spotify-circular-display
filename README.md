@@ -7,7 +7,9 @@ multi-touch controls.
 
 Spotify Connect playback remains zero-configuration: a guest selects **Pi
 Display** in Spotify and the screen follows their music. OAuth is optional and
-is used only for an owner-approved, time-limited personalized crate.
+is used only to link the active listener to a private crate. Linked profiles
+coexist; changing Spotify Connect user changes the crate instead of exposing
+the last account that authorized the display.
 
 <p align="center">
   <img src="demo.gif" alt="Spotify Circular Display demo" width="400">
@@ -20,6 +22,12 @@ is used only for an owner-approved, time-limited personalized crate.
 
 ## Highlights
 
+- A visible **Explore music** entry with a draggable, zoomable cover mosaic,
+  an optional grid, collection filters, search and album track selection.
+- **Discover** puts more albums from recently played artists first, alongside
+  house picks and your own collection. Opening a record never interrupts playback.
+- A **Controls** drawer for transport, seek, volume, brightness and album tracks,
+  plus an owner page for Spotify pairing, lighting and device health.
 - Delta-time 33⅓/45 RPM rotation with four-second motor ramps, artwork flips,
   return-to-zero pause and frame-time-based quality reduction.
 - Single-, two- and three-finger gestures for skip, pause, seek, volume, crate,
@@ -29,11 +37,12 @@ is used only for an owner-approved, time-limited personalized crate.
   brief outages.
 - Synced LRCLIB lyrics with bounded caching, correct fractional LRC timestamps,
   offsets, multiple timestamps and explicit loading/error states.
-- A bounded, lazy-loaded private/house record crate and album track picker.
+- A receiver-aware, bounded private/house record crate and album track picker.
 - WLED rendering at vinyl speed with smooth pause ramp, failure grace, bounded
   configuration and per-device direction, phase, brightness and gamma.
-- Owner-approved Spotify pairing with OAuth state, PKCE, one-use links and
-  expiring guest library grants.
+- Owner-approved Spotify pairing with exact receiver binding, OAuth state,
+  PKCE, one-use links, isolated household profiles and optional expiring guest
+  access.
 - Hidden diagnostics (`D` or `?diag=1`) for browser timing, transport, receiver,
   crate, WLED, lyrics, temperature, load and disk state.
 - Reduced-motion, keyboard, semantic-control and modal focus support.
@@ -43,13 +52,16 @@ is used only for an owner-approved, time-limited personalized crate.
 
 | Input | Action |
 |---|---|
+| Explore music | Browse the cover mosaic or grid, search and choose a record |
+| Controls | Open visible playback controls, sliders, album tracks and Settings |
 | Center tap / Space | Play or pause |
 | Left/right edge tap, swipe or arrow key | Previous/next |
 | Two-finger twist | Seek; one full turn is 60 seconds |
 | Two-finger vertical drag | Playback volume |
 | Two-finger tap | Play or pause |
-| Pinch in | Open/close the record crate |
+| Pinch in | Open the record crate (tap the parked mini-cover, press Escape, or wait for the timeout to close it) |
 | Pinch out | Open the current album tracklist |
+| Tap a sleeve on the tracklist's artist shelf | Browse another record by the playing artist — put it on, start it at any track, or stack it next in the queue |
 | Three-finger vertical drag | Hardware panel brightness |
 | `D` | Toggle diagnostics |
 | Escape | Close the active modal, tracklist or crate |
@@ -58,12 +70,48 @@ The compositor must deliver native multi-touch pointer events. See
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) if gestures arrive as a single mouse
 pointer.
 
+### Explore music
+
+Tap **Explore music** at the bottom of the display. The round-cover mosaic is
+inspired by a watch app launcher: covers grow towards the centre and shrink and
+draw closer together near the edge as you drag. Swipes coast gently and spring
+back at the collection boundary. Pinch or use **+ / −** to zoom, and **Centre** to
+return to the middle. Tap a cover to inspect it. **Grid** offers
+a labelled alternative, and the arrow buttons reveal more records. Both layouts
+keep the number of decoded covers bounded.
+Reduced Motion keeps covers equally sized and removes coasting. See
+[motion research and implementation notes](docs/WATCH_GRID_MOTION.md).
+
+**Discover** brings deeper cuts from artists you've played to the front, then
+house picks and recent listens. **Albums**, **Playlists** and **All records**
+keep familiar music easy to find (**All** shows everything). Search matches titles and artists within the
+selected collection. **Pick for me** opens a suggestion for inspection; it does
+not start music automatically.
+
+**Vinyls** contains the physical record collection, with Spotify artwork and
+album links in both **Mosaic** and **Grid**. It is shared across listeners.
+Choose **Play album** to start a record or **Queue album** to append its tracks
+in order while the current music continues. Any unavailable album remains
+visible with an explanation. See the [vinyl inventory](docs/VINYLS.md) for
+collection setup and how to add more records.
+
+Tap the search field to open the built-in touch keyboard: letters, numbers and
+symbols, Space, Backspace and Clear are all on screen. Matching records appear
+above the keys; tap one for details or **Show records** to return to the covers.
+No physical keyboard is needed. Search also matches unaccented spellings such as
+"Bjork" for "Björk".
+
+Use **Play album / Play playlist** to start a collection, or choose an individual
+track from an album. Playlist track browsing remains in Spotify. Discovery uses
+the existing shared library and recent listening history; this is not a general
+Spotify catalogue search.
+
 ## Architecture
 
 ```mermaid
 flowchart TD
     spotify["Spotify app"] -->|"Spotify Connect"| receiver["go-librespot"]
-    receiver -->|"loopback state/control API"| server["Waitress + Flask"]
+    receiver -->|"loopback state, username and control API"| server["Waitress + Flask"]
     server -->|"HTML, API and SSE"| kiosk["Chromium kiosk"]
     server -->|"bounded metadata/lyrics requests"| external["Spotify API / LRCLIB"]
     server -->|"safe HID reports"| panel["Waveshare backlight"]
@@ -110,8 +158,9 @@ Raspberry Pi 5 has no built-in analogue audio jack. The browser renderer is the
 primary mode; `display.py` is a deliberately simpler fallback.
 
 The supplied backlight policy is conservative for the existing 3 A
-installation: logical 0–100 maps to at most 80% physical output and every
-startup, reconnect, idle and wake transition ramps through ten-point steps. If
+installation: logical 0–100 maps to at most 80% physical output. Public
+brightness choices remain ten-point values, while startup, reconnect, idle and
+wake transitions interpolate through one-point HID steps. If
 USB over-current or touch reconnection appears in `dmesg`, power the panel from
 its dedicated input or use a correctly detected Pi 5 5 A supply.
 
@@ -130,7 +179,8 @@ chmod 600 config.json
 
 Set `client_id` and `client_secret` in `config.json`. These application
 credentials enrich metadata and album tracklists; guests do not log in to play
-music.
+music. A listener authorizes separately only if they want their own playlists,
+saved albums and top-listening rotation on the display.
 
 ### 2. Install the candidate on the Pi
 
@@ -177,7 +227,8 @@ The installer:
 - renders hardened system services for the actual user, path and port;
 - installs the Chromium or Pygame graphical user service;
 - creates the shared `/run/spotify-display` runtime directory;
-- installs exact-device HID permissions for the Waveshare backlight;
+- installs exact-device HID permissions and libinput touch calibration for the
+  Waveshare panel;
 - enables cheap path activation for optional WLED;
 - hardens NetworkManager recovery without killing unrelated desktop processes;
 - leaves GPIO and Raspotify disabled unless explicitly requested.
@@ -188,9 +239,16 @@ Useful installer options:
 ENABLE_GPIO_BUTTONS=1 ./setup.sh       # buttons are wired
 DISPLAY_BACKEND=pygame ./setup.sh      # lightweight renderer
 DISPLAY_PORT=5050 ./setup.sh           # non-default HTTP port
+TOUCH_ROTATION=0 ./setup.sh            # panel mounted opposite the default 180 degrees
 INSTALL_TEST_DEPS=1 ./setup.sh         # pytest + Node release gate
 STAGED_INSTALL=1 ./setup.sh            # preserve live service/host policy state
 ```
+
+The known `0712:000a` Waveshare controller reports both touch axes opposite the
+panel's normal mounting, so setup defaults `TOUCH_ROTATION` to `180`. Accepted
+values are `0`, `90`, `180` and `270`; the installer converts the selected
+orientation to an exact-device libinput calibration matrix. Reconnect Touch USB
+or reboot after changing it so the compositor re-adds the device.
 
 Raspotify fallback installation is deliberately opt-in and requires the
 operator to provide the expected installer checksum.
@@ -200,7 +258,7 @@ contains staged rollout and rollback instructions.
 
 The audited 2026-07-10 Pi 5 rollout, reboot evidence, rollback events and
 remaining hands-on checks are recorded in
-[docs/LIVE_RELEASE_2026-07-10.md](docs/LIVE_RELEASE_2026-07-10.md).
+private operator acceptance notes.
 
 ## Services
 
@@ -231,11 +289,18 @@ systemctl --user status spotify-kiosk
 systemctl --user restart spotify-kiosk
 ```
 
-## Optional personalized crate and pairing
+## Receiver-aware crates and pairing
 
-Playback needs no OAuth. To expose a Spotify account's private playlists and
-saved albums in the shared crate, use one HTTPS origin for both the display and
-callback, and register that exact callback with Spotify:
+Playback needs no OAuth. The Connect receiver and Spotify Web API are separate
+security domains, so the receiver cannot silently provide a listener's library
+token. Each listener therefore completes one explicit pairing while their
+account controls Pi Display's authenticated receiver session. The server binds
+the receiver's exact Spotify user ID to the immutable Web API
+[`account_id`](https://developer.spotify.com/documentation/web-api/reference/get-current-users-profile),
+then automatically selects that isolated grant on later handoffs.
+
+To enable pairing, use one HTTPS origin for both the display and callback, and
+register that exact callback with Spotify:
 
 ```json
 {
@@ -251,23 +316,76 @@ callback, and register that exact callback with Spotify:
 Generate a token with `python3 -c 'import secrets; print(secrets.token_urlsafe(32))'`.
 `config.json` must remain mode `0600`.
 
-Until the optional graphical owner page is added, a remote owner can mint and
-share a one-use, ten-minute guest pairing URL with:
+Open **Controls → Settings** on the display to manage its current library,
+create a guest pairing QR/link and adjust lighting. Text and numeric lighting
+fields open a built-in touch keyboard. QR codes are generated locally.
+Remote owner access remains subject to the configured owner authentication and
+LAN HTTPS policy; the display itself is the primary settings entry point.
+
+When an unlinked account controls the receiver, the crate shows only House
+picks and a one-use, ten-minute URL to type into that listener's phone. The
+link is bound to the current receiver epoch; changing Connect user invalidates
+it. An owner can also mint the link while that listener remains active. Prefer
+doing that through an SSH session on the Pi so the HTTPS proxy does not expose
+owner APIs:
 
 ```bash
-BASE=https://display.example
-curl -sS -c /tmp/display-owner.cookie \
-  -H 'Content-Type: application/json' \
-  --data '{"token":"YOUR_OWNER_TOKEN"}' \
-  "$BASE/api/auth/owner"
-curl -sS -b /tmp/display-owner.cookie -X POST "$BASE/api/auth/pairing"
-rm -f /tmp/display-owner.cookie
+ssh pi@display.local \
+  'curl -sS -X POST http://127.0.0.1:5000/api/auth/pairing'
 ```
 
-Consuming the URL permits exactly one guest OAuth initiation within five
-minutes. The resulting shared grant expires after 12 hours by default and
-replaces the preceding personalized account. Disconnect with
-`POST /api/auth/disconnect` from an owner session.
+Consuming the URL permits exactly one OAuth initiation within five minutes.
+The Spotify account being authorized must match the account currently
+controlling the receiver. By default this creates a persistent household
+profile: it returns automatically on later Connect handoffs and remains until
+it is disconnected, Spotify revokes it, or its six-month reauthorization is
+due. Other linked profiles remain isolated and intact. Owner status lists
+redacted profile metadata, and an owner can disconnect the active profile or
+pass an `account_id` to `POST /api/auth/disconnect`.
+
+For a genuinely temporary visitor, the owner can explicitly request a bounded
+guest link; these grants expire after 12 hours by default
+(`guest_session_hours` is bounded to 1–168):
+
+```bash
+ssh pi@display.local \
+  "curl -sS -X POST -H 'Content-Type: application/json' \
+  --data '{\"profile_kind\":\"guest\"}' \
+  http://127.0.0.1:5000/api/auth/pairing"
+```
+
+The crate uses playlists, saved albums and a deduplicated **Your rotation**
+derived from the listener's medium-term top tracks. Spotify's Web API does not
+expose the Spotify Home screen, so it cannot reproduce the app's exact Home
+recommendations. [Development Mode apps](https://developer.spotify.com/blog/2026-02-06-update-on-developer-access-and-platform-security)
+currently support at most five newly authorized users; add intended listeners
+in the Spotify dashboard. Spotify [refresh grants](https://developer.spotify.com/blog/2026-06-18-refresh-token-expiration)
+also require reauthorization after six months, and an expired grant safely
+falls back to House picks until it is linked again.
+
+The last authenticated receiver session remains selected while playback is
+stopped so its listener can choose the next record from the crate. For a shared
+venue, use explicit guest links for visitors and disconnect household profiles
+that should no longer remain available; receiver outage, session disconnect or
+invalid identity clears to House picks immediately.
+
+The TLS reverse proxy **must** preserve the public Host header (for nginx,
+`proxy_set_header Host $host`) and should allow only `/pair/`, `/join`,
+`/login`, `/callback` and `/connect` for the phone flow. Do not proxy `/api/`
+unless remote administration is a deliberate, separately tested choice: a
+proxy that sends its backend Host as `127.0.0.1` is indistinguishable from the
+trusted local kiosk. Verify the public origin returns 401 or 404—not 200—for
+`/api/auth/status` without an owner token.
+
+An auditable LAN-only nginx implementation is included at
+[`deploy/nginx/spotify-display-lan-https.conf.template`](deploy/nginx/spotify-display-lan-https.conf.template).
+It binds one RFC1918 address (never a wildcard), admits one RFC1918 client
+subnet, proxies Waitress only over loopback, exposes only the five phone routes
+and Montserrat font assets, and returns 404 for every `/api` route. It has no
+HTTP listener, ACME client, tunnel or WAN path. Follow the staged procedure in
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md#4a-lan-only-https-pairing-ingress);
+rendering is the default and live activation always requires an explicit
+`--activate`.
 
 ## Hardware backlight
 
@@ -290,6 +408,11 @@ The policy lives in `config.json`:
   "retry_interval_seconds": 2
 }
 ```
+
+`ramp_interval_ms` retains its original meaning as the duration for each ten
+logical percentage points. The controller divides that interval into one-point
+substeps (15 ms with the default), preserving the established transition time
+and power slope without visible brightness jumps.
 
 See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for the report format, permissions
 and power diagnostics.

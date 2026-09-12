@@ -6,6 +6,116 @@ numbers, so audit remediation is recorded under `Unreleased`.
 
 ## Unreleased
 
+### Added
+
+- WLED hostnames are resolved once and cached, not on every datagram.
+  `socket.sendto()` given a name resolves it through getaddrinfo on each call,
+  so an mDNS device like `lamp.local` cost 30 lookups a second at
+  `play_fps`. The address is now cached for five minutes, re-resolved whenever
+  a send fails (so a DHCP move or the nightly router reboot is picked up
+  without restarting the service), and a lookup failure keeps serving the last
+  known-good address rather than blacking out a light that is still reachable.
+  Literal IPs are never looked up at all.
+
+
+- The artist shelf: while a record plays, the pinch-out tracklist grows a
+  rail of mini-sleeves — the playing artist's other albums. Tap a sleeve to
+  flip the modal to that record's tracklist (back chevron returns), then
+  **Put it on** (play it), tap any row (play it from that track), or
+  **Stack next** (queue the whole record on the receiver, in order, via
+  go-librespot's `/player/add_to_queue`).
+  - Server: `GET /api/artist/albums` (the playing artist's other records,
+    from the existing six-hour artist cache, excluding the record on the
+    platter), `POST /api/artist/play` and `POST /api/control/queue`. All
+    three validate against that bounded shelf — plus current-album tracks
+    for the queue — so none of them opens an arbitrary catalogue proxy;
+    `/api/album/tracks` accepts shelf albums under the same rule.
+  - The mock display fixture grows a second Test Pressings record, an
+    album-aware tracklist stub and a `/__mock/queued` capture so the whole
+    flow is exercisable in local browser checks.
+
+### Changed
+
+- Panel performance and memory pass for the 1 GB Pi:
+  - All outbound HTTP (Spotify API, LRCLIB, the go-librespot loopback, WLED
+    probes) now shares one process-wide pooled keep-alive session, ending the
+    per-call TCP/TLS setup and socket churn from the 1s playback monitor.
+  - Recent-spins persistence is batched: in-memory updates land immediately,
+    the SD card sees at most one atomic write per 30 s interval plus one flush
+    on shutdown or SIGTERM (a failed write stays dirty for retry).
+  - Parsed configuration is cached keyed by the file's (mtime, size); atomic
+    config writes always change the key, so edits are picked up without
+    explicit invalidation.
+  - Each SSE stream now has a hard lifetime cap (default 600 s,
+    `SSE_MAX_LIFETIME_SECONDS`); EventSource auto-reconnects, so a half-dead
+    socket can never pin one of the bounded stream slots forever.
+  - In-memory user tokens and per-profile generations/crate caches are swept
+    once their profile leaves the config or the token expires, keeping the
+    dicts bounded over months-long uptimes.
+  - The kiosk reconnects to the event stream with jittered exponential
+    backoff (2 s → 60 s, reset on a clean open) instead of a flat 30 s.
+  - The backlight controller stretches the write cadence for repeated
+    identical at-rest writes (up to 1 s apart) and snaps back instantly on
+    any set(), error or disconnect; ramp steps are never delayed.
+  - The network watchdog backs off exponentially between consecutive
+    stuck-receiver restarts (15 s → 300 s cap) so a receiver that refuses to
+    re-join is not kicked every check interval; the backoff resets once a
+    session is observed again.
+  - systemd memory policy: go-librespot is strongly protected from the OOM
+    killer (`OOMScoreAdjust=-500`), WLED is sacrificed first
+    (`OOMScoreAdjust=500`), and the server (350 MB) and kiosk (600 MB) get
+    `MemoryHigh` throttles so Chromium is pushed into reclaim before the
+    receiver is at risk. The throttles need the host's memory cgroup
+    controller: Pi firmware disables it on ≤1 GB boards, so add
+    `cgroup_enable=memory` to `/boot/firmware/cmdline.txt` and reboot to arm
+    them (private operator acceptance notes); the OOM-score ordering works
+    regardless.
+  - Chromium launches with a 192 MB old-space cap, GPU rasterization, and
+    background networking disabled; Waitress serves with 10 threads.
+  - The boot groove sweep and crate floor reflection are now opt-in
+    (`?boot=1`, `?reflect=1`) instead of default-on.
+
+### Removed
+
+- The animated lava-blob backdrop behind the record crate (four composited
+  ~840 px blobs plus hue-bucket palette analysis) is replaced by one static
+  accent-tinted radial field. Every animated `blur`/`backdrop-filter` is
+  gone: the tracklist defocus is now a static opacity scrim over the frozen
+  platter, which stays a cached layer at 60 fps.
+- The progress ring's 60 tick marks and background track — identical every
+  frame — are pre-rendered to an offscreen canvas once per accent change
+  and blitted; the per-interval redraw now paints only the progress arc,
+  leading dot and pause glyph. The passed-ticks glow effect went with the
+  old per-frame path.
+- Lyric rows are recycled from a pooled set of divs instead of an innerHTML
+  teardown/rebuild per track.
+- Montserrat is down to the latin subset only; cyrillic, cyrillic-ext,
+  vietnamese and latin-ext faces were dropped so the kiosk never decodes or
+  caches script subsets the English UI never uses.
+
+### Changed
+
+- The standby clock is now a large digital face: 232px mixed-weight Montserrat
+  time with an accent-glow colon, a spaced date line, and the minute tick ring
+  retained as a frame with the current minute lit in the album accent. Still
+  one canvas redraw per minute.
+
+- While the receiver has no session at all, the idle shelf now stays on the
+  most recently authenticated household profile indefinitely (owner request)
+  instead of reverting to generic House picks. Guests never persist this way,
+  and an active but unlinked listener still sees House picks only.
+
+### Fixed
+
+- Swipe skip direction now follows carousel convention: swipe left skips to
+  the next track, swipe right returns to the previous one (live feedback was
+  that the restored right-for-next mapping was backwards).
+- The network watchdog now probes real name resolution instead of trusting
+  route presence, so router reboots that leave a dead uplink behind are
+  detected; it also restarts go-librespot whenever the network is up but the
+  receiver has abandoned its Spotify session (permanent reconnect give-up
+  observed after the 2026-07-19 03:02–10:03 outage left casting dead).
+
 ### Security
 
 - Added an explicit owner boundary for private library data, OAuth management,
@@ -13,6 +123,9 @@ numbers, so audit remediation is recorded under `Unreleased`.
   Connect playback.
 - Added canonical-origin, exact-callback, state-bound PKCE OAuth; one-use guest
   linkage; expiring grants; and generation-safe disconnect/cache invalidation.
+- Isolated library grants by immutable Spotify account ID and bound selection,
+  pairing, private fetches, cache publication and launches to the active
+  receiver's opaque epoch. Unknown listeners now receive House picks only.
 - Added request validation, body/rate bounds, browser-origin checks and security
   response headers, including bounded public SSE clients and auth `no-store`.
 - Replaced direct configuration writes with locked, permission-restricted atomic
@@ -53,6 +166,14 @@ numbers, so audit remediation is recorded under `Unreleased`.
 - Corrected LRC fractional timestamp parsing and same-track previous animation.
 - Made malformed receiver/config section shapes degrade safely instead of
   producing server errors.
+- Corrected the Waveshare touchscreen's inverted absolute axes with an
+  exact-device libinput calibration rule rather than browser-coordinate hacks.
+- Restored single-finger track swipes after touch calibration by preserving the
+  panel's physical left/right transport mapping and ignoring normal bubbled
+  pointer-capture transfers instead of treating them as cancelled contacts.
+- Smoothed hardware-backlight idle and wake transitions with fine HID
+  interpolation while retaining ten-point user settings, the first-contact
+  ceiling, total transition time and conservative physical power limit.
 
 ### Added
 
@@ -67,6 +188,8 @@ numbers, so audit remediation is recorded under `Unreleased`.
   TTL cache instead of continuous background subnet sweeps.
 - Accessible keyboard controls, modal focus management and reduced-motion
   transitions.
+- Receiver-aware multi-profile crates with saved albums, playlists and a
+  top-listening **Your rotation** section, plus human-typeable phone pairing.
 - Repository validation scripts, regression tests, security documentation and a
   staged Pi deployment/rollback guide.
 
@@ -90,7 +213,7 @@ numbers, so audit remediation is recorded under `Unreleased`.
   The staged Pi release and reboot passed service, HID backlight, WLED,
   security, visual and thermal gates. Physical touch/audio, real playback,
   GPIO, router-outage and long-soak checks remain explicitly recorded in
-  `docs/LIVE_RELEASE_2026-07-10.md`.
+  private operator acceptance notes.
 
 Detailed issue mapping and verification evidence are in
 [`docs/REMEDIATION.md`](docs/REMEDIATION.md).

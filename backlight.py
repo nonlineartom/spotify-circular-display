@@ -29,6 +29,17 @@ _COMMAND = (0x08, 0xF7)
 _REPORT_LENGTH = 5
 
 LOGICAL_STEP_PERCENT = 10
+# Public brightness choices stay on predictable ten-point values, while the
+# HID worker interpolates between them in one-point substeps. At the default
+# cadence this produces small reports every 15 ms instead of visible ten-point
+# jumps every 150 ms without changing the overall slew rate.
+RAMP_STEP_PERCENT = 1
+# When repeated writes carry the identical brightness with no ramp in flight
+# (e.g. periodic at-rest re-applies), the write cadence is progressively
+# stretched from the fast ramp interval up to this ceiling.
+STEADY_BACKOFF_MAX_SECONDS = 1.0
+# Consecutive identical steady-state writes tolerated before stretching.
+STEADY_BACKOFF_THRESHOLD = 3
 DEFAULT_SAFE_MAX_PERCENT = 80
 # This build targets the existing Pi 5 3 A supply.  Configuration may lower
 # this ceiling, but cannot silently raise it to the panel's highest draw.
@@ -51,8 +62,8 @@ def _bounded_number(value, default, minimum, maximum):
     return max(float(minimum), min(float(maximum), number))
 
 
-def _quantize_logical(value) -> int:
-    """Validate and round a public 0--100 value to ten-percent steps."""
+def _whole_logical_percent(value) -> int:
+    """Validate one whole logical percentage without public quantization."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError("percent must be a number from 0 to 100")
     if not float(value).is_integer():
@@ -60,6 +71,12 @@ def _quantize_logical(value) -> int:
     percent = int(value)
     if percent < 0 or percent > 100:
         raise ValueError("percent must be between 0 and 100")
+    return percent
+
+
+def _quantize_logical(value) -> int:
+    """Validate and round a public 0--100 value to ten-percent steps."""
+    percent = _whole_logical_percent(value)
     # Half-up makes the result predictable (Python's round uses bankers'
     # rounding at 5), while still accepting touch-derived integer values.
     return min(100, ((percent + LOGICAL_STEP_PERCENT // 2) // LOGICAL_STEP_PERCENT) * LOGICAL_STEP_PERCENT)
@@ -115,12 +132,15 @@ def _sysfs_contact_identity(entry: Path) -> Optional[tuple[str, int, int]]:
 
 def _logical_to_command(logical_percent: int, safe_max_percent: int) -> tuple[int, int, bytes]:
     """Map a logical setting to physical percent, HID level, and fixed report."""
-    logical = _quantize_logical(logical_percent)
+    # Public targets are quantized separately. Internal one-point ramp values
+    # must reach the HID encoder intact or they collapse back into the visible
+    # ten-point jumps the interpolation is intended to remove.
+    logical = _whole_logical_percent(logical_percent)
     safe_max = max(0, min(THREE_AMP_SAFE_MAX_PERCENT, int(safe_max_percent)))
 
     # The Waveshare protocol's documented/demo range is 0..250 (percent * 2.5).
-    # Mapping in level space keeps the logical ten-point ramp smooth even when
-    # the physical ceiling is below 100%.
+    # Mapping in level space keeps the logical ramp smooth even when the
+    # physical ceiling is below 100%.
     max_level = int(round(safe_max * 2.5))
     level = int(round(logical / 100 * max_level))
     level = max(0, min(250, level))
@@ -164,6 +184,14 @@ class BacklightController:
         self.ramp_interval_seconds = _bounded_number(
             config.get("ramp_interval_ms"), 150, 100, 1000
         ) / 1000
+        # ``ramp_interval_ms`` historically described each ten-point band.
+        # Scale the write cadence with the finer internal step so an idle/wake
+        # transition keeps the same duration and electrical slew rate.
+        self.ramp_write_interval_seconds = (
+            self.ramp_interval_seconds
+            * RAMP_STEP_PERCENT
+            / LOGICAL_STEP_PERCENT
+        )
         self.retry_interval_seconds = _bounded_number(
             config.get("retry_interval_seconds"), 2, 0.5, 30
         )
@@ -195,6 +223,11 @@ class BacklightController:
         self._last_error: Optional[str] = "not_started" if self.enabled else "disabled"
         self._force_apply = self.enabled
         self._write_in_progress = False
+        # Steady-state write backoff: identical at-rest writes progressively
+        # stretch the write interval; any set()/error/disconnect snaps back.
+        self._last_written_percent: Optional[int] = None
+        self._steady_same_count = 0
+        self._steady_backoff_until = 0.0
 
     @classmethod
     def from_application_config(cls, config: Optional[Mapping] = None, **kwargs):
@@ -262,6 +295,8 @@ class BacklightController:
                 self._contact_trusted = False
                 if had_contact:
                     self._force_apply = True
+                    self._steady_same_count = 0
+                    self._steady_backoff_until = 0.0
                 if not self._write_in_progress:
                     self._last_error = "device_not_found"
                 self._condition.notify_all()
@@ -274,6 +309,8 @@ class BacklightController:
                 self._device_identity = None
                 self._contact_trusted = False
                 self._force_apply = True
+                self._steady_same_count = 0
+                self._steady_backoff_until = 0.0
                 self._last_error = "device_contact_changed"
                 self._condition.notify_all()
                 return True
@@ -290,9 +327,9 @@ class BacklightController:
         if current is None:
             return min(target, first_contact) if target > first_contact else target
         if current < target:
-            return min(target, current + LOGICAL_STEP_PERCENT)
+            return min(target, current + RAMP_STEP_PERCENT)
         if current > target:
-            return max(target, current - LOGICAL_STEP_PERCENT)
+            return max(target, current - RAMP_STEP_PERCENT)
         return target
 
     def _write_logical_percent(
@@ -382,6 +419,8 @@ class BacklightController:
             self._active_percent = logical
             self._mode = "active"
             self._force_apply = self._force_apply or self._applied_percent != logical
+            self._steady_same_count = 0
+            self._steady_backoff_until = 0.0
             self._ensure_worker_locked()
             self._condition.notify_all()
             return self._status_locked()
@@ -393,6 +432,8 @@ class BacklightController:
             self._desired_percent = idle_target
             self._mode = "idle"
             self._force_apply = self._force_apply or self._applied_percent != idle_target
+            self._steady_same_count = 0
+            self._steady_backoff_until = 0.0
             self._ensure_worker_locked()
             self._condition.notify_all()
             return self._status_locked()
@@ -403,6 +444,8 @@ class BacklightController:
             self._desired_percent = self._active_percent
             self._mode = "active"
             self._force_apply = self._force_apply or self._applied_percent != self._active_percent
+            self._steady_same_count = 0
+            self._steady_backoff_until = 0.0
             self._ensure_worker_locked()
             self._condition.notify_all()
             return self._status_locked()
@@ -418,7 +461,11 @@ class BacklightController:
                         return
                     needs_apply = self._force_apply or self._applied_percent != self._desired_percent
                     now = self._monotonic()
-                    if needs_apply and now >= next_attempt_at:
+                    # Steady-state identical writes are throttled by the
+                    # backoff deadline; ramp steps never wait on it because
+                    # the backoff counter stays at zero while values change.
+                    apply_deadline = max(next_attempt_at, self._steady_backoff_until)
+                    if needs_apply and now >= apply_deadline:
                         target = self._desired_percent
                         origin = self._applied_percent if self._contact_trusted else None
                         step = self._next_logical_step(origin, target, self._first_contact_percent)
@@ -429,7 +476,7 @@ class BacklightController:
                         break
                     deadlines = [next_contact_check_at]
                     if needs_apply:
-                        deadlines.append(next_attempt_at)
+                        deadlines.append(apply_deadline)
                     wait_for = max(0.01, min(deadlines) - now)
                     self._condition.wait(wait_for)
 
@@ -449,6 +496,8 @@ class BacklightController:
                     self._last_error = str(error)[:80]
                     self._force_apply = True
                     self._write_in_progress = False
+                    self._steady_same_count = 0
+                    self._steady_backoff_until = 0.0
                     next_attempt_at = self._monotonic() + self.retry_interval_seconds
                     next_contact_check_at = self._monotonic() + self._contact_poll_seconds
                     self._condition.notify_all()
@@ -464,7 +513,23 @@ class BacklightController:
                     self._last_error = None
                     self._force_apply = self._applied_percent != self._desired_percent
                     self._write_in_progress = False
-                    next_attempt_at = self._monotonic() + self.ramp_interval_seconds
+                    now = self._monotonic()
+                    next_attempt_at = now + self.ramp_write_interval_seconds
+                    ramp_active = self._applied_percent != self._desired_percent
+                    if not ramp_active and self._last_written_percent == applied_logical:
+                        self._steady_same_count += 1
+                    else:
+                        self._steady_same_count = 0
+                    self._last_written_percent = applied_logical
+                    if self._steady_same_count >= STEADY_BACKOFF_THRESHOLD:
+                        stretch = min(
+                            STEADY_BACKOFF_MAX_SECONDS,
+                            self.ramp_write_interval_seconds
+                            * (1 << (self._steady_same_count - (STEADY_BACKOFF_THRESHOLD - 1))),
+                        )
+                        self._steady_backoff_until = now + stretch
+                    else:
+                        self._steady_backoff_until = 0.0
                     next_contact_check_at = self._monotonic() + self._contact_poll_seconds
                     self._condition.notify_all()
 
@@ -487,6 +552,7 @@ class BacklightController:
             "hardware_level": self._hardware_level,
             "safe_max_percent": self.safe_max_percent,
             "step_percent": LOGICAL_STEP_PERCENT,
+            "ramp_step_percent": RAMP_STEP_PERCENT,
             "pending": pending,
             "device": os.path.basename(self._device_path) if self._device_path else None,
             "error": self._last_error,

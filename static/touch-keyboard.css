@@ -1,0 +1,12 @@
+.touch-keyboard[hidden] { display:none !important; }
+.touch-keyboard { display:flex; flex-direction:column; gap:9px; width:100%; touch-action:manipulation; user-select:none; }
+.touch-key-row { display:flex; justify-content:center; gap:7px; }
+.touch-key { flex:0 0 66px; min-width:0; height:66px; border:1px solid #5d5449; border-radius:13px; background:#34312d; color:#f6f0e8; font:inherit; font-size:23px; font-weight:500; box-shadow:0 3px 0 #08090a; cursor:pointer; }
+.touch-key:active { background:#79634a; transform:translateY(2px); box-shadow:none; }
+.touch-key:focus-visible { outline:3px solid #e8c9a6; outline-offset:2px; }
+.touch-key-backspace,.touch-key-shift { flex-basis:90px; font-size:29px; }
+.touch-key-shift[aria-pressed=true] { background:#e8c9a6; color:#211c17; }
+.touch-key-actions { margin-top:4px; }
+.touch-key-actions .touch-key { font-size:17px; flex-basis:83px; }
+.touch-key-actions .touch-key-space { flex-basis:235px; }
+.touch-key-actions .touch-key-done { flex-basis:168px; background:#e8c9a6; border-color:#e8c9a6; color:#211c17; }

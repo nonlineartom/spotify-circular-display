@@ -44,7 +44,7 @@ except ImportError:
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CONFIG_FILE = os.path.join(HERE, "config.json")
+CONFIG_FILE = os.environ.get("WLED_CONFIG_FILE", os.path.join(HERE, "config.json"))
 NOW_PLAYING_URL = os.environ.get(
     "WLED_NOW_PLAYING_URL", "http://127.0.0.1:5000/api/now-playing"
 )
@@ -220,9 +220,7 @@ def load_config():
             0,
             86400,
         ),
-        "realtime_timeout_seconds": _bounded_int(
-            wled.get("realtime_timeout_seconds"), 2, 1, 255
-        ),
+        "realtime_timeout_seconds": _realtime_timeout(wled.get("realtime_timeout_seconds")),
     }
 
 
@@ -522,7 +520,16 @@ def _start_palette_crossfade(current, target, started_at, new_target, now):
 
 def _render_fps(config, is_playing, spin_speed, spin_target, crossfade_t):
     settling = spin_speed != spin_target or crossfade_t < 1.0
-    return config["play_fps"] if is_playing or settling else config["pause_fps"]
+    requested = config["play_fps"] if is_playing or settling else config["pause_fps"]
+    timeout = _realtime_timeout(config.get("realtime_timeout_seconds"))
+    # Keep at least three heartbeats inside the finite realtime lease, even
+    # when a paused frame is unchanged. One lost datagram must not release it.
+    return max(requested, (3 + timeout - 1) // timeout)
+
+
+def _realtime_timeout(value):
+    # Protocol value 255 means an indefinite lease, preventing normal release.
+    return _bounded_int(value, 2, 1, 254)
 
 
 def _complement_rgb(rgb):
@@ -621,27 +628,205 @@ def build_frame(
 # ── UDP sender ───────────────────────────────────────────────
 
 
+class HostAddressCache:
+    """Resolve names off the render thread, including cold and expired entries.
+
+    A cached address remains usable while DNS refreshes or fails. A fixed pool
+    bounds stalled libc/mDNS calls; entries and queued work are also bounded.
+    No hostname is ever handed to the UDP socket, where sendto would resolve
+    it synchronously again.
+    """
+
+    TTL_SECONDS = 300.0
+    FAILURE_RETRY_SECONDS = 5.0
+
+    def __init__(self, *, resolver=None, clock=None, worker_count=2,
+                 max_entries=MAX_DEVICES * 2):
+        self._resolver = socket.gethostbyname if resolver is None else resolver
+        self._clock = time.monotonic if clock is None else clock
+        self._max_entries = _bounded_int(max_entries, MAX_DEVICES * 2, 1, MAX_DEVICES * 2)
+        worker_count = _bounded_int(worker_count, min(2, self._max_entries),
+                                    1, min(4, self._max_entries))
+        self._condition = threading.Condition()
+        self._entries = OrderedDict()
+        self._pending = OrderedDict()
+        self._active = set()
+        self._closed = False
+        self._completed = 0
+        self._errors = 0
+        self._last_duration = None
+        self._max_duration = 0.0
+        self._threads = [
+            threading.Thread(target=self._run, daemon=True, name=f"wled-dns-{i}")
+            for i in range(worker_count)
+        ]
+        for thread in self._threads:
+            thread.start()
+
+    def resolve(self, host):
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            pass
+        else:
+            return host  # already a literal — nothing to look up
+
+        now = self._clock()
+        with self._condition:
+            if self._closed:
+                return None
+            entry = self._entries.get(host)
+            if entry is None:
+                if len(self._entries) >= self._max_entries:
+                    # Active lookups retain their slot until completion. Drop
+                    # only inactive LRU work when device configuration changes.
+                    victim = next((key for key in self._entries if key not in self._active), None)
+                    if victim is None:
+                        return None
+                    self._entries.pop(victim)
+                    self._pending.pop(victim, None)
+                entry = {"address": None, "expires_at": 0.0, "retry_after": 0.0,
+                         "last_error": None, "last_duration": None}
+                self._entries[host] = entry
+            self._entries.move_to_end(host)
+            if (now >= max(entry["expires_at"], entry["retry_after"])
+                    and host not in self._pending and host not in self._active):
+                self._pending[host] = None
+                self._condition.notify()
+            return entry["address"]
+
+    def invalidate(self, host):
+        """Request a refresh without losing the usable address or retry backoff."""
+        with self._condition:
+            entry = self._entries.get(host)
+            if entry is not None:
+                entry["expires_at"] = 0.0
+
+    def _run(self):
+        while True:
+            with self._condition:
+                while not self._pending and not self._closed:
+                    self._condition.wait()
+                if self._closed:
+                    return
+                host, _ = self._pending.popitem(last=False)
+                entry = self._entries[host]
+                self._active.add(host)
+            started = self._clock()
+            error = None
+            address = None
+            try:
+                address = str(ipaddress.IPv4Address(self._resolver(host)))
+            except Exception as exc:
+                # An invalid resolver result must not escape to sendto as a
+                # hostname, or kill a worker and strand subsequent devices.
+                error = f"{type(exc).__name__}: {exc}"[:256]
+            completed = self._clock()
+            duration = max(0.0, completed - started)
+            with self._condition:
+                self._active.discard(host)
+                self._completed += 1
+                self._errors += int(error is not None)
+                self._last_duration = duration
+                self._max_duration = max(self._max_duration, duration)
+                if not self._closed and self._entries.get(host) is entry:
+                    if address is not None:
+                        entry["address"] = address
+                    # Start backoff after completion, never before a slow
+                    # lookup: otherwise each new frame immediately retries.
+                    entry["expires_at"] = completed + (
+                        self.FAILURE_RETRY_SECONDS if error else self.TTL_SECONDS
+                    )
+                    # Send errors can invalidate a successful answer too;
+                    # keep them from creating DNS work at frame frequency.
+                    entry["retry_after"] = completed + self.FAILURE_RETRY_SECONDS
+                    entry["last_error"] = error
+                    entry["last_duration"] = duration
+                self._condition.notify_all()
+
+    def diagnostics(self):
+        now = self._clock()
+        with self._condition:
+            hosts = []
+            for host, entry in self._entries.items():
+                refresh_in = max(0.0, max(entry["expires_at"], entry["retry_after"]) - now)
+                state = ("resolving" if host in self._active else
+                         "queued" if host in self._pending else
+                         "retry_wait" if entry["last_error"] and refresh_in else
+                         "cached" if entry["address"] and refresh_in else "expired")
+                hosts.append({
+                    "host": host, "state": state, "has_address": entry["address"] is not None,
+                    "refresh_in_seconds": round(refresh_in, 3),
+                    "last_error": entry["last_error"],
+                    "last_lookup_duration_seconds": (round(entry["last_duration"], 3)
+                        if entry["last_duration"] is not None else None),
+                })
+            return {
+                "worker_limit": len(self._threads),
+                "workers_alive": sum(thread.is_alive() for thread in self._threads),
+                "entry_limit": self._max_entries,
+                "pending_lookups": len(self._pending),
+                "active_lookups": len(self._active),
+                "lookups_completed": self._completed,
+                "lookup_errors": self._errors,
+                "last_lookup_duration_seconds": (round(self._last_duration, 3)
+                    if self._last_duration is not None else None),
+                "max_lookup_duration_seconds": round(self._max_duration, 3),
+                "hosts": hosts,
+            }
+
+    def close(self):
+        with self._condition:
+            self._closed = True
+            self._pending.clear()
+            self._condition.notify_all()
+        # libc DNS is not cancellable. Daemon workers may finish later, but
+        # shutdown never waits for a resolver timeout or starts more workers.
+        for thread in self._threads:
+            thread.join(timeout=0.1)
+
+
 class WledSender:
-    def __init__(self):
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    def __init__(self, *, addresses=None, sock=None, clock=None):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) if sock is None else sock
+        # A full local send buffer must drop a frame, never stall all lights.
+        self.sock.setblocking(False)
+        self._addresses = HostAddressCache() if addresses is None else addresses
+        self._clock = time.monotonic if clock is None else clock
         self._warn_log = {}  # host -> last_warn_time
         self._sent_count = 0
         self._failed_count = 0
+        self._waiting_for_dns = 0
         self._first_sent_hosts = set()
+        self._send_gaps = OrderedDict()
         self._last_log_count = 0
         self._last_log_time = 0.0
         self._log_interval = _bounded_float(
             os.environ.get("WLED_STATS_LOG_SECONDS"), 300.0, 30.0, 3600.0
         )
 
+    def _warn(self, host, message):
+        now = self._clock()
+        last_warn = self._warn_log.get(host)
+        if last_warn is None or now - last_warn > 30:
+            print(f"wled_sync: {message}", flush=True)
+            self._warn_log[host] = now
+
     def send(self, host, frame, timeout_seconds):
         if not host:
             return False
+        address = self._addresses.resolve(host)
+        if address is None:
+            self._waiting_for_dns += 1
+            self._warn(host, f"waiting for background DNS for {host}; other lights continue")
+            return False
+        timeout_seconds = _realtime_timeout(timeout_seconds)
         packet = struct.pack("BB", DRGB_PROTOCOL_ID, timeout_seconds) + frame
         try:
-            self.sock.sendto(packet, (host, WLED_UDP_PORT))
+            self.sock.sendto(packet, (address, WLED_UDP_PORT))
             self._sent_count += 1
-            now = time.monotonic()
+            now = self._clock()
+            self._record_send_gap(host, now, timeout_seconds)
             if host not in self._first_sent_hosts:
                 print(f"wled_sync: first DRGB packet sent ({len(packet)} bytes) to {host}:{WLED_UDP_PORT}", flush=True)
                 self._first_sent_hosts.add(host)
@@ -662,19 +847,56 @@ class WledSender:
             return True
         except OSError as e:
             self._failed_count += 1
-            now = time.monotonic()
-            last_warn = self._warn_log.get(host, 0.0)
-            if not last_warn or now - last_warn > 30:
-                print(f"wled_sync: send to {host}:{WLED_UDP_PORT} failed: {e}", flush=True)
-                self._warn_log[host] = now
+            # Backpressure is not a DNS problem. Other network failures ask
+            # for a background refresh, retaining the current usable answer.
+            if not isinstance(e, BlockingIOError):
+                self._addresses.invalidate(host)
+            self._warn(host, f"send to {host}:{WLED_UDP_PORT} failed: {e}")
             return False
 
+    def _record_send_gap(self, host, now, timeout_seconds):
+        record = self._send_gaps.get(host)
+        if record is None:
+            if len(self._send_gaps) >= MAX_DEVICES * 2:
+                self._send_gaps.popitem(last=False)
+            record = {"last_success_at": None, "max_gap_seconds": 0.0,
+                      "timeout_gap_count": 0}
+            self._send_gaps[host] = record
+        self._send_gaps.move_to_end(host)
+        if record["last_success_at"] is not None:
+            gap = max(0.0, now - record["last_success_at"])
+            record["max_gap_seconds"] = max(record["max_gap_seconds"], gap)
+            if gap >= timeout_seconds:
+                record["timeout_gap_count"] += 1
+                self._warn(host, f"UDP send gap to {host}: {gap:.3f}s exceeds "
+                           f"the {timeout_seconds}s realtime lease; WLED may have released")
+        record["last_success_at"] = now
+
+    def reset_gap_tracking(self):
+        """Intentional idle/pause release is not a render-loop dropout."""
+        for record in self._send_gaps.values():
+            record["last_success_at"] = None
+
     def diagnostics(self):
+        now = self._clock()
         return {
             "udp_datagrams_queued": self._sent_count,
             "udp_local_send_errors": self._failed_count,
+            "udp_frames_waiting_for_dns": self._waiting_for_dns,
             "hosts_seen": sorted(self._first_sent_hosts),
+            "udp_send_gaps": [{
+                "host": host,
+                "last_success_age_seconds": (round(max(0.0, now - record["last_success_at"]), 3)
+                    if record["last_success_at"] is not None else None),
+                "max_gap_seconds": round(record["max_gap_seconds"], 3),
+                "timeout_gap_count": record["timeout_gap_count"],
+            } for host, record in self._send_gaps.items()],
+            "dns": self._addresses.diagnostics(),
         }
+
+    def close(self):
+        self._addresses.close()
+        self.sock.close()
 
 
 # ── Snapshot tracking ────────────────────────────────────────
@@ -919,6 +1141,7 @@ def main():
                 paused_since = None
                 released_during_pause = False
                 last_send = 0.0
+                sender.reset_gap_tracking()
                 time.sleep(0.5)
                 continue
 
@@ -1012,6 +1235,7 @@ def main():
                         flush=True,
                     )
                     released_during_pause = True
+                    sender.reset_gap_tracking()
                 time.sleep(0.5)
                 continue
 
@@ -1060,6 +1284,7 @@ def main():
     finally:
         tracker.stop()
         palette_worker.stop()
+        sender.close()
 
 
 if __name__ == "__main__":

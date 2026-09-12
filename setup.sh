@@ -13,6 +13,7 @@ ENABLE_GPIO_BUTTONS="${ENABLE_GPIO_BUTTONS:-0}"
 INSTALL_RASPOTIFY_FALLBACK="${INSTALL_RASPOTIFY_FALLBACK:-0}"
 INSTALL_TEST_DEPS="${INSTALL_TEST_DEPS:-0}"
 STAGED_INSTALL="${STAGED_INSTALL:-0}"
+TOUCH_ROTATION="${TOUCH_ROTATION:-180}"
 TEMP_ROOT="$(mktemp -d)"
 CONFIG_TMP=""
 cleanup() {
@@ -36,6 +37,13 @@ case "$DISPLAY_PORT" in ''|*[!0-9]*) die "DISPLAY_PORT must be numeric" ;; esac
     || die "DISPLAY_PORT must be between 1 and 65535"
 case "$DISPLAY_BACKEND" in chromium|pygame) ;; *) die "DISPLAY_BACKEND must be chromium or pygame" ;; esac
 case "$STAGED_INSTALL" in 0|1) ;; *) die "STAGED_INSTALL must be 0 or 1" ;; esac
+case "$TOUCH_ROTATION" in
+    0) TOUCH_CALIBRATION_MATRIX="1 0 0 0 1 0" ;;
+    90) TOUCH_CALIBRATION_MATRIX="0 -1 1 1 0 0" ;;
+    180) TOUCH_CALIBRATION_MATRIX="-1 0 1 0 -1 1" ;;
+    270) TOUCH_CALIBRATION_MATRIX="0 1 0 -1 0 1" ;;
+    *) die "TOUCH_ROTATION must be 0, 90, 180 or 270" ;;
+esac
 
 step "Installing OS dependencies"
 sudo apt-get update -qq
@@ -61,7 +69,7 @@ SERVICE_GROUPS="$APP_GROUP,$BACKLIGHT_GROUP,gpio"
 getent group audio >/dev/null 2>&1 && SERVICE_GROUPS="$SERVICE_GROUPS,audio"
 sudo usermod -a -G "$SERVICE_GROUPS" "$APP_USER"
 
-step "Configuring Waveshare backlight access"
+step "Configuring Waveshare panel access and touch calibration"
 UDEV_BACKLIGHT_RULE="$TEMP_ROOT/70-spotify-display-backlight.rules"
 printf '%s\n' \
     '# Waveshare 7inch 1080x1080 HDMI Round backlight/touch controller.' \
@@ -71,10 +79,19 @@ printf '%s\n' \
 sudo install -d -m 0755 /etc/udev/rules.d
 sudo install -m 0644 "$UDEV_BACKLIGHT_RULE" \
     /etc/udev/rules.d/70-spotify-display-backlight.rules
+UDEV_TOUCH_RULE="$TEMP_ROOT/70-spotify-display-touch.rules"
+printf '%s\n' \
+    '# Calibrate only the Waveshare round-panel touchscreen at the libinput boundary.' \
+    "SUBSYSTEM==\"input\", KERNEL==\"event*\", ATTRS{idVendor}==\"0712\", ATTRS{idProduct}==\"000a\", ENV{ID_INPUT_TOUCHSCREEN}==\"1\", ENV{LIBINPUT_CALIBRATION_MATRIX}:=\"$TOUCH_CALIBRATION_MATRIX\"" \
+    > "$UDEV_TOUCH_RULE"
+sudo install -m 0644 "$UDEV_TOUCH_RULE" \
+    /etc/udev/rules.d/70-spotify-display-touch.rules
 if command -v udevadm >/dev/null 2>&1; then
     sudo udevadm control --reload-rules
     sudo udevadm trigger --action=change --subsystem-match=hidraw \
         || warn "Could not retrigger hidraw devices; reconnect Touch USB after setup."
+    sudo udevadm trigger --action=change --subsystem-match=input \
+        || warn "Could not retrigger input devices; reconnect Touch USB after setup."
     sudo udevadm settle
 fi
 
@@ -354,4 +371,5 @@ echo -e "${GREEN}Setup complete.${NC}"
 echo "  User/path:       $APP_USER / $PROJECT_DIR"
 echo "  Server:          http://0.0.0.0:$DISPLAY_PORT (Waitress)"
 echo "  Display backend: $DISPLAY_BACKEND (graphical user service)"
+echo "  Touch rotation:  $TOUCH_ROTATION degrees"
 echo "  Reboot when ready: sudo reboot"

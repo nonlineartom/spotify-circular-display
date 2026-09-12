@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="referrer" content="no-referrer">
+  <meta name="color-scheme" content="dark">
+  <title>Settings · Pi Display</title>
+  <link rel="stylesheet" href="/static/fonts.css">
+  <link rel="stylesheet" href="/static/touch-keyboard.css">
+  <link rel="stylesheet" href="/static/owner.css">
+  <script src="/static/vendor/qrcode-generator-1.4.4.js" defer></script>
+  <script src="/static/touch-keyboard.js" defer></script>
+  <script src="/static/owner.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to settings</a>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Pi Display player"><span class="record-mark" aria-hidden="true"></span><span>PI DISPLAY<small>A place for your music</small></span></a>
+    <a class="button button-quiet back-link" href="/">← Back to player</a>
+  </header>
+  <main id="main">
+    <section class="hero" aria-labelledby="page-title">
+      <div><p class="eyebrow">YOUR LISTENING ROOM</p><h1 id="page-title">Make it yours.</h1><p class="lede">Connect a library, share the next record<br class="desktop-break"> and set the mood.</p></div>
+      <a class="button button-primary" href="/?view=records">Browse records <span aria-hidden="true">↗</span></a>
+    </section>
+
+    <div id="page-notice" class="notice" role="status" hidden></div>
+    <section id="loading" class="panel loading-state" aria-live="polite"><span class="loading-dot" aria-hidden="true"></span> Opening your settings…</section>
+
+    <section id="owner-login" class="panel login-panel" aria-labelledby="login-title" hidden>
+      <p class="eyebrow">OWNER ACCESS</p><h2 id="login-title">Your room. Your controls.</h2>
+      <p>Enter your owner token to manage the display from this browser. Settings also open directly on the display itself.</p>
+      <form id="login-form">
+        <label for="owner-token">Owner token</label>
+        <div class="login-fields"><input id="owner-token" type="password" name="token" autocomplete="off" autocapitalize="none" spellcheck="false" required><button id="login-submit" class="button button-primary" type="submit">Unlock settings</button></div>
+        <p id="login-error" class="field-message" role="alert" hidden></p>
+      </form>
+      <p class="hint">Remote access uses the owner token configured during setup. This page never saves that token.</p>
+    </section>
+
+    <div id="owner-content" hidden>
+      <nav class="section-nav" aria-label="Settings sections"><a href="#library" class="current" aria-current="location">Library & guests</a><a href="#lighting">Lighting</a><a href="#health">Device health</a></nav>
+      <div class="settings-grid">
+        <section id="library" class="panel account-panel" aria-labelledby="account-title">
+          <div class="section-heading"><div><p class="eyebrow">01 / THE MUSIC</p><h2 id="account-title">Library & guests</h2></div><span id="account-badge" class="badge">Checking</span></div>
+          <div class="account-summary"><span class="library-mark" aria-hidden="true">♫</span><div><h3 id="account-name">Your Spotify library</h3><p id="account-detail">Checking the connected account…</p></div></div>
+          <p id="account-guidance">Connect Spotify to explore your playlists, saved albums and more from the artists you play.</p>
+          <p id="account-expiry" class="account-expiry" hidden></p>
+          <div class="actions"><a id="connect-account" class="button button-primary" href="/login" hidden>Connect Spotify</a><button id="pairing-create" class="button button-primary" type="button">Link household library</button><button id="pairing-guest" class="button button-quiet" type="button">Invite a guest</button><button id="disconnect-show" class="button button-quiet" type="button" hidden>Disconnect library</button></div>
+          <p id="oauth-notice" class="hint" hidden></p>
+          <div id="disconnect-confirm" class="confirmation" hidden><p id="disconnect-confirm-copy">Disconnect this library? Its playlists and saved albums will leave this profile’s shelf. Other household libraries stay linked.</p><div class="actions"><button id="disconnect-confirm-button" class="button button-danger" type="button">Disconnect library</button><button id="disconnect-cancel" class="button button-quiet" type="button">Keep connected</button></div></div>
+          <div id="pairing-panel" class="pairing-panel" hidden>
+            <div id="pairing-qr" class="pairing-qr" role="img" aria-label="Scan this QR code to connect Spotify to the display"></div>
+            <div class="pairing-instructions"><h3 id="pairing-title">Link your household library.</h3><p id="pairing-description">Scan with a phone and sign in to the Spotify account currently playing on Pi Display. This library will be remembered for that account.</p><p id="pairing-expiry" class="pairing-expiry" role="timer"></p><div class="actions"><button id="pairing-copy" class="button button-quiet" type="button">Copy link</button><a id="pairing-open" class="text-link" target="_blank" rel="noopener noreferrer">Open link ↗</a></div><label class="sr-only" for="pairing-url">Pairing link</label><input id="pairing-url" class="pairing-url" readonly spellcheck="false" aria-label="Pairing link"></div>
+          </div>
+        </section>
+
+        <section id="health" class="panel health-panel" aria-labelledby="health-title">
+          <div class="section-heading"><div><p class="eyebrow">03 / THE DISPLAY</p><h2 id="health-title">Device health</h2></div><button id="health-refresh" class="icon-button" type="button" aria-label="Refresh device health">↻</button></div>
+          <div id="health-summary" class="health-summary"><span class="status-dot" aria-hidden="true"></span><span id="health-summary-text">Checking your display…</span></div>
+          <dl id="health-list" class="health-list"></dl>
+          <p id="health-notice" class="hint" hidden></p>
+          <details id="health-details"><summary>More details</summary><dl id="health-details-list" class="health-list detail-list"></dl></details>
+          <p id="health-updated" class="hint updated-time"></p>
+        </section>
+
+        <section id="lighting" class="panel lighting-panel" aria-labelledby="lighting-title">
+          <div class="section-heading"><div><p class="eyebrow">02 / SET THE MOOD</p><h2 id="lighting-title">Lighting</h2></div><span id="lighting-badge" class="badge">Checking</span></div>
+          <p>Let your WLED lights follow the record. Add a strip, fine-tune its position and keep every light in sync.</p>
+          <p id="lighting-error" class="field-message" role="alert" hidden></p>
+          <button id="lighting-retry" class="button button-quiet" type="button" hidden>Retry lighting</button>
+          <form id="lighting-form">
+            <fieldset id="lighting-fields" disabled>
+              <label class="switch-row" for="lighting-enabled"><span><strong>Sync with the music</strong><small>Keep your saved lights when you turn sync off.</small></span><input id="lighting-enabled" type="checkbox" role="switch"><span class="switch-track" aria-hidden="true"></span></label>
+              <div id="lighting-devices" class="lighting-devices"></div>
+              <div class="lighting-toolbar"><div class="actions"><button id="lighting-add" class="button button-quiet" type="button">+ Add manually</button><button id="lighting-discover" class="button button-quiet" type="button">Find lights</button></div><span id="lighting-count" class="hint"></span></div>
+              <div id="lighting-discovery" class="discovery" hidden><p id="discovery-status" role="status"></p><div id="discovery-devices"></div></div>
+              <div class="save-bar"><p id="lighting-save-status" role="status">Your settings are up to date.</p><div class="actions"><button id="lighting-revert" class="button button-quiet" type="button" disabled>Discard changes</button><button id="lighting-save" class="button button-primary" type="submit" disabled>Save lighting</button></div></div>
+            </fieldset>
+          </form>
+        </section>
+      </div>
+      <footer class="page-footer"><span id="access-note">Owner settings</span><a href="/connect">How to play on this display ↗</a></footer>
+    </div>
+    <noscript><p class="notice">Enable JavaScript to manage this display. <a href="/">Return to the player</a>.</p></noscript>
+  </main>
+  <div id="owner-input-dialog" class="owner-input-overlay" role="dialog" aria-modal="true" aria-labelledby="owner-input-title" hidden>
+    <section class="owner-input-panel">
+      <div class="owner-input-heading"><div><p class="eyebrow">EDIT LIGHT</p><h2 id="owner-input-title">Light name</h2></div><button id="owner-input-cancel" class="button button-quiet" type="button">Cancel</button></div>
+      <label id="owner-input-label" class="sr-only" for="owner-input-value">Light name</label>
+      <input id="owner-input-value" type="text" inputmode="none" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="owner-input-hint owner-input-error">
+      <p id="owner-input-hint" class="hint">Use the keyboard below, then tap Done.</p>
+      <p id="owner-input-error" class="field-message" role="alert" hidden></p>
+      <div id="owner-touch-keyboard" class="touch-keyboard"></div>
+      <button id="owner-input-apply" class="button button-primary" type="button">Apply value</button>
+    </section>
+  </div>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>

@@ -39,3 +39,15 @@ go-librespot/state.json
 go-librespot/credentials.json
 /index.html
 recently_spun.json
+
+# Per-device LAN HTTPS settings and rendered nginx output
+deploy/lan-https.json
+
+# Private collection and operator evidence (kept locally)
+data/vinyls.json
+data/vinyls.json.lock
+docs/*.private.md
+docs/LIVE_*.md
+docs/AUDIT_2026-09-12.md
+docs/WLED_DROPOUT_FIX_2026-09-12.md
+TODO_RELEASE_POLISH.md

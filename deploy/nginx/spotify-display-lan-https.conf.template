@@ -1,0 +1,137 @@
+# Spotify Circular Display: LAN-only phone pairing ingress.
+#
+# Render this file with scripts/render_lan_https.py. The renderer accepts only
+# an RFC1918 listen address and an RFC1918 client CIDR containing that address.
+# There is deliberately no port 80 listener, wildcard listener, IPv6 listener,
+# Web API proxy, ACME client, tunnel, or certificate-renewal hook here.
+
+# Reject unknown SNI before presenting the certificate. Binding to one concrete
+# RFC1918 address also prevents nginx from accepting this site on another NIC.
+server {
+    listen @LAN_LISTEN_ADDRESS@:443 ssl default_server;
+    server_name _;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_reject_handshake on;
+}
+
+server {
+    listen @LAN_LISTEN_ADDRESS@:443 ssl;
+    server_name @PUBLIC_HOST@;
+
+    ssl_certificate "@TLS_CERTIFICATE_PATH@";
+    ssl_certificate_key "@TLS_PRIVATE_KEY_PATH@";
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SpotifyDisplayTLS:1m;
+    ssl_session_timeout 10m;
+    ssl_session_tickets off;
+
+    # Do not trust X-Forwarded-For or a router-provided source address. nginx's
+    # actual TCP peer must be inside the one configured LAN subnet.
+    allow @LAN_ALLOW_CIDR@;
+    deny all;
+
+    server_tokens off;
+    access_log off; # OAuth callback query strings must not enter access logs.
+    client_max_body_size 1k;
+
+    # SNI and HTTP Host must both name the canonical public origin.
+    if ($host != "@PUBLIC_HOST@") { return 421; }
+
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "same-origin" always;
+
+    # A valid one-use pairing URL is exactly 12 Crockford Base32 characters.
+    location ~* "^/pair/[0-9A-HJKMNP-TV-Z]{12}$" {
+        limit_except GET { deny all; }
+        proxy_pass http://127.0.0.1:@FLASK_PORT@;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Connection "";
+        proxy_set_header Forwarded "";
+        proxy_set_header X-Forwarded-For "";
+        proxy_set_header X-Forwarded-Host "";
+        # A fixed marker makes the proxy hop explicit and independently
+        # disqualifies Flask's implicit direct-loopback owner trust.
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Real-IP "";
+        proxy_set_header Via "";
+        proxy_set_header Authorization "";
+        proxy_set_header X-Owner-Token "";
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_connect_timeout 2s;
+        proxy_send_timeout 10s;
+        proxy_read_timeout 15s;
+        proxy_cache off;
+    }
+
+    # Only the browser-facing OAuth handoff pages are reachable from the LAN.
+    location ~ ^/(join|login|callback|connect)$ {
+        limit_except GET { deny all; }
+        proxy_pass http://127.0.0.1:@FLASK_PORT@;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Connection "";
+        proxy_set_header Forwarded "";
+        proxy_set_header X-Forwarded-For "";
+        proxy_set_header X-Forwarded-Host "";
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Real-IP "";
+        proxy_set_header Via "";
+        proxy_set_header Authorization "";
+        proxy_set_header X-Owner-Token "";
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_connect_timeout 2s;
+        proxy_send_timeout 10s;
+        proxy_read_timeout 15s;
+        proxy_cache off;
+    }
+
+    # join.html and connect.html use only this stylesheet and these five fonts.
+    location = /static/fonts.css {
+        limit_except GET { deny all; }
+        proxy_pass http://127.0.0.1:@FLASK_PORT@;
+        proxy_set_header Host $host;
+        proxy_set_header Forwarded "";
+        proxy_set_header X-Forwarded-For "";
+        proxy_set_header X-Forwarded-Host "";
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Real-IP "";
+        proxy_set_header Via "";
+        proxy_set_header Authorization "";
+        proxy_set_header X-Owner-Token "";
+        proxy_set_header Cookie "";
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_connect_timeout 2s;
+        proxy_read_timeout 15s;
+        proxy_cache off;
+    }
+
+    location ~ "^/static/fonts/montserrat-(cyrillic-ext|cyrillic|vietnamese|latin-ext|latin)\.woff2$" {
+        limit_except GET { deny all; }
+        proxy_pass http://127.0.0.1:@FLASK_PORT@;
+        proxy_set_header Host $host;
+        proxy_set_header Forwarded "";
+        proxy_set_header X-Forwarded-For "";
+        proxy_set_header X-Forwarded-Host "";
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Real-IP "";
+        proxy_set_header Via "";
+        proxy_set_header Authorization "";
+        proxy_set_header X-Owner-Token "";
+        proxy_set_header Cookie "";
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_connect_timeout 2s;
+        proxy_read_timeout 15s;
+        proxy_cache off;
+    }
+
+    # Explicitly document the critical boundary before the catch-all.
+    location = /api { return 404; }
+    location ^~ /api/ { return 404; }
+    location / { return 404; }
+}

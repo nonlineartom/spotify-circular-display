@@ -1,0 +1,73 @@
+<nav id="display-nav" aria-label="Display navigation">
+  <button type="button" id="open-records"><span aria-hidden="true">◉</span> Explore music</button>
+  <button type="button" id="open-controls"><span aria-hidden="true">☷</span> Controls</button>
+</nav>
+
+<section id="explore-modal" class="utility-modal" role="dialog" aria-modal="true" aria-labelledby="explore-heading" hidden>
+  <div class="explore-shell">
+    <header class="explore-heading-row">
+      <div><p class="utility-eyebrow">YOUR NEXT RECORD</p><h1 id="explore-heading">Explore music</h1></div>
+      <div class="explore-view-switch" role="group" aria-label="Cover layout"><button type="button" id="explore-mosaic" aria-pressed="true">Mosaic</button><button type="button" id="explore-grid-view" aria-pressed="false">Grid</button></div>
+      <button type="button" id="explore-close" class="utility-close" aria-label="Close music browser">×</button>
+    </header>
+    <div id="explore-browser">
+      <div class="explore-search-row">
+        <label class="explore-search-label"><span aria-hidden="true">⌕</span><input id="explore-search" type="search" inputmode="none" placeholder="Tap to search albums, artists or playlists" aria-label="Search your records" aria-controls="explore-search-keyboard" aria-expanded="false" autocomplete="off" spellcheck="false" maxlength="120"></label>
+        <button type="button" id="explore-add-vinyl" class="utility-button" aria-label="Add an album to Vinyls">+ Add</button>
+        <button type="button" id="explore-surprise" class="utility-button">Surprise me</button>
+      </div>
+      <div id="explore-tabs" class="explore-tabs" role="tablist" aria-label="Music collections"></div>
+      <div id="explore-search-keyboard" hidden>
+        <div class="search-keyboard-heading"><p id="search-match-count" role="status" aria-live="polite"></p><span>Tap the keys below</span></div>
+        <div id="search-matches" aria-label="Matching records"></div>
+        <div id="explore-keyboard-keys"></div>
+      </div>
+      <div id="explore-results">
+      <div id="explore-personal-links" hidden><div id="personal-quick-buttons" aria-label="Your weekly playlists"></div><p id="personal-quick-status" role="status"></p></div>
+      <div class="explore-view-row">
+        <p id="explore-description">More from the artists you play, and favourites worth revisiting.</p>
+      </div>
+      <div id="explore-covers" class="explore-covers mosaic">
+        <div id="explore-map" aria-label="Album cover mosaic"><div id="explore-map-belt"></div></div>
+        <div id="explore-grid" aria-label="Records" hidden></div>
+        <div id="explore-empty" hidden><span class="empty-record" aria-hidden="true">◎</span><h2 id="explore-empty-title">Your next record starts here.</h2><p id="explore-empty-copy"></p><button type="button" id="explore-retry" class="utility-button">Try again</button><a href="/owner" id="explore-connect" class="utility-button">Connect a library</a></div>
+        <div id="explore-map-tools" role="group" aria-label="Mosaic zoom"><button type="button" id="explore-zoom-out" aria-label="Zoom out">−</button><button type="button" id="explore-recenter">Centre</button><button type="button" id="explore-zoom-in" aria-label="Zoom in">+</button></div>
+      </div>
+      <div class="explore-footer"><button type="button" id="explore-prev" class="utility-button" aria-label="Previous records">←</button><div><p id="explore-count" role="status" aria-live="polite"></p><p id="explore-hint">Drag to wander · tap a cover to take a look</p></div><button type="button" id="explore-next" class="utility-button" aria-label="More records">→</button></div>
+      <p id="explore-status" class="utility-status" role="status" aria-live="polite"></p>
+      </div>
+    </div>
+    <div id="explore-detail" hidden>
+      <button type="button" id="detail-back" class="utility-text-button">← Back to exploring</button>
+      <div class="detail-layout">
+        <div class="detail-hero">
+          <div id="detail-art"></div>
+          <div class="detail-copy"><p id="detail-reason" class="utility-eyebrow"></p><h2 id="detail-title"></h2><p id="detail-subtitle"></p><p id="detail-edition"></p><p id="detail-metadata"></p></div>
+        </div>
+        <div id="detail-drawer">
+          <div class="detail-track-heading"><h3 id="detail-track-label">On this record</h3><p id="detail-track-count"></p></div>
+          <p id="detail-status" class="utility-status" role="status" aria-live="polite"></p>
+          <button type="button" id="detail-retry" class="utility-text-button" hidden>Try loading tracks again</button>
+          <div id="detail-tracks" aria-label="Tracks"></div>
+          <p id="detail-note">Play starts the record now. Queue adds it after your queued tracks.</p>
+        </div>
+      </div>
+      <div class="detail-actions"><button type="button" id="detail-play" class="utility-button primary">Play this record</button><button type="button" id="detail-queue" class="utility-button">+ Queue album</button><button type="button" id="detail-add-vinyl" class="utility-button">+ Vinyls</button></div>
+    </div>
+  </div>
+  {% include 'collection-editor.html' %}
+</section>
+
+<section id="controls-modal" class="utility-modal" role="dialog" aria-modal="true" aria-labelledby="controls-heading" hidden>
+  <div class="controls-shell">
+    <header class="explore-heading-row"><div><p class="utility-eyebrow">MAKE YOURSELF AT HOME</p><h1 id="controls-heading">At your fingertips.</h1></div><button type="button" id="controls-close" class="utility-close" aria-label="Close controls">×</button></header>
+    <p id="controls-now-playing">Choose something from your record collection.</p>
+    <div class="controls-transport"><button type="button" id="controls-previous" class="utility-button" aria-label="Previous track">← Previous</button><button type="button" id="controls-play" class="utility-button primary">Play</button><button type="button" id="controls-next" class="utility-button" aria-label="Next track">Next →</button></div>
+    <div class="controls-slider"><label for="controls-seek">Track position <output id="controls-position">0:00</output></label><input type="range" id="controls-seek" min="0" max="1000" value="0" aria-label="Track position"></div>
+    <div class="controls-slider"><label for="controls-volume">Volume <output id="controls-volume-value">50%</output></label><input type="range" id="controls-volume" min="0" max="100" value="50"></div>
+    <div class="controls-slider"><label for="controls-brightness">Screen brightness <output id="controls-brightness-value">100%</output></label><input type="range" id="controls-brightness" min="0" max="100" value="100"><p id="controls-brightness-note"></p></div>
+    <div class="controls-destinations"><button type="button" id="controls-records" class="utility-button">Explore music <span>Albums, playlists & discoveries →</span></button><button type="button" id="controls-personal" class="utility-button">Made for you <span>Discover Weekly, Release Radar & mixes →</span></button><button type="button" id="controls-tracks" class="utility-button">This album <span>Choose a track →</span></button><a href="/owner" class="utility-button">Settings <span>Pairing, lights & device health →</span></a></div>
+    <details id="controls-help"><summary>Touch shortcuts</summary><p>Centre tap: play / pause · Swipe: skip<br>Pinch in: record shelf · Pinch out: album tracks<br>Two-finger drag: volume · Twist: seek<br>Three-finger drag: brightness</p></details>
+    <p id="controls-status" class="utility-status" role="status" aria-live="polite"></p>
+  </div>
+</section>

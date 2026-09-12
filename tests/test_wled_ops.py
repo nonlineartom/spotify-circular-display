@@ -2,6 +2,11 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+import pytest
 
 import numpy as np
 
@@ -118,7 +123,7 @@ def test_pause_keeps_play_cadence_until_motor_and_crossfade_settle():
     config = {"play_fps": 30, "pause_fps": 1}
     assert wled_sync._render_fps(config, False, 0.8, 0, 1.0) == 30
     assert wled_sync._render_fps(config, False, 0.0, 0, 0.4) == 30
-    assert wled_sync._render_fps(config, False, 0.0, 0, 1.0) == 1
+    assert wled_sync._render_fps(config, False, 0.0, 0, 1.0) == 2
 
 
 def test_interrupted_crossfade_snapshots_the_visible_palette():
@@ -281,6 +286,24 @@ def test_setup_requires_hashed_lockfile_for_dependencies():
     assert "OS_PACKAGES+=(nodejs)" in source
 
 
+def test_setup_scopes_touch_calibration_to_the_waveshare_touchscreen():
+    source = (ROOT / "setup.sh").read_text()
+    assert 'TOUCH_ROTATION="${TOUCH_ROTATION:-180}"' in source
+    assert '180) TOUCH_CALIBRATION_MATRIX="-1 0 1 0 -1 1"' in source
+    assert 'TOUCH_ROTATION must be 0, 90, 180 or 270' in source
+
+    rule = source.split('UDEV_TOUCH_RULE=', 1)[1].split(
+        'if command -v udevadm', 1
+    )[0]
+    assert 'SUBSYSTEM==\\"input\\"' in rule
+    assert 'KERNEL==\\"event*\\"' in rule
+    assert 'ATTRS{idVendor}==\\"0712\\"' in rule
+    assert 'ATTRS{idProduct}==\\"000a\\"' in rule
+    assert 'ENV{ID_INPUT_TOUCHSCREEN}==\\"1\\"' in rule
+    assert 'ENV{LIBINPUT_CALIBRATION_MATRIX}' in rule
+    assert '/etc/udev/rules.d/70-spotify-display-touch.rules' in rule
+
+
 def test_setup_does_not_stop_live_legacy_services_before_cutover():
     source = (ROOT / "setup.sh").read_text()
     assert "disable --now raspotify.service" not in source
@@ -362,3 +385,267 @@ def test_validation_does_not_lint_generated_virtualenv_scripts():
     source = (ROOT / "scripts" / "validate.sh").read_text()
     assert "-path './venv'" in source
     assert "-path './.venv'" in source
+
+
+class FakeSocket:
+    """Records packets in memory; these tests never send traffic to a light."""
+
+    def __init__(self, fail_times=0):
+        self.sent = []
+        self.packets = []
+        self._fail_times = fail_times
+        self.blocking = True
+        self.closed = False
+
+    def setblocking(self, value):
+        self.blocking = value
+
+    def sendto(self, packet, dest):
+        self.sent.append(dest)
+        self.packets.append(packet)
+        if len(self.sent) <= self._fail_times:
+            raise OSError(101, "Network is unreachable")
+        return len(packet)
+
+    def close(self):
+        self.closed = True
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 100.0
+
+    def __call__(self):
+        return self.now
+
+
+def wait_until(predicate):
+    deadline = time.monotonic() + 2
+    while not predicate():
+        assert time.monotonic() < deadline, "background resolver did not finish"
+        threading.Event().wait(0.005)
+
+
+@pytest.fixture
+def cache_factory():
+    caches = []
+
+    def create(**kwargs):
+        cache = wled_sync.HostAddressCache(**kwargs)
+        caches.append(cache)
+        return cache
+
+    yield create
+    for cache in caches:
+        cache.close()
+
+
+@pytest.fixture
+def sender_factory():
+    senders = []
+
+    def create(**kwargs):
+        kwargs.setdefault("sock", FakeSocket())
+        sender = wled_sync.WledSender(**kwargs)
+        senders.append(sender)
+        return sender
+
+    yield create
+    for sender in senders:
+        sender.close()
+
+
+def test_named_hosts_resolve_once_not_per_datagram(cache_factory, sender_factory):
+    lookups = []
+    cache = cache_factory(resolver=lambda host: (lookups.append(host), "192.168.24.95")[1])
+    sender = sender_factory(addresses=cache)
+    assert cache.resolve("lamp.local") is None
+    wait_until(lambda: cache.diagnostics()["lookups_completed"] == 1)
+    for _ in range(50):
+        assert sender.send("lamp.local", b"\x00\x01\x02", 2)
+    assert lookups == ["lamp.local"]
+    assert sender.sock.sent == [("192.168.24.95", wled_sync.WLED_UDP_PORT)] * 50
+    assert sender.sock.blocking is False
+
+
+def test_literal_ip_hosts_are_never_resolved(cache_factory, sender_factory):
+    def explode(host):
+        pytest.fail(f"unexpected lookup for {host}")
+
+    cache = cache_factory(resolver=explode)
+    sender = sender_factory(addresses=cache)
+    assert sender.send("192.168.24.67", b"\x00", 2)
+    assert sender.sock.sent == [("192.168.24.67", wled_sync.WLED_UDP_PORT)]
+    assert cache.diagnostics()["lookups_completed"] == 0
+
+
+def test_slow_cold_lookup_cannot_stall_other_lights(cache_factory, sender_factory):
+    entered, release = threading.Event(), threading.Event()
+
+    def stalled(_host):
+        entered.set()
+        release.wait(5)
+        return "192.168.24.95"
+
+    cache = cache_factory(resolver=stalled)
+    sender = sender_factory(addresses=cache)
+    with ThreadPoolExecutor(max_workers=1) as caller:
+        try:
+            # A synchronous regression fails promptly instead of hanging the test.
+            assert caller.submit(sender.send, "lamp.local", b"rgb", 2).result(timeout=1) is False
+            assert entered.wait(1)
+            for _ in range(60):
+                assert sender.send("192.168.24.67", b"rgb", 2)
+                assert caller.submit(sender.send, "lamp.local", b"rgb", 2).result(timeout=1) is False
+            assert cache.diagnostics()["active_lookups"] == 1
+            assert cache.diagnostics()["pending_lookups"] == 0
+            assert len(sender.sock.sent) == 60
+        finally:
+            release.set()
+    wait_until(lambda: cache.diagnostics()["lookups_completed"] == 1)
+    assert sender.send("lamp.local", b"rgb", 2)
+
+
+def test_slow_failed_refresh_keeps_frames_and_backoff_starts_after_completion(cache_factory, sender_factory):
+    clock = FakeClock()
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def resolve(_host):
+        calls.append(clock.now)
+        if len(calls) == 1:
+            return "192.168.24.95"
+        entered.set()
+        release.wait(5)
+        raise OSError("mDNS timeout")
+
+    cache = cache_factory(resolver=resolve, clock=clock)
+    sender = sender_factory(addresses=cache, clock=clock)
+    cache.resolve("lamp.local")
+    wait_until(lambda: cache.diagnostics()["lookups_completed"] == 1)
+    clock.now += cache.TTL_SECONDS
+    with ThreadPoolExecutor(max_workers=1) as caller:
+        try:
+            assert caller.submit(sender.send, "lamp.local", b"rgb", 2).result(timeout=1)
+            assert entered.wait(1)
+            # Simulate the measured five-second DNS outage, with both lights
+            # still receiving frames throughout it.
+            for _ in range(150):
+                clock.now += 1 / 30
+                assert sender.send("192.168.24.67", b"rgb", 2)
+                assert sender.send("lamp.local", b"rgb", 2)
+            assert len(calls) == 2
+        finally:
+            release.set()
+    wait_until(lambda: cache.diagnostics()["lookups_completed"] == 2)
+    diagnostics = cache.diagnostics()
+    assert diagnostics["lookup_errors"] == 1
+    assert diagnostics["last_lookup_duration_seconds"] == pytest.approx(5)
+    assert diagnostics["hosts"][0]["refresh_in_seconds"] == cache.FAILURE_RETRY_SECONDS
+    assert max(gap["max_gap_seconds"] for gap in sender.diagnostics()["udp_send_gaps"]) < .04
+    clock.now += cache.FAILURE_RETRY_SECONDS - .1
+    for _ in range(100):
+        cache.invalidate("lamp.local")
+        assert cache.resolve("lamp.local") == "192.168.24.95"
+    assert cache.diagnostics()["lookups_completed"] == 2
+    clock.now += .2
+    assert cache.resolve("lamp.local") == "192.168.24.95"
+    wait_until(lambda: cache.diagnostics()["lookups_completed"] == 3)
+
+
+def test_send_failure_refreshes_address_without_frame_rate_dns_retries(cache_factory, sender_factory):
+    clock, addresses = FakeClock(), ["192.168.24.95", "192.168.24.120"]
+    calls = []
+
+    def resolve(host):
+        calls.append(host)
+        return addresses[min(len(calls)-1, 1)]
+
+    cache = cache_factory(resolver=resolve, clock=clock)
+    cache.resolve("lamp.local")
+    wait_until(lambda: cache.diagnostics()["lookups_completed"] == 1)
+    sender = sender_factory(addresses=cache, clock=clock, sock=FakeSocket(fail_times=1))
+    assert not sender.send("lamp.local", b"rgb", 2)
+    assert sender.send("lamp.local", b"rgb", 2)
+    assert calls == ["lamp.local"]
+    clock.now += cache.FAILURE_RETRY_SECONDS
+    sender.send("lamp.local", b"rgb", 2)
+    wait_until(lambda: cache.diagnostics()["lookups_completed"] == 2)
+    assert sender.send("lamp.local", b"rgb", 2)
+    assert sender.sock.sent[-1][0] == "192.168.24.120"
+
+
+def test_pending_dns_work_and_workers_remain_bounded(cache_factory):
+    entered, release = threading.Event(), threading.Event()
+
+    def stalled(_host):
+        entered.set()
+        release.wait(5)
+        return "192.168.24.95"
+
+    cache = cache_factory(resolver=stalled, worker_count=1, max_entries=4)
+    try:
+        cache.resolve("first.local")
+        assert entered.wait(1)
+        for index in range(100):
+            cache.resolve(f"light-{index}.local")
+        for _ in range(100):
+            cache.invalidate("first.local")
+            assert cache.resolve("first.local") is None
+        status = cache.diagnostics()
+        assert status["active_lookups"] == 1
+        assert status["pending_lookups"] <= 3
+        assert len(status["hosts"]) <= 4
+        assert status["workers_alive"] == 1
+    finally:
+        release.set()
+
+
+def test_sender_reports_timeout_gaps_but_not_intentional_idle(cache_factory, sender_factory):
+    clock = FakeClock()
+    sender = sender_factory(addresses=cache_factory(), clock=clock)
+    assert sender.send("192.168.24.67", b"rgb", 2)
+    clock.now += 5
+    assert sender.send("192.168.24.67", b"rgb", 2)
+    assert sender.diagnostics()["udp_send_gaps"][0]["timeout_gap_count"] == 1
+    sender.reset_gap_tracking()
+    clock.now += 60
+    assert sender.send("192.168.24.67", b"rgb", 2)
+    assert sender.diagnostics()["udp_send_gaps"][0]["timeout_gap_count"] == 1
+    assert sender.diagnostics()["udp_send_gaps"][0]["max_gap_seconds"] == 5
+
+
+@pytest.mark.parametrize("timeout,configured_fps,minimum", [(1, 1, 3), (2, 1, 2), (2, 30, 30), (10, 1, 1)])
+def test_packet_cadence_keeps_three_heartbeats_inside_finite_timeout(timeout, configured_fps, minimum):
+    config = {"play_fps": configured_fps, "pause_fps": configured_fps, "realtime_timeout_seconds": timeout}
+    for playing in (True, False):
+        assert wled_sync._render_fps(config, playing, 0, 0, 1) == minimum
+
+
+def test_configured_timeout_cannot_latch_realtime_forever(tmp_path, monkeypatch):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"wled": {"realtime_timeout_seconds": 255}}))
+    monkeypatch.setattr(wled_sync, "CONFIG_FILE", str(path))
+    assert wled_sync.load_config()["realtime_timeout_seconds"] == 254
+
+
+def test_renderer_honors_the_launchers_config_path(tmp_path):
+    path = tmp_path / "custom.json"
+    path.write_text(json.dumps({"wled": {"enabled": True}}))
+    result = subprocess.run(
+        [os.sys.executable, "-c", "import wled_sync; print(wled_sync.CONFIG_FILE); print(wled_sync.load_config()['enabled'])"],
+        cwd=ROOT, env=os.environ | {"WLED_CONFIG_FILE": str(path)}, capture_output=True, text=True, check=True,
+    )
+    assert result.stdout.splitlines() == [str(path), "True"]
+
+
+def test_mdns_device_names_are_accepted_in_config():
+    """lamp.local must survive host validation and land in the device list."""
+    devices = wled_sync._normalize_devices({
+        "devices": [
+            {"host": "192.168.24.67", "name": "fixture-light", "pixel_count": 46},
+            {"host": "lamp.local", "name": "MUSHROOM", "pixel_count": 162},
+        ]
+    })
+    assert [d["host"] for d in devices] == ["192.168.24.67", "lamp.local"]
+    assert [d["pixel_count"] for d in devices] == [46, 162]

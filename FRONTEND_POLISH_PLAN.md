@@ -211,6 +211,11 @@ restores controls within a frame. Long titles legible without ellipsis truncatio
 multi-day live trial. Each can be disabled via kiosk URL if the trial argues against it:
 `?standby=off`, `?boot=0`, `?reflect=0`.*
 
+*Trial outcome (2026-08-02): the standby clock earned its keep and has since grown into
+the large digital face. The boot sweep and crate reflection never justified their render
+cost on the 1 GB panel — the efficiency pass flipped both to **opt-in** (`?boot=1`,
+`?reflect=1`); the paragraph above records the original trial-era defaults.*
+
 - [x] **Standby watch face** — `?standby=clock`. Ultra-dim tick ring + hands + accent dot at
       12 while dimmed; one canvas redraw per minute inside the dimmed early-return. Verified
       live (drawn over the dimmed crate). Software overlay only — backlight is untouched.
@@ -250,14 +255,14 @@ touches the same code, or as a standalone efficiency pass.
 - [ ] **Grooves canvas backing store.** `#grooves` is a 1080×1080 RGBA canvas (~4.5 MB) for
       soft concentric lines. Acceptable (single static layer), but if RAM pressure shows up:
       render at 540×540 and upscale via CSS — the grooves are low-frequency and tolerate it.
-- [ ] **Verify lava layers drop when hidden.** 4 blobs ≈ 842px each are composited while the
-      crate is up (~11 MB GPU). They're `animation-play-state: paused` + `visibility: hidden`
-      when off-screen, which *should* release the layers — confirm in `chrome://gpu` /
-      DevTools layers panel on the Pi rather than assuming.
+- [x] **Verify lava layers drop when hidden.** *Superseded 2026-08-02: the efficiency pass
+      removed the lava layer outright — the crate now sits on one static accent-tinted
+      radial field (`#crate-aura`), so there are no blob layers left to verify.*
 - [x] **`tracklistCache` was unbounded.** It is now a 12-album insertion-order LRU.
 - [x] **Fonts** — variable face + `unicode-range` subsets shipped in Phase 0: fewer font
       faces in RAM than the previous three Google-hosted static weights, zero network
-      dependency.
+      dependency. *(2026-08-02: trimmed further to the latin subset only; rare non-latin
+      metadata falls back to system glyphs.)*
 
 ## Rollback
 

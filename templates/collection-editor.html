@@ -1,0 +1,15 @@
+<section id="vinyl-editor" role="dialog" aria-modal="true" aria-labelledby="vinyl-editor-heading" hidden>
+  <div class="vinyl-editor-shell">
+    <header class="explore-heading-row"><div><p class="utility-eyebrow">YOUR PHYSICAL COLLECTION</p><h2 id="vinyl-editor-heading">Add to Vinyls</h2></div><button id="vinyl-editor-close" type="button" class="utility-close" aria-label="Close Add to Vinyls">×</button></header>
+    <p class="vinyl-editor-intro">Find a record you own and choose its Spotify edition.</p>
+    <form id="vinyl-search-form" class="vinyl-search-row">
+      <input id="vinyl-search" type="search" inputmode="none" autocomplete="off" spellcheck="false" maxlength="120" placeholder="Album, artist or Spotify album link" aria-label="Find an album to add to Vinyls" aria-controls="vinyl-keyboard" aria-expanded="false">
+      <button type="submit" id="vinyl-search-submit" class="utility-button primary">Search</button>
+    </form>
+    <p id="vinyl-editor-status" class="utility-status" role="status" aria-live="polite"></p>
+    <div id="vinyl-search-results" aria-label="Albums to add to Vinyls"></div>
+    <div id="vinyl-keyboard" hidden></div>
+    <p class="vinyl-editor-note">Saved on this Pi, for everyone who uses it.</p>
+    <button type="button" id="vinyl-editor-done" class="utility-button">Back to exploring</button>
+  </div>
+</section>

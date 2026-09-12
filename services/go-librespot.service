@@ -16,6 +16,9 @@ ExecStart=/usr/local/bin/go-librespot --config_dir "@PROJECT_DIR@/go-librespot"
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=15
+# The receiver is the appliance's raison d'etre: strongly prefer killing any
+# other process when memory is exhausted.
+OOMScoreAdjust=-500
 UMask=0007
 NoNewPrivileges=true
 PrivateTmp=true

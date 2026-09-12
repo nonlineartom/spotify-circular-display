@@ -6,6 +6,9 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
+# Chromium is the largest memory consumer on the 1 GB panel; throttle it
+# into reclaim before the global OOM killer considers go-librespot.
+MemoryHigh=600M
 ExecStart="@PROJECT_DIR@/display-launch.sh" chromium
 Restart=on-failure
 RestartSec=10

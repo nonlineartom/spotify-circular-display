@@ -13,6 +13,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 INDEX = (ROOT / "templates" / "index.html").read_text(encoding="utf-8")
 JOIN = (ROOT / "templates" / "join.html").read_text(encoding="utf-8")
+CONNECT = (ROOT / "templates" / "connect.html").read_text(encoding="utf-8")
 
 
 class _ControlParser(HTMLParser):
@@ -52,6 +53,44 @@ def _run_node(source: str) -> None:
     subprocess.run(["node", "-e", source], check=True, capture_output=True, text=True)
 
 
+def test_volume_sender_serializes_and_delivers_latest_value_after_slow_response():
+    _run_node("""
+      const assert = require('node:assert/strict');
+      const state = {volume: 50};
+      let volSendTimer = null, volSendInFlight = false, volPendingPct = null;
+      let volLastSetAt = -Infinity, timerId = 0, polls = 0;
+      const timers = new Map(), requests = [], messages = [];
+      const setTimeout = callback => { const id = ++timerId; timers.set(id, callback); return id; };
+      const clearTimeout = id => timers.delete(id);
+      const renderVolume = () => {};
+      const showWledToast = message => messages.push(message);
+      const poll = () => polls++;
+      const fetch = (url, options) => new Promise(resolve => requests.push({url, options, resolve}));
+      const fire = id => { const callback = timers.get(id); timers.delete(id); return callback(); };
+    """ + _js_function("setVolume") + "\nasync " + _js_function("flushVolumeSend") + """
+      (async () => {
+        setVolume(20);
+        const first = fire(volSendTimer);
+        setVolume(40);
+        setVolume(80);
+        assert.equal(requests.length, 1, 'a slow receiver must not allow overlapping writes');
+        assert.equal(volPendingPct, 80, 'only the latest gesture value needs to be retained');
+        requests[0].resolve({ok: true});
+        await first;
+        const last = fire(volSendTimer);
+        assert.equal(requests.length, 2);
+        assert.equal(JSON.parse(requests[1].options.body).percent, 80);
+        requests[1].resolve({ok: false});
+        await last;
+        assert.equal(volSendInFlight, false);
+        assert.equal(volPendingPct, null);
+        assert.equal(messages.length, 1, 'failed changes need visible feedback');
+        assert.equal(polls, 1, 'failed changes must reconcile receiver state');
+        assert.equal(timers.size, 0);
+      })().catch(error => { console.error(error); process.exit(1); });
+    """)
+
+
 def test_primary_controls_are_semantic_buttons():
     controls = _controls()
     for element_id in ("skip-prev", "skip-next", "pause-btn", "wled-chip"):
@@ -84,6 +123,37 @@ def test_cancelled_primary_pointer_does_not_finalize_gesture():
     assert "abortMtGesture" in cancel_block
     assert "finishBrightnessGesture(true)" in cancel_block
     assert "setBrightness(gesture.base" in INDEX
+
+
+def test_single_finger_swipe_survives_capture_transfer_and_keeps_physical_direction():
+    source = "\n".join((
+        _js_function("swipeActionForDelta"),
+        "if (swipeActionForDelta(-200) !== 'next') throw new Error('left swipe no longer skips next');",
+        "if (swipeActionForDelta(200) !== 'previous') throw new Error('right swipe no longer goes previous');",
+    ))
+    _run_node(source)
+    pointer_move = INDEX.split(
+        'viewport.addEventListener("pointermove"', 1
+    )[1].split("function releasePointer", 1)[0]
+    assert "viewport.setPointerCapture(e.pointerId)" in pointer_move
+
+    capture_loss = INDEX.split(
+        'viewport.addEventListener("lostpointercapture"', 1
+    )[1].split("});", 1)[0]
+    assert "if (e.target !== viewport) return" in capture_loss
+    assert "swipeGesture.captured = false" in capture_loss
+    assert "activePointers.delete" not in capture_loss
+    assert "cancelSwipe" not in capture_loss
+    assert "abortMtGesture" not in capture_loss
+    assert "finishBrightnessGesture" not in capture_loss
+
+    pointer_up = INDEX.split(
+        'viewport.addEventListener("pointerup"', 1
+    )[1].split('viewport.addEventListener("pointercancel"', 1)[0]
+    assert "swipeActionForDelta(dx)" in pointer_up
+    assert pointer_up.index("swipeGesture = null") < pointer_up.index(
+        "viewport.releasePointerCapture(e.pointerId)"
+    )
 
 
 def test_three_finger_backlight_gesture_has_a_mirrored_radial_hud():
@@ -164,6 +234,20 @@ def test_wake_landing_is_drained_until_every_contact_is_released():
     assert 'dimmer.classList.remove("wake-drain")' in INDEX
     assert 'dimmer.addEventListener("pointercancel", finishWakeContact)' in INDEX
     assert 'dimmer.addEventListener("lostpointercapture", finishWakeContact)' in INDEX
+    wake = INDEX.split("function wakeScreen", 1)[1].split(
+        "function finishWakeContact", 1
+    )[0]
+    assert wake.index('dimmer.classList.add("wake-drain")') < wake.index(
+        "setScreenDimmed(false)"
+    )
+    finish = INDEX.split("function finishWakeContact", 1)[1].split(
+        "function clearWakeContactDrain", 1
+    )[0]
+    assert "if (wakeContactPointers.size) return" in finish
+    dim = INDEX.split("function setScreenDimmed", 1)[1].split(
+        "function observeFrame", 1
+    )[0]
+    assert "if (screenDimmed === dimmed) return" in dim
 
 
 def test_lrc_fraction_is_normalized_to_milliseconds():
@@ -181,10 +265,17 @@ def test_modal_and_tracklist_expose_accessible_state():
     assert modal.get("aria-labelledby") == "wled-title"
 
 
-def test_join_page_describes_shared_time_limited_pairing():
-    assert "pairing links expire" in JOIN.lower()
-    assert "shared display" in JOIN.lower()
-    assert "permanently isolated profile" in JOIN.lower()
+def test_join_page_describes_receiver_bound_private_pairing():
+    assert "link a household spotify account" in JOIN.lower()
+    assert "one-use link expires quickly" in JOIN.lower()
+    assert "bound to the account currently playing" in JOIN.lower()
+    assert "household link itself stays saved" in JOIN.lower()
+    assert "spotify asks that member to reauthorize" in JOIN.lower()
+    assert "never another person’s library" in JOIN.lower()
+    assert 'href="/login"' in JOIN
+    assert "/login?playlist=" not in JOIN
+    assert "your crate is linked" in CONNECT.lower()
+    assert "safe house picks" in CONNECT.lower()
 
 
 def test_wled_refresh_is_slow_and_sleeps_with_the_screen():
@@ -220,19 +311,23 @@ def test_building_crate_is_transient_preserves_stale_data_and_retries_quickly():
         "const previous = crateData;",
         "let crateBuilding = false, shelfRetryAt = 0, shelfFetchedAt = 0, shelfRetryTimer = null;",
         "const CRATE_BUILD_RETRY_MS = 3000, CRATE_CACHE_MS = 120000;",
+        'let crateProfileState = "linked";',
         "const scheduled = []; let loading = 0, preloaded = 0, rendered = 0;",
+        "function applyCrateProfileSignal() {}",
+        "function crateProfileNeedsLink() { return false; }",
+        "function refreshCratePairingLink() {}",
         "function scheduleCrateRetry(delay) { scheduled.push(delay); }",
         "function renderCrateLoading() { loading++; }",
         "function preloadCrateImages() { preloaded++; }",
         "function renderCrateData() { rendered++; }",
         _js_function("applyCratePayload"),
-        "if (applyCratePayload({ sections: [], building: true }, 100)) throw new Error('building accepted as ready');",
+        'if (applyCratePayload({ sections: [], building: true, profile_state: "linked", profile_epoch: "epoch-a" }, 100)) throw new Error("building accepted as ready");',
         "if (crateData !== previous || !crateBuilding) throw new Error('completed shelf was not preserved');",
         "if (loading !== 0 || scheduled[0] !== 3000 || shelfRetryAt !== 3100) throw new Error('warm building state handled incorrectly');",
         "crateData = null;",
-        "applyCratePayload({ sections: [], building: true }, 200);",
+        'applyCratePayload({ sections: [], building: true, profile_state: "linked", profile_epoch: "epoch-a" }, 200);',
         "if (loading !== 1) throw new Error('cold building state did not show loading');",
-        "const ready = { sections: [], building: false };",
+        'const ready = { sections: [], building: false, profile_state: "linked", profile_epoch: "epoch-a" };',
         "if (!applyCratePayload(ready, 300)) throw new Error('ready empty payload rejected');",
         "if (crateData !== ready || crateBuilding || shelfFetchedAt !== 300) throw new Error('ready payload not committed');",
         "if (preloaded !== 1 || rendered !== 1) throw new Error('ready payload not rendered');",
@@ -240,6 +335,156 @@ def test_building_crate_is_transient_preserves_stale_data_and_retries_quickly():
     _run_node(source)
     assert "const CRATE_BUILD_RETRY_MS = 3000" in INDEX
     assert "scheduleCrateRetry(CRATE_BUILD_RETRY_MS)" in INDEX
+
+
+def test_profile_epoch_handoff_synchronously_invalidates_private_crate():
+    source = "\n".join((
+        "const CRATE_PROFILE_STATES = new Set(['linked', 'unlinked', 'reauth_required', 'no_receiver']);",
+        "let crateProfileSeen = true, crateProfileState = 'linked', crateProfileEpoch = 'epoch-a';",
+        "let crateProfileRevision = 4, crateJoinUrl = 'https://display.test/join?pair=old';",
+        "let cratePairingUnavailable = false, clears = 0, renders = 0;",
+        "let crateData = { sections: [{ title: 'Private shelf' }] };",
+        "function refreshCratePairingLink() { return Promise.resolve(false); }",
+        "function invalidateCrateContents() { clears++; crateData = null; }",
+        "function renderCrateProfilePrompt() { renders++; }",
+        _js_function("crateProfileSignal"),
+        _js_function("currentCrateProfileMatches"),
+        _js_function("crateProfileNeedsLink"),
+        _js_function("applyCrateProfileSignal"),
+        "if (applyCrateProfileSignal({profile_state: 'linked', profile_epoch: 'epoch-a'})) throw new Error('same profile changed');",
+        "if (clears !== 0 || crateData === null) throw new Error('same profile was cleared');",
+        "if (!applyCrateProfileSignal({profile_state: 'unlinked', profile_epoch: 'epoch-b'})) throw new Error('handoff missed');",
+        "if (clears !== 1 || crateData !== null) throw new Error('private crate was not synchronously cleared');",
+        "if (crateProfileEpoch !== 'epoch-b' || crateProfileState !== 'unlinked' || crateProfileRevision !== 5) throw new Error('new context not committed');",
+        "if (crateJoinUrl !== null) throw new Error('old pairing URL crossed handoff');",
+        "if (!applyCrateProfileSignal({profile_state: 'reauth_required', profile_epoch: 'epoch-c'})) throw new Error('reauthorization transition missed');",
+        "if (clears !== 2 || crateProfileState !== 'reauth_required' || crateProfileEpoch !== 'epoch-c') throw new Error('reauthorization context not committed');",
+    ))
+    _run_node(source)
+    apply_payload = INDEX.split("function applyCratePayload", 1)[1].split(
+        "function refreshCrateData", 1
+    )[0]
+    assert "applyCrateProfileSignal(data, { required: true })" in apply_payload
+    assert "profile_name" not in INDEX
+    assert "username" not in INDEX.lower()
+    assert "account_id" not in INDEX.lower()
+
+
+def test_profile_context_arrives_on_playback_sse_and_idle_headers():
+    assert 'response.headers.get("X-Spotify-Profile-State")' in INDEX
+    assert 'response.headers.get("X-Spotify-Profile-Epoch")' in INDEX
+    assert "observeReceiverProfile(result.data)" in INDEX
+    assert "observeReceiverProfile(result.data || result.profile)" in INDEX
+    assert "const data = JSON.parse(event.data)" in INDEX
+    assert "observeReceiverProfile(data)" in INDEX
+    poll_apply = INDEX.split('lastPlaybackSuccessAt = diagnostics.lastSuccessAt;', 1)[1].split(
+        "renderDiagnostics();", 1
+    )[0]
+    assert poll_apply.index("observeReceiverProfile") < poll_apply.index("applyPlaybackData")
+
+
+def test_explorer_profile_adapter_never_rolls_back_a_receiver_handoff():
+    _run_node("\n".join((
+        "const CRATE_PROFILE_STATES = new Set(['linked', 'unlinked', 'reauth_required', 'no_receiver']);",
+        "let crateProfileSeen = true, crateProfileState = 'linked', crateProfileEpoch = 'epoch-b', crateProfileRevision = 2;",
+        "let applied = 0, unknown = 0;",
+        "function markCrateProfileUnknown() {unknown++;}",
+        "function applyCrateProfileSignal(data) {applied++;crateProfileState=data.profile_state;crateProfileEpoch=data.profile_epoch;}",
+        _js_function("crateProfileSignal"),
+        _js_function("currentCrateProfileMatches"),
+        _js_function("acceptExplorerProfile"),
+        "if (acceptExplorerProfile({profile_state:'linked',profile_epoch:'epoch-a'},1)) throw new Error('stale explorer response rolled back the receiver');",
+        "if (applied !== 0 || crateProfileEpoch !== 'epoch-b') throw new Error('stale explorer response mutated profile');",
+        "if (!acceptExplorerProfile({profile_state:'linked',profile_epoch:'epoch-b'},1)) throw new Error('current context wrongly rejected');",
+        "if (!acceptExplorerProfile({profile_state:'unlinked',profile_epoch:'epoch-c'},2)) throw new Error('new explorer context was ignored');",
+        "if (acceptExplorerProfile({sections:[]},2)) throw new Error('missing profile context accepted');",
+        "if (unknown !== 1) throw new Error('missing context did not fail closed');",
+    )))
+
+
+def test_crate_invalidation_retires_the_explorer_in_the_same_turn():
+    _run_node("\n".join((
+        "let crateData = {}, crateBuilding = true, shelfFetchedAt = 0, shelfRetryAt = 0, shelfRetryTimer = null;",
+        "let explorerClears = 0, shelfClears = 0;",
+        "const explorerUi = {invalidateProfile() {explorerClears++;}};",
+        "function cancelCratePreloads() {} function renderCrateProfilePrompt() {}",
+        "function clearCrateUi() {shelfClears++;}",
+        _js_function("invalidateCrateContents"),
+        "invalidateCrateContents();",
+        "if (explorerClears !== 1 || shelfClears !== 1 || crateData !== null) throw new Error('private surfaces did not clear together');",
+    )))
+
+
+def test_crate_launch_is_epoch_bound_and_recovers_from_stale_409():
+    launch = INDEX.split("async function launchItem(item)", 1)[1].split(
+        "// Warm only the likely-visible sleeves", 1
+    )[0]
+    assert "profile_epoch: launchProfileEpoch" in launch
+    assert 'r.status === 409 && responseData.code === "profile_changed"' in launch
+    assert "applyCrateProfileSignal(responseData, { required: true, forceClear: true })" in launch
+    assert "queueCrateRefreshForProfile()" in launch
+    assert "launchProfileRevision !== crateProfileRevision" in launch
+
+
+def test_unlinked_crate_uses_safe_generic_copy_and_pairing_cta():
+    controls = _controls()
+    tag, prompt = controls["crate-profile-prompt"]
+    assert tag == "div"
+    assert prompt.get("role") == "status"
+    link_tag, link = controls["crate-profile-link"]
+    assert link_tag == "span"
+    assert "hidden" in link
+    assert "House picks are showing" in INDEX
+    assert "Link this household Spotify account to show its playlists and albums" in INDEX
+    assert "Household Spotify linking is temporarily unavailable" in INDEX
+    assert "Linked household crates return automatically; everyone else sees House picks" in INDEX
+    assert 'fetch("/api/idle/playlists"' in INDEX
+    assert 'url.protocol === "http:" || url.protocol === "https:"' in INDEX
+    assert "crateProfileCopy.textContent = message" in INDEX
+    assert 'crateProfileState === "reauth_required" ? "link again at " : "open "' in INDEX
+    assert "crateProfileLink.href" not in INDEX
+
+
+def test_reauthorization_state_falls_back_to_house_picks_and_links_again_privately():
+    assert '"reauth_required"' in INDEX
+    assert "This household Spotify account needs to be linked again" in INDEX
+    assert "Spotify reauthorization is temporarily unavailable" in INDEX
+    assert "Link this household Spotify account again to restore its albums and playlists" in INDEX
+    assert "function crateProfileNeedsLink()" in INDEX
+    assert 'crateProfileState === "unlinked" || crateProfileState === "reauth_required"' in INDEX
+    assert "profile_name" not in INDEX
+    assert "username" not in INDEX.lower()
+    assert "account_id" not in INDEX.lower()
+
+
+def test_rotation_is_explicitly_labelled_as_top_listening_approximation():
+    source = "\n".join((
+        "function stableSectionKey(section, index) { return String(section && section.id || section && section.title || 'section-' + index); }",
+        _js_function("crateSectionIsTopListening"),
+        _js_function("crateSectionDisplayTitle"),
+        "const rotation = { id: 'rotation', title: 'Your rotation' };",
+        "if (!crateSectionIsTopListening(rotation, 0)) throw new Error('rotation section not recognized');",
+        "if (crateSectionDisplayTitle(rotation, 0) !== 'Your rotation · top listening') throw new Error('rotation approximation label missing');",
+        "if (crateSectionDisplayTitle({ id: 'house', title: 'House picks' }, 1) !== 'House picks') throw new Error('house label changed');",
+    ))
+    _run_node(source)
+    assert '"Top-listening approximation"' in INDEX
+
+
+def test_missing_profile_context_fails_closed_and_pairing_does_not_wait_for_crate():
+    fetcher = INDEX.split("async function fetchNowPlaying", 1)[1].split(
+        "function noteActivity", 1
+    )[0]
+    assert "missing receiver profile context" in fetcher
+    assert "crateProfileSignal(data)" in fetcher
+    assert "markCrateProfileUnknown()" in INDEX
+    assert "else markCrateProfileUnknown()" in INDEX
+    assert "if (!trusted) markCrateProfileUnknown()" in INDEX
+    apply_signal = INDEX.split("function applyCrateProfileSignal", 1)[1].split(
+        "function markCrateProfileUnknown", 1
+    )[0]
+    assert "changed && crateProfileNeedsLink()" in apply_signal
+    assert "refreshCratePairingLink()" in apply_signal
 
 
 def test_idle_transition_closes_tracklist_and_neutralises_artwork():

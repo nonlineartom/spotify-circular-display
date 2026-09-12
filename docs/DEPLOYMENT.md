@@ -2,8 +2,8 @@
 
 This guide upgrades the remediated branch without destroying the known-good
 installation. The repository has passed host validation and 1080×1080 browser
-fixture checks. SSH to the live target is available as `admin@pi5.local` when
-the dedicated `~/.ssh/id_ed25519_circle_pi` identity is selected explicitly.
+fixture checks. SSH to the live target is available as `pi@display.local` when
+the dedicated `~/.ssh/id_ed25519_display` identity is selected explicitly.
 
 The pre-release inspection returned HTTP 200 with go-librespot available, while
 the `Server` header still identified Werkzeug and fallback state still pointed
@@ -15,15 +15,38 @@ Do not copy files over the running directory and reboot blindly. Use a versioned
 release, retain config/service backups, and do not declare success until the
 hardware acceptance table is complete.
 
+## 0. Routine updates of the accepted release
+
+The staged procedure below is for migrating between releases. Once a release
+directory has passed acceptance, a routine fast-forward of that same checkout
+(no config-schema or dependency change) is:
+
+```bash
+cd <live release directory>
+git fetch origin && git reset --hard origin/<deployed-branch>
+sudo systemctl restart spotify-display
+XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user restart spotify-kiosk
+```
+
+Restart both every time: Jinja caches templates inside the Flask process and
+Chromium caches the page. When the update also touches `services/*`,
+`display-launch.sh`, `serve.sh` or `network_watchdog.sh`, additionally render
+and verify the unit templates (§3), install them over the live copies, run
+`sudo systemctl daemon-reload` plus `systemctl --user daemon-reload`, and
+restart the affected services — unit properties such as `MemoryHigh` and
+`OOMScoreAdjust` only apply from the next start of that service. A
+go-librespot restart interrupts playback, so schedule it for an idle moment;
+`requirements*.lock` changes need the §4 staged installer instead.
+
 ## 1. Record the current appliance
 
 Run these on the Pi before changing anything. Replace the path/user if needed.
 
 ```bash
 umask 077
-export OLD_RELEASE=/home/admin/circle-pi-display
+export OLD_RELEASE=/home/pi/circle-pi-display
 export RELEASE_ID=remediation-$(date +%Y%m%d-%H%M%S)
-export BACKUP_DIR=/home/admin/spotify-display-backups/$RELEASE_ID
+export BACKUP_DIR=/home/pi/spotify-display-backups/$RELEASE_ID
 mkdir -p "$BACKUP_DIR/system" "$BACKUP_DIR/user" "$BACKUP_DIR/bin" \
   "$BACKUP_DIR/host"
 
@@ -53,6 +76,9 @@ done
   sudo cp -a /etc/tmpfiles.d/spotify-display.conf "$BACKUP_DIR/host/"
 [ ! -e /etc/udev/rules.d/70-spotify-display-backlight.rules ] || \
   sudo cp -a /etc/udev/rules.d/70-spotify-display-backlight.rules \
+    "$BACKUP_DIR/host/"
+[ ! -e /etc/udev/rules.d/70-spotify-display-touch.rules ] || \
+  sudo cp -a /etc/udev/rules.d/70-spotify-display-touch.rules \
     "$BACKUP_DIR/host/"
 for wants_dir in default.target.wants graphical-session.target.wants; do
   [ ! -d "$HOME/.config/systemd/user/$wants_dir" ] || \
@@ -125,7 +151,7 @@ ls -l /dev/hidraw*
 Clone/copy this branch to a new directory, never over `$OLD_RELEASE`:
 
 ```bash
-export NEW_RELEASE=/home/admin/spotify-circular-display-remediation
+export NEW_RELEASE=/home/pi/spotify-circular-display-remediation
 export RELEASE_SHA='<pushed-commit-sha>'
 git clone <repository-url> "$NEW_RELEASE"
 cd "$NEW_RELEASE"
@@ -271,6 +297,91 @@ id
 A new supplementary-group membership may require logout/login or reboot before
 the user service can access GPIO/HID.
 
+## 4a. LAN-only HTTPS pairing ingress
+
+This optional ingress gives phones a publicly trusted HTTPS origin on the same
+LAN without exposing the appliance to the Internet. It does not create a
+tunnel, open a router port, issue a certificate, run an HTTP challenge or store
+DNS-provider credentials.
+
+Prepare all of these outside the deployment scripts:
+
+- reserve one RFC1918 address for the Pi;
+- choose a DNS hostname under a domain you control and make it resolve to the
+  reserved address using one of the LAN resolution models below;
+- obtain a publicly trusted certificate with DNS-01 on a controlled issuance
+  host, then provision its full-chain PEM and unencrypted private key onto the
+  Pi; and
+- confirm the router has no 80/443 port-forward, DMZ-host rule or UPnP mapping
+  for the Pi. DNS-01 does not require inbound connectivity.
+
+Do not put a DNS API token in this checkout or in the nginx settings. Certificate
+renewal remains an operator/issuer responsibility; deploy renewed files
+atomically, then run `nginx -t` and reload nginx.
+
+Two name-resolution models are supported:
+
+1. **Split DNS:** DHCP clients use a controlled LAN resolver that returns the
+   Pi's RFC1918 address for the public hostname. This keeps the private address
+   out of public DNS, but it does not help clients configured to bypass DHCP DNS
+   (for example, clients querying `1.1.1.1` directly).
+2. **Public private-address record:** authoritative public DNS publishes an A
+   record whose value is the Pi's RFC1918 address. This creates no Internet
+   route and still requires the client to be on the LAN, but some browsers,
+   encrypted-DNS clients and resolver/router DNS-rebinding protections reject
+   public names that resolve to private addresses. Confirm every intended
+   phone resolves and can use the name before relying on this model.
+
+Do not publish an AAAA record unless a separately reviewed IPv6 listener and
+firewall policy are added; this deployment intentionally has neither. Under
+either model, the hostname must resolve to `lan_listen_address` from every
+intended client. DNS is discovery, not exposure control: keep the nginx CIDR
+allowlist and the router's no-forward policy.
+
+Install nginx on the Pi, but stop it until the reviewed site is ready. Copy and
+fill the per-device settings; blank values are intentional because the
+repository cannot know the hostname, subnet or certificate paths:
+
+```bash
+sudo apt-get install -y nginx
+sudo systemctl disable --now nginx
+install -m 0600 deploy/lan-https.example.json deploy/lan-https.json
+${EDITOR:-vi} deploy/lan-https.json
+```
+
+The settings are:
+
+| Key | Required value |
+|---|---|
+| `public_host` | Exact DNS hostname on the trusted certificate; no scheme or port. |
+| `lan_listen_address` | Reserved RFC1918 address assigned to the Pi. |
+| `lan_allow_cidr` | Canonical RFC1918 client subnet containing that address. |
+| `tls_certificate_path` | Absolute path to leaf plus intermediate full-chain PEM. |
+| `tls_private_key_path` | Absolute path to its unencrypted, mode-0600 private key. |
+| `flask_port` | Loopback Waitress port, normally `5000`. |
+
+Set the application `public_base_url` to `https://<public_host>` and
+`redirect_uri` to the exact same origin plus `/callback` in `config.json`.
+Register that exact callback in Spotify's dashboard. Do not add a port, path to
+`public_base_url`, query string or alternate callback hostname.
+
+First render and validate only. This checks settings, RFC1918 containment,
+certificate hostname/expiry/public trust, private-key permissions and the
+certificate/key match, but changes no service or system file:
+
+```bash
+sudo ./scripts/install-lan-https.sh \
+  --settings deploy/lan-https.json \
+  --output /tmp/spotify-display-lan-https.conf
+sudo less /tmp/spotify-display-lan-https.conf
+```
+
+Review that the rendered file contains exactly two concrete-address TLS
+listeners, `proxy_set_header Host $host`, the phone/font allowlist, explicit
+`/api` denial and a catch-all 404. Stop here during a staged installation. The
+`--activate` step restarts `spotify-display`, so it belongs after the controlled
+candidate cutover below, never while the preserved release is still serving.
+
 ## 5. Controlled cutover
 
 Stop the graphical user service, then the affected system services. Do not kill
@@ -316,6 +427,30 @@ wiring and opt-in. Apply `harden-network.sh` or host display policy separately
 only after the core stack is healthy and their recorded before/after state has
 been reviewed.
 
+### Activate LAN HTTPS after cutover
+
+Only after the candidate `spotify-display` service is active and its loopback
+health check above passes, activate the reviewed ingress deliberately:
+
+```bash
+sudo ./scripts/install-lan-https.sh \
+  --settings deploy/lan-https.json \
+  --activate
+sudo ./scripts/verify-lan-https.sh --settings deploy/lan-https.json
+```
+
+Activation disables only nginx's stock `default` site and refuses to coexist
+with another enabled nginx listener. It installs a systemd drop-in that binds
+Waitress to `127.0.0.1`, verifies nginx before reload, and restores prior files
+if startup fails. The verifier requires the DNS answer to contain the configured
+RFC1918 address, validates the certificate without `--insecure`, confirms exact
+socket binds, exercises all allowed assets, and proves `/`, `/api/`, other
+static files and malformed pairing paths return 404.
+
+Finally, inspect the router directly and try the hostname from a phone with
+Wi-Fi disabled. It must be unreachable over mobile data. An inside-LAN test
+cannot prove the absence of NAT hairpinning or an upstream port-forward.
+
 ## 6. Acceptance checklist
 
 Record pass/fail, evidence and temperature for every row. A repository test is
@@ -325,19 +460,20 @@ not a substitute for the physical checks.
 |---|---|
 | Boot/readiness | Cold boot reaches the square kiosk without a fixed-delay race; no service is crash-looping. |
 | Spotify Connect | “Pi Display” appears from two LAN clients; connect, play, pause, resume, next and same-track previous all work. |
+| Listener profiles | Pair two allowed Spotify accounts. A→B and rapid A→B→A handoffs synchronously clear the old shelf, select the matching saved albums/playlists/rotation, invalidate old pairing links and reject stale launches. An unpaired third account sees House picks only. |
 | Motion | At 1080×1080, the record reaches stable 33⅓/45 motion, pause returns cleanly to zero, rapid skips do not flash old art, and no-art uses the neutral sleeve. |
 | Static/dim | Paused/idle/dim scenes reduce frame activity; first touch wakes without firing the underlying control. |
-| Gestures | Single swipe/tap, two-finger seek/volume/pinch and three-finger brightness all complete; pointer cancellation sends no action. |
+| Gestures | Left/right and up/down touches land on the same physical side/direction; single swipe/tap, two-finger seek/volume/pinch and three-finger brightness all complete; pointer cancellation sends no action. |
 | Crate/tracklist/lyrics | Owner/private data is visible only in an owner context; empty account clears old cards; modal keyboard/focus/Escape behaviour is correct. |
 | Offline/error | Restart go-librespot and briefly remove the route; UI shows continuity/error rather than false idle, then recovers without a stale transition. |
-| Backlight | Confirm the correct `0712:000a` hidraw interface, 10% first-contact command, stepped ramp, idle/wake and rediscovery after a controlled USB reconnect. |
+| Backlight | Confirm the correct `0712:000a` hidraw interface, 10% first-contact command, smooth 1% internal ramp, idle/wake and rediscovery after a controlled USB reconnect. |
 | Power | Watch `dmesg` and `vcgencmd get_throttled`; 80% physical brightness must not cause USB reset, touch loss or undervoltage. |
 | WLED | Verify pixel count/direction/phase/gamma per strip, smooth 4-second pause ramp, 8-second transport grace, idle realtime release and status file. |
 | GPIO | When opted in, every BCM button produces one local API action and the non-root unit remains stable. |
 | Network | Temporarily disable/re-enable the AP or route; no password dialog appears, recovery is debounced and a healthy boot is not restarted. |
 | Audio/display | Correct HDMI/USB sink, no dropouts, DPMS/blanking policy and touch-to-output mapping survive reboot. |
 | Performance | Observe frame diagnostics and Pi thermals through at least two tracks, a rapid-skip sequence and 30 minutes of playback. No throttling or sustained long-frame growth. |
-| Security | Remote guest gets 401 from owner routes; loopback kiosk works; malformed config is never overwritten; OAuth public origin/callback and Secure cookie are correct. |
+| Security | Remote guest gets 401 from owner routes; loopback kiosk works; malformed config is never overwritten; OAuth public origin/callback and Secure cookie are correct; the proxy preserves public Host and unauthenticated public `/api/auth/status` is 401/404. |
 
 Useful evidence commands:
 
@@ -357,6 +493,18 @@ transition and one complete track transition before removing the old release.
 
 Rollback changes only the display stack; it must not reset NetworkManager or
 delete the new account grant blindly.
+
+If LAN HTTPS was activated, remove its listener and loopback override before
+restoring the previous display unit. Do not re-enable nginx's stock HTTP site:
+
+```bash
+sudo systemctl disable --now nginx
+sudo rm -f \
+  /etc/nginx/sites-enabled/spotify-display-lan-https.conf \
+  /etc/nginx/sites-available/spotify-display-lan-https.conf \
+  /etc/systemd/system/spotify-display.service.d/lan-https-loopback.conf
+sudo systemctl daemon-reload
+```
 
 ```bash
 systemctl --user stop spotify-kiosk spotify-pygame 2>/dev/null || true
@@ -395,7 +543,8 @@ done
 for item in \
   'raspotify.conf:/etc/raspotify/conf' \
   'spotify-display.conf:/etc/tmpfiles.d/spotify-display.conf' \
-  '70-spotify-display-backlight.rules:/etc/udev/rules.d/70-spotify-display-backlight.rules'; do
+  '70-spotify-display-backlight.rules:/etc/udev/rules.d/70-spotify-display-backlight.rules' \
+  '70-spotify-display-touch.rules:/etc/udev/rules.d/70-spotify-display-touch.rules'; do
   backup_name="${item%%:*}"
   destination="${item#*:}"
   if [ -e "$BACKUP_DIR/host/$backup_name" ]; then
