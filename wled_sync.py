@@ -621,9 +621,55 @@ def build_frame(
 # ── UDP sender ───────────────────────────────────────────────
 
 
+class HostAddressCache:
+    """Resolve device hostnames once instead of on every datagram.
+
+    ``socket.sendto()`` given a name resolves it through getaddrinfo on every
+    single call. At 30 fps that is 30 blocking mDNS lookups a second for each
+    named device — real cost on the 1 GB Pi, and a resolver stall would stutter
+    the render loop. Cache the answer instead, refresh it on a timer, and drop
+    it whenever a send fails, so a DHCP move or the nightly router reboot is
+    picked up without restarting the service.
+
+    A lookup that fails keeps serving the last known-good address: a momentary
+    mDNS hiccup should not black out a light that is still sitting there.
+    """
+
+    TTL_SECONDS = 300.0
+    FAILURE_RETRY_SECONDS = 5.0
+
+    def __init__(self):
+        self._entries = {}  # host -> (address or None, expires_at)
+
+    def resolve(self, host):
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            pass
+        else:
+            return host  # already a literal — nothing to look up
+
+        now = time.monotonic()
+        cached = self._entries.get(host)
+        if cached is not None and now < cached[1]:
+            return cached[0]
+        previous = cached[0] if cached is not None else None
+        try:
+            address = socket.gethostbyname(host)
+        except OSError:
+            self._entries[host] = (previous, now + self.FAILURE_RETRY_SECONDS)
+            return previous
+        self._entries[host] = (address, now + self.TTL_SECONDS)
+        return address
+
+    def invalidate(self, host):
+        self._entries.pop(host, None)
+
+
 class WledSender:
     def __init__(self):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._addresses = HostAddressCache()
         self._warn_log = {}  # host -> last_warn_time
         self._sent_count = 0
         self._failed_count = 0
@@ -634,12 +680,24 @@ class WledSender:
             os.environ.get("WLED_STATS_LOG_SECONDS"), 300.0, 30.0, 3600.0
         )
 
+    def _warn(self, host, message):
+        now = time.monotonic()
+        last_warn = self._warn_log.get(host, 0.0)
+        if not last_warn or now - last_warn > 30:
+            print(f"wled_sync: {message}", flush=True)
+            self._warn_log[host] = now
+
     def send(self, host, frame, timeout_seconds):
         if not host:
             return False
+        address = self._addresses.resolve(host)
+        if address is None:
+            self._failed_count += 1
+            self._warn(host, f"cannot resolve {host}; skipping until it comes back")
+            return False
         packet = struct.pack("BB", DRGB_PROTOCOL_ID, timeout_seconds) + frame
         try:
-            self.sock.sendto(packet, (host, WLED_UDP_PORT))
+            self.sock.sendto(packet, (address, WLED_UDP_PORT))
             self._sent_count += 1
             now = time.monotonic()
             if host not in self._first_sent_hosts:
@@ -662,11 +720,10 @@ class WledSender:
             return True
         except OSError as e:
             self._failed_count += 1
-            now = time.monotonic()
-            last_warn = self._warn_log.get(host, 0.0)
-            if not last_warn or now - last_warn > 30:
-                print(f"wled_sync: send to {host}:{WLED_UDP_PORT} failed: {e}", flush=True)
-                self._warn_log[host] = now
+            # The address may be why the send failed (the light moved, or the
+            # router handed it a new lease); re-resolve before the next frame.
+            self._addresses.invalidate(host)
+            self._warn(host, f"send to {host}:{WLED_UDP_PORT} failed: {e}")
             return False
 
     def diagnostics(self):

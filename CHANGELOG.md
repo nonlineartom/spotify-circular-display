@@ -8,6 +8,16 @@ numbers, so audit remediation is recorded under `Unreleased`.
 
 ### Added
 
+- WLED hostnames are resolved once and cached, not on every datagram.
+  `socket.sendto()` given a name resolves it through getaddrinfo on each call,
+  so an mDNS device like `mushroom.local` cost 30 lookups a second at
+  `play_fps`. The address is now cached for five minutes, re-resolved whenever
+  a send fails (so a DHCP move or the nightly router reboot is picked up
+  without restarting the service), and a lookup failure keeps serving the last
+  known-good address rather than blacking out a light that is still reachable.
+  Literal IPs are never looked up at all.
+
+
 - The artist shelf: while a record plays, the pinch-out tracklist grows a
   rail of mini-sleeves — the playing artist's other albums. Tap a sleeve to
   flip the modal to that record's tracklist (back chevron returns), then

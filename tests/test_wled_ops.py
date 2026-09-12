@@ -380,3 +380,109 @@ def test_validation_does_not_lint_generated_virtualenv_scripts():
     source = (ROOT / "scripts" / "validate.sh").read_text()
     assert "-path './venv'" in source
     assert "-path './.venv'" in source
+
+
+class FakeSocket:
+    """Stands in for the sender's UDP socket (a real one's sendto is read-only)."""
+
+    def __init__(self, fail_times=0):
+        self.sent = []
+        self._fail_times = fail_times
+
+    def sendto(self, packet, dest):
+        self.sent.append(dest)
+        if len(self.sent) <= self._fail_times:
+            raise OSError(101, "Network is unreachable")
+
+
+def test_named_hosts_resolve_once_not_per_datagram(monkeypatch):
+    """A hostname must not cost a DNS lookup on every frame.
+
+    socket.sendto() resolves a name on each call, so at 30 fps an mDNS device
+    would generate 30 lookups a second. The sender caches the address instead.
+    """
+    lookups = []
+    monkeypatch.setattr(
+        wled_sync.socket,
+        "gethostbyname",
+        lambda host: (lookups.append(host), "192.168.68.95")[1],
+    )
+    sender = wled_sync.WledSender()
+    sender.sock = FakeSocket()
+
+    for _ in range(50):
+        assert sender.send("mushroom.local", b"\x00\x01\x02", 2) is True
+
+    assert len(lookups) == 1, f"resolved {len(lookups)} times, expected 1"
+    assert sender.sock.sent == [("192.168.68.95", wled_sync.WLED_UDP_PORT)] * 50
+
+
+def test_literal_ip_hosts_are_never_resolved(monkeypatch):
+    def explode(host):  # pragma: no cover - must not run
+        raise AssertionError(f"unexpected lookup for {host}")
+
+    monkeypatch.setattr(wled_sync.socket, "gethostbyname", explode)
+    sender = wled_sync.WledSender()
+    sender.sock = FakeSocket()
+    assert sender.send("192.168.68.67", b"\x00", 2) is True
+    assert sender.sock.sent == [("192.168.68.67", wled_sync.WLED_UDP_PORT)]
+
+
+def test_send_failure_forces_a_fresh_lookup_so_a_moved_light_recovers(monkeypatch):
+    """A DHCP move or router reboot must not need a service restart."""
+    addresses = ["192.168.68.95", "192.168.68.120"]
+    monkeypatch.setattr(
+        wled_sync.socket,
+        "gethostbyname",
+        lambda host: addresses.pop(0) if addresses else "192.168.68.120",
+    )
+    sender = wled_sync.WledSender()
+    sender.sock = FakeSocket(fail_times=1)
+
+    assert sender.send("mushroom.local", b"\x00", 2) is False
+    assert sender.send("mushroom.local", b"\x00", 2) is True
+    assert sender.sock.sent[0][0] == "192.168.68.95"
+    assert sender.sock.sent[1][0] == "192.168.68.120", "should re-resolve after a failure"
+
+
+def test_resolver_failure_keeps_serving_the_last_good_address(monkeypatch):
+    """A momentary mDNS hiccup should not black out a reachable light."""
+    state = {"fail": False}
+
+    def sometimes(host):
+        if state["fail"]:
+            raise OSError("temporary failure in name resolution")
+        return "192.168.68.95"
+
+    monkeypatch.setattr(wled_sync.socket, "gethostbyname", sometimes)
+    cache = wled_sync.HostAddressCache()
+    assert cache.resolve("mushroom.local") == "192.168.68.95"
+
+    # Nothing cached and the resolver is down -> no address to send to.
+    cache.invalidate("mushroom.local")
+    state["fail"] = True
+    assert cache.resolve("mushroom.local") is None
+
+    # That miss is held briefly rather than retried on every frame, which is
+    # the whole point of the cache; it clears once the backoff expires.
+    state["fail"] = False
+    assert cache.resolve("mushroom.local") is None
+    cache._entries["mushroom.local"] = (None, 0.0)  # expire the backoff
+    assert cache.resolve("mushroom.local") == "192.168.68.95"
+
+    # A known-good address survives a later resolver outage.
+    cache._entries["mushroom.local"] = ("192.168.68.95", 0.0)  # force expiry
+    state["fail"] = True
+    assert cache.resolve("mushroom.local") == "192.168.68.95"
+
+
+def test_mdns_device_names_are_accepted_in_config():
+    """mushroom.local must survive host validation and land in the device list."""
+    devices = wled_sync._normalize_devices({
+        "devices": [
+            {"host": "192.168.68.67", "name": "wled-e0eef0", "pixel_count": 46},
+            {"host": "mushroom.local", "name": "MUSHROOM", "pixel_count": 162},
+        ]
+    })
+    assert [d["host"] for d in devices] == ["192.168.68.67", "mushroom.local"]
+    assert [d["pixel_count"] for d in devices] == [46, 162]
