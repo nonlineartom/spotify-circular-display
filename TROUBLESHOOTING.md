@@ -319,6 +319,37 @@ should retain the playing cadence while settling and switch to the paused rate
 only afterwards. A premature cadence drop indicates the new service is not the
 one running or the configuration failed to reload.
 
+## WLED keeps dropping back to its own effect
+
+After updating `wled_sync.py`, restart the renderer to load the new code.
+Resuming playback does not reload Python, and the configuration watcher watches
+`config.json`, not the renderer source. Check the process start time if an
+installed fix appears to have no effect:
+
+```bash
+systemctl show spotify-wled -p MainPID -p ExecMainStartTimestamp
+sudo systemctl restart spotify-wled
+```
+
+This restarts the lighting service only. Wait at least ten seconds for fresh
+diagnostics, then inspect `/run/spotify-display/wled-status.json` and the service
+logs using the commands above.
+
+During active playback, `udp_send_gaps` should show gaps well below
+`realtime_timeout_seconds` and no increasing `timeout_gap_count`. At 30 FPS,
+each reachable device should receive about 30 frames per second. The queued
+datagram count covers all devices and does not prove delivery; a reachable
+device's `/json/info` endpoint can confirm `live: true`, `lm: "UDP"`, and the
+Pi's address in `lip`.
+
+A failed hostname lookup used to block every light long enough to exceed the
+realtime timeout. The renderer now resolves names in background workers, so
+one unavailable device cannot stall the others. Inspect `dns.hosts` for lookup
+errors and `has_address: false`: that device cannot receive frames until its
+hostname resolves. Check its power, Wi-Fi connection, and configured hostname.
+A previously resolved address remains usable during lookup failures, but the
+address cache does not survive a service restart.
+
 ## Configuration is reported malformed or write-protected
 
 The API deliberately refuses to replace an existing malformed, oversized,
