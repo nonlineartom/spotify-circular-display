@@ -173,6 +173,12 @@ cp -a "$BACKUP_DIR/go-librespot-config.yml" go-librespot/config.live.yml
 diff -u go-librespot/config.yml go-librespot/config.live.yml || true
 ```
 
+Choose the release directory name before building anything in it: the
+virtual environment's entry-point shebangs embed the absolute path, so a
+directory renamed after `setup.sh` (or any manual venv build) fails at start
+with "cannot execute: required file not found" until the venv is rebuilt in
+place.
+
 The recursive `jq` merge adds new defaults while live values win. Review the
 go-librespot diff and deliberately carry over any target-specific audio device
 or name; retain the candidate loopback status server on port 3678. Releases may
