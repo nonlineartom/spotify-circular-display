@@ -960,6 +960,53 @@ def test_wled_discovery_is_owner_scoped_and_requests_scan(client, monkeypatch):
     }]
 
 
+def test_wled_discovery_collapses_configured_name_and_address_by_mac(client):
+    _web, _ = client
+    # Configured mDNS name answers first (the scan probes configured hosts
+    # first), then the subnet sweep reaches the same strip by address.
+    server._wled_record_device("MUSHROOM", "mushroom.local", 80, 162, mac="44:1D:64:5B:E0:54", preferred=True)
+    server._wled_record_device("MUSHROOM", "192.168.24.52", 80, 162, mac="441d645be054")
+    assert [d["ip"] for d in server._wled_active_devices()] == ["mushroom.local"]
+
+    # Reverse arrival order: the configured form still replaces the address.
+    server._wled_devices.clear()
+    server._wled_record_device("MUSHROOM", "192.168.24.52", 80, 162, mac="441d645be054")
+    server._wled_record_device("MUSHROOM", "mushroom.local", 80, 162, mac="441d645be054", preferred=True)
+    assert [d["ip"] for d in server._wled_active_devices()] == ["mushroom.local"]
+
+    # Two unconfigured sightings of one strip collapse to the latest address.
+    server._wled_devices.clear()
+    server._wled_record_device("Halo", "192.168.24.60", 80, 46, mac="08f9e0e0eef0")
+    server._wled_record_device("Halo", "192.168.24.61", 80, 46, mac="08f9e0e0eef0")
+    assert [d["ip"] for d in server._wled_active_devices()] == ["192.168.24.61"]
+
+    # Firmware without a MAC keeps the old address-keyed behaviour.
+    server._wled_devices.clear()
+    server._wled_record_device("Old", "192.168.24.70", 80, 30)
+    server._wled_record_device("Old", "192.168.24.71", 80, 30)
+    assert sorted(d["ip"] for d in server._wled_active_devices()) == ["192.168.24.70", "192.168.24.71"]
+
+
+def test_wled_probe_returns_mac_and_scan_marks_configured_hosts_preferred(client, monkeypatch):
+    _web, config_path = client
+    config = json.loads(config_path.read_text())
+    config["wled"] = {"enabled": True, "devices": [
+        {"name": "MUSHROOM", "host": "mushroom.local", "pixel_count": 162},
+    ]}
+    config_path.write_text(json.dumps(config))
+    monkeypatch.setenv("WLED_SCAN_CIDR", "192.168.24.0/30")
+    monkeypatch.setattr(server, "get_local_ip", lambda: "192.168.24.1")
+
+    def probe(host):
+        if host in ("mushroom.local", "192.168.24.2"):
+            return ("MUSHROOM", host, 80, 162, "441d645be054")
+        return None
+
+    monkeypatch.setattr(server, "_probe_wled", probe)
+    server._scan_wled_lan_batch(None, 0)
+    assert [d["ip"] for d in server._wled_active_devices()] == ["mushroom.local"]
+
+
 def test_wled_scan_claim_requires_recent_demand_and_is_single_flight(client):
     _web, _ = client
     assert server._claim_wled_scan(now=100) is False

@@ -4777,15 +4777,34 @@ def _wled_known_ips():
         return list(_wled_devices.keys())
 
 
-def _wled_record_device(name, ip, port, pixel_count=None):
+def _wled_record_device(name, ip, port, pixel_count=None, mac=None, preferred=False):
+    """Remember a probed WLED device keyed by the address it answered on.
+
+    A configured mDNS name (``mushroom.local``) and the subnet sweep both reach
+    the same strip, so without deduplication it appears twice and the kiosk
+    offers to "add" the address form of a device that is already configured.
+    ``mac`` identifies the hardware; ``preferred`` marks the configured host
+    form, which wins over a bare address when both answer.
+    """
     if not ip:
         return
+    mac = (mac or "").replace(":", "").strip().lower() or None
     with _wled_devices_lock:
+        if mac:
+            for key, info in list(_wled_devices.items()):
+                if key == ip or info.get("mac") != mac:
+                    continue
+                if info.get("preferred") and not preferred:
+                    info["last_seen"] = time.time()
+                    return
+                _wled_devices.pop(key, None)
         _wled_devices[ip] = {
             "name": name or ip,
             "ip": ip,
             "port": port or 80,
             "pixel_count": pixel_count,
+            "mac": mac,
+            "preferred": bool(preferred),
             "last_seen": time.time(),
         }
 
@@ -4854,7 +4873,8 @@ def _probe_wled(host):
         port = parsed.port or 80
     except ValueError:
         port = 80
-    return (info.get("name") or host, host, port, pixel_count)
+    mac = info.get("mac") if isinstance(info.get("mac"), str) else None
+    return (info.get("name") or host, host, port, pixel_count, mac)
 
 
 def _local_scan_network():
@@ -4978,10 +4998,15 @@ def _scan_wled_lan_batch(previous_network, scan_cursor):
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=WLED_PROBE_CONCURRENCY
     ) as executor:
+        configured_set = set(configured_hosts)
         for result in executor.map(_probe_wled, targets):
             if result:
-                name, ip, port, pixel_count = result
-                _wled_record_device(name, ip, port, pixel_count)
+                name, ip, port, pixel_count, *extra = result
+                _wled_record_device(
+                    name, ip, port, pixel_count,
+                    mac=extra[0] if extra else None,
+                    preferred=ip in configured_set,
+                )
     return previous_network, scan_cursor
 
 
