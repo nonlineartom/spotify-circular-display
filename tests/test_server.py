@@ -1640,13 +1640,10 @@ def test_manual_refresh_token_removal_invalidates_cached_access(client, monkeypa
     assert server.get_user_token() is None
 
 
-def test_sse_signal_supports_tracks_without_spotify_id():
-    with server._receiver_identity_lock:
-        server._receiver_identity.update({
-            "alias": None,
-            "epoch": "test-receiver-epoch",
-            "active": False,
-        })
+def test_sse_signal_supports_tracks_without_spotify_id(client):
+    # The client fixture isolates CONFIG_FILE and resets the receiver
+    # identity; without it this read the live config.json on the Pi and
+    # reported the household profile as linked.
     signal = server._playback_event_signal({
         "is_playing": True,
         "progress_ms": 12345,
