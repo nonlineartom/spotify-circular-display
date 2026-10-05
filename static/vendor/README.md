@@ -12,3 +12,12 @@ The npm package tarball was checked against its registry integrity value:
 The owner page uses only the encoder's in-memory matrix API. It draws its
 own SVG with a four-module quiet zone. Pairing links never leave the browser
 for QR generation. No runtime package install or CDN is required.
+
+## Gradient backdrops
+
+`gradient-backdrops.js` comes from the local `gradient-backdrops` skill's
+`assets/backdrop.js` (2026-10-05). It retains its technique credits in the
+header. The appliance copy adds `maxFps` to cap shader draws and explicitly
+stops its scheduler while the document is hidden. No external assets or
+dependencies are loaded. `static/idle-backdrop.js` mounts just one 378×378
+mesh in idle mode, releases it on exit and reduces quality under frame pressure.

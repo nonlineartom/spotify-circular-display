@@ -36,6 +36,16 @@ numbers, so audit remediation is recorded under `Unreleased`.
 
 ### Changed
 
+- Crate, Explore music and Controls now share a static album-coloured mesh
+  backdrop, using distinct hues from the existing 24×24 artwork sample.
+  The gradient-backdrops CSS recipe uses OKLab with an older-browser fallback,
+  darkens colours for legibility and restores a neutral mesh for missing art.
+  The idle shelf adds a flowing teal, violet and peach shader mesh capped at
+  378×378 and 30 draws/second. It releases its WebGL context during playback,
+  menus, dimming, hidden tabs and reduced motion; sustained slow frames reduce
+  it to 270×270 at 15 draws/second, then a static fallback. `?ambient=off`
+  disables it. The browser and controls retain the static album mesh.
+
 - Panel performance and memory pass for the 1 GB Pi:
   - All outbound HTTP (Spotify API, LRCLIB, the go-librespot loopback, WLED
     probes) now shares one process-wide pooled keep-alive session, ending the

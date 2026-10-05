@@ -35,6 +35,8 @@ node --check static/collection-editor.js
 node --check static/touch-keyboard.js
 node --check static/owner.js
 node --check static/vendor/qrcode-generator-1.4.4.js
+node --check static/vendor/gradient-backdrops.js
+node --check static/idle-backdrop.js
 
 echo "[5/6] Rendered service verification"
 SERVICE_RENDER_DIR="$(mktemp -d)"

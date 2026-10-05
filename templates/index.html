@@ -7,6 +7,7 @@
 <link rel="preload" href="/static/fonts/montserrat-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/static/fonts.css">
 <link rel="stylesheet" href="/static/explore.css">
+<link rel="stylesheet" href="/static/backdrop.css">
 <link rel="stylesheet" href="/static/touch-keyboard.css">
 <link rel="stylesheet" href="/static/collection-editor.css">
 <style>
@@ -702,19 +703,14 @@
       rgba(0,0,0,0.62) 0%, rgba(0,0,0,0.44) 52%, rgba(0,0,0,0.28) 100%);
   }
 
-  /* ── Crate aura — one static radial field tinted by the playing record's
-     accent at low opacity over the dark shelf surface. No motion, no blend
-     mode, one cached layer: the tint flips with --ui-accent-rgb and costs
-     nothing per frame. The #viewport's circular clip trims its edges. ── */
+  /* Album-coloured mesh on the existing aura surface. Its opaque base keeps
+     the crate calm even when the record underneath has bright artwork. */
   #crate-aura {
     position: absolute;
     inset: 0;
     z-index: 1;
     pointer-events: none;
-    background: radial-gradient(circle at 50% 46%,
-      rgba(var(--ui-accent-rgb), 0.18) 0%,
-      rgba(var(--ui-accent-rgb), 0.07) 45%,
-      rgba(var(--ui-accent-rgb), 0) 72%);
+    background: var(--record-backdrop);
   }
   #viewport.dimmed * { animation-play-state: paused !important; }
   #shelf.visible {
@@ -1556,7 +1552,7 @@
   <!-- Record Shelf — the crate: riffle through records, tap to put one on -->
   <div id="shelf">
     <!-- Crate aura — one static accent-tinted radial field (no animation) -->
-    <div id="crate-aura" aria-hidden="true"></div>
+    <div id="crate-aura" aria-hidden="true"><div id="idle-backdrop"></div></div>
     <div id="crate-chips" role="tablist" aria-label="Record shelf sections"></div>
     <div id="crate" role="listbox" aria-label="Record shelf" tabindex="0"><div id="crate-belt"></div></div>
     <div id="crate-reflection"></div>
@@ -1667,6 +1663,8 @@
 <script src="/static/touch-keyboard.js"></script>
 <script src="/static/collection-editor.js"></script>
 <script src="/static/explore.js"></script>
+<script src="/static/vendor/gradient-backdrops.js"></script>
+<script src="/static/idle-backdrop.js"></script>
 <script>
 (function() {
   "use strict";
@@ -1795,6 +1793,11 @@
   const FLAG_REFLECT = FLAGS.get("reflect") === "1";
   const FLAG_DIAGNOSTICS = FLAGS.get("diag") === "1";
   const REDUCED_MOTION = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const idleBackdrop = createIdleBackdrop($("idle-backdrop"), { enabled: FLAGS.get("ambient") !== "off" });
+  function syncIdleBackdrop() {
+    idleBackdrop.setActive(!state.trackId && !screenDimmed && !utilityPanelOpen &&
+      !$("wled-modal").classList.contains("open") && !document.hidden);
+  }
 
   // Local diagnostics deliberately contain no account or track metadata.
   // Press D (or use ?diag=1) to toggle the overlay.
@@ -2008,6 +2011,7 @@
       `long frames ${diagnostics.frameDrops}`,
       `quality     ${diagnostics.quality}`,
       `motion      ${REDUCED_MOTION ? "reduced" : "full"}`,
+      `backdrop    ${idleBackdrop.status()}`,
       `server      ${backendDiagnosticsState}`,
     ];
     if (backendDiagnostics) {
@@ -2112,6 +2116,7 @@
 
   function setPlayerMode(hasTrack) {
     viewport.classList.toggle("playing", hasTrack);
+    syncIdleBackdrop();
   }
 
   // ── Procedural record label ("The Pressing") ──
@@ -2131,6 +2136,22 @@
   let uiAccentKey = "";
   let uiAccentArr = [240, 168, 104];              // canvas ring reads these
   let uiAccentCss = "rgb(240,168,104)";           // guarded accent as CSS string
+  let backdropPaletteKey = "";
+  function setBackdropPalette(pal) {
+    // Use the artwork's real hues, with bounded brightness so text stays
+    // readable. A missing/failed cover resets to a quiet listening-room mesh.
+    const colors = pal ? [pal.accent, pal.secondary || pal.base, pal.base] : null;
+    const key = colors ? colors.join("|") : "neutral";
+    if (key === backdropPaletteKey) return;
+    backdropPaletteKey = key;
+    const values = colors ? colors.map(color => {
+      const [h, s, v] = rgbToHsv(...parseRgbStr(color));
+      return parseRgbStr(hsvToCss(h, Math.min(0.7, s), Math.min(0.48, Math.max(0.24, v)))).join(", ");
+    }) : ["116, 75, 53", "44, 79, 91", "65, 52, 76"];
+    ["primary", "secondary", "wash"].forEach((name, i) => {
+      viewport.style.setProperty(`--backdrop-${name}`, values[i]);
+    });
+  }
   function parseRgbStr(c) {
     if (c.charAt(0) === "#") {
       const n = parseInt(c.slice(1), 16);
@@ -2140,6 +2161,7 @@
     return m ? [+m[1], +m[2], +m[3]] : [240, 168, 104];
   }
   function setUiAccent(pal) {
+    setBackdropPalette(pal);
     const src = (pal && pal.accent) || LABEL_FALLBACK.accent;
     if (src === uiAccentKey) return;      // no style churn when unchanged
     uiAccentKey = src;
@@ -2217,11 +2239,23 @@
           const sat = (best && best[1] > 0.18) ? best[1] : as;
           const baseV = 0.58 + Math.min(0.2, av * 0.25);
           const baseS = Math.min(0.62, sat * 0.75 + 0.08);
+          // Find a second distinct colour in the already-downsampled cover.
+          // This runs once per artwork load, never in the animation loop.
+          let secondary = null, secondaryScore = 0;
+          for (let i = 0; i < d.length; i += 4) {
+            const [h, s, v] = rgbToHsv(d[i], d[i + 1], d[i + 2]);
+            const distance = Math.min(Math.abs(h - hue), 360 - Math.abs(h - hue));
+            const score = s * v * Math.min(1, distance / 90);
+            if (distance >= 60 && s > 0.18 && v > 0.16 && score > secondaryScore) {
+              secondary = [h, s, v]; secondaryScore = score;
+            }
+          }
           resolve({
             base: hsvToCss(hue, baseS, baseV),
             edge: hsvToCss(hue, Math.min(0.7, baseS * 1.15), baseV * 0.66),
             ink: baseV * (1 - baseS * 0.45) > 0.42 ? "#181208" : "#f3ecdc",
             accent: hsvToCss(hue, Math.min(1, sat * 1.2), Math.min(0.9, Math.max(0.4, (best ? best[2] : av)))),
+            secondary: secondary ? hsvToCss(...secondary) : hsvToCss(hue, baseS, baseV),
           });
         } catch (e) { resolve(null); }
       };
@@ -2743,6 +2777,7 @@
   function setScreenDimmed(dimmed) {
     if (screenDimmed === dimmed) return;
     screenDimmed = dimmed;
+    syncIdleBackdrop();
     dimmer.classList.toggle("dim", dimmed);
     viewport.classList.toggle("dimmed", dimmed);
     syncScreenBrightness();
@@ -5548,6 +5583,7 @@
   }
   window.addEventListener("blur", abortAllInput);
   document.addEventListener("visibilitychange", () => {
+    syncIdleBackdrop();
     if (document.hidden) abortAllInput();
     else { noteActivity(); poll("visible"); fetchBrightnessState(); }
   });
@@ -5907,6 +5943,7 @@
     wledRestoreFocus = document.activeElement;
     renderWledList();
     wledModal.classList.add("open");
+    syncIdleBackdrop();
     wledModal.setAttribute("aria-hidden", "false");
     viewport.classList.add("modal-open");
     setModalLayersInert("wled", wledBackgroundLayers, true);
@@ -6101,6 +6138,7 @@
     },
     setModal: (open, activeModal) => {
       utilityPanelOpen = open;
+      syncIdleBackdrop();
       viewport.classList.toggle("utility-open", open);
       setModalLayersInert("utility", [...sharedPlayerBackgroundLayers, tlEl, wledModal], open);
       $("explore-modal").inert = open && activeModal !== $("explore-modal");
