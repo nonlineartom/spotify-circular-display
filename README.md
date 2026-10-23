@@ -43,6 +43,9 @@ the last account that authorized the display.
 - Owner-approved Spotify pairing with exact receiver binding, OAuth state,
   PKCE, one-use links, isolated household profiles and optional expiring guest
   access.
+- An idle-screen shader backdrop generated from the next 24 hours of forecast
+  values (Selby by default): wind sets its pace and turbulence, rain rate its
+  darkness and density, cloud cover how much sky is hidden.
 - Hidden diagnostics (`D` or `?diag=1`) for browser timing, transport, receiver,
   crate, WLED, lyrics, temperature, load and disk state.
 - Reduced-motion, keyboard, semantic-control and modal focus support.
@@ -386,6 +389,57 @@ HTTP listener, ACME client, tunnel or WAN path. Follow the staged procedure in
 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md#4a-lan-only-https-pairing-ingress);
 rendering is the default and live activation always requires an explicit
 `--activate`.
+
+## Idle weather backdrops
+
+With no record playing, the idle screen draws one capped WebGL backdrop from
+`static/vendor/gradient-backdrops.js` (378×378, 30 draws/second; 270×270 at
+15 under sustained frame pressure, then a static fallback). It is generated
+from the forecast's measured values rather than picked from presets.
+
+`GET /api/weather/backdrop` returns the next 24 hours from
+[Open-Meteo](https://open-meteo.com/) (no API key): WMO weather code,
+day/night, temperature, mean wind, gusts, precipitation (mm/h), precipitation
+chance, cloud cover, visibility and the hours holding sunrise or sunset. The
+server fetches at most every 30 minutes, backs off five minutes after a failure
+and keeps serving the last good forecast for six hours. Only the configured
+coordinates are sent.
+
+`static/idle-backdrop.js` lets the weather type choose a shader that can
+depict it, then sets that shader's parameters from the numbers:
+
+| Weather | Shader | Driven by the values |
+|---|---|---|
+| Clear to overcast day | sky | cloud cover → coverage and greyness; wind → drift, streaks and speed |
+| Hour of sunrise / sunset | sky, dawn or dusk palette | cloud mutes the colour; wind drives drift |
+| Clear, ≥20 °C | sunburst | heat → size, glow and a fiercer palette; wind → motion |
+| Rain by day | liquid flow | rain rate → darkness, contrast and scale; wind → warp and speed |
+| Downpour (≥4 mm/h) | falling columns | rain rate → more, crisper columns; wind slants them |
+| Drizzle | watercolour | chance → wetness; wind → motion |
+| Rain at night | ripples | rain rate → ring count, depth and glow; wind → speed |
+| Snow / snowy night | pale columns / snowy night sky | snowfall → density; wind slants and drifts |
+| Fog or visibility <1 km | misty ridges | visibility → haze; wind → drift; sun only by day |
+| Gusts ≥50 km/h | swirl | wind → twist and speed; cloud and rain chance darken it |
+| Thunder | dark turbulent flow | rain rate → contrast; wind → speed |
+| Clear night | crescent moon | cold → frosty palette and brighter rim |
+| Cloudy night | night sky | cloud cover → coverage; wind → drift |
+
+While the screen is awake and idle it opens on the hour now, then plays
+through the day in three-hour windows (the worst weather and strongest wind in
+each) for a minute apiece. When the shader stays the same, speed, palette and
+parameters glide over about five seconds; a new shader cross-fades on the same
+WebGL context. Standby behind the clock shows only the hour now. Without a
+forecast it keeps the blue-sky clouds; `?ambient=off` disables the shader
+entirely. Diagnostics show the current shader and the values behind it.
+
+To use another place, or to turn the forecast off, add to `config.json`:
+
+```json
+"weather": {"name": "York", "latitude": 53.959, "longitude": -1.0815, "enabled": true}
+```
+
+The mock display (`scripts/run_mock_display.py`) serves a scripted day of
+windy rain, light rain, overcast, dusk, a clear night, night fog, dawn and sun.
 
 ## Hardware backlight
 

@@ -20,4 +20,5 @@ for QR generation. No runtime package install or CDN is required.
 header. The appliance copy adds `maxFps` to cap shader draws and explicitly
 stops its scheduler while the document is hidden. No external assets or
 dependencies are loaded. `static/idle-backdrop.js` mounts just one 378×378
-mesh in idle mode, releases it on exit and reduces quality under frame pressure.
+scene in idle mode, re-parameterises it from forecast values on that same context,
+releases it on exit and reduces quality under frame pressure.

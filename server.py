@@ -250,6 +250,10 @@ _lyrics_failure_times = deque(maxlen=10)
 _lyrics_breaker_until = 0.0
 _lyrics_lock = threading.Lock()
 _lyrics_inflight = set()
+# One small Open-Meteo forecast shared by every idle screen; see
+# weather_backdrop() for the refresh and stale-serving rules.
+_weather_lock = threading.Lock()
+_weather_state = {"key": None, "fetched_at": 0.0, "failed_at": 0.0, "fetching": False, "payload": None}
 _pairing_tokens = BoundedTTLCache(32, 10 * 60)
 _kiosk_pairing = {
     "url": None,
@@ -390,7 +394,7 @@ def _normalize_config(config):
     """Return a type-safe copy while preserving unknown forward-compatible keys."""
     normalized = dict(config) if isinstance(config, dict) else {}
 
-    for section_name in ("security", "spotify_session", "wled", "backlight"):
+    for section_name in ("security", "spotify_session", "wled", "backlight", "weather"):
         if section_name not in normalized:
             continue
         section = normalized[section_name]
@@ -448,6 +452,20 @@ def _normalize_config(config):
         or not math.isfinite(float(guest_hours))
     ):
         normalized["guest_session_hours"] = 12
+    weather = normalized.get("weather", {})
+    for key, limit in (("latitude", 90), ("longitude", 180)):
+        value = weather.get(key)
+        if value is not None and (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or abs(value) > limit
+        ):
+            weather.pop(key)
+    if "name" in weather and not isinstance(weather["name"], str):
+        weather["name"] = ""
+    if "enabled" in weather and not isinstance(weather["enabled"], bool):
+        weather["enabled"] = True
     if "spotify_profiles" in normalized:
         normalized["spotify_profiles"] = normalize_profile_store(normalized["spotify_profiles"])
     return normalized
@@ -5461,6 +5479,148 @@ def lyrics():
     finally:
         with _lyrics_lock:
             _lyrics_inflight.discard(cache_key)
+
+
+# ── Idle weather backdrop ────────────────────────────────────
+
+WEATHER_DEFAULT = {"name": "Selby", "latitude": 53.7837, "longitude": -1.0672}
+WEATHER_REFRESH_SECONDS = 30 * 60
+WEATHER_RETRY_SECONDS = 5 * 60
+WEATHER_STALE_SECONDS = 6 * 60 * 60
+WEATHER_FIELDS = {
+    # payload key: Open-Meteo hourly variable
+    "code": "weather_code",
+    "temp": "temperature_2m",
+    "wind": "wind_speed_10m",
+    "gust": "wind_gusts_10m",
+    "rain": "precipitation",
+    "chance": "precipitation_probability",
+    "cloud": "cloud_cover",
+    "visibility": "visibility",
+}
+
+
+def _weather_hours(data, now):
+    """Return the next 24 forecast hours as plain measured values.
+
+    The display shapes its shader from these numbers (wind drives motion and
+    turbulence, rain rate drives darkness and density, cloud drives cover), so
+    the server only validates, trims and marks the hours holding sunrise or
+    sunset.
+    """
+    hourly = data.get("hourly") or {}
+    daily = data.get("daily") or {}
+    times = hourly.get("time") or []
+    columns = {key: hourly.get(name) or [] for key, name in WEATHER_FIELDS.items()}
+    columns["day"] = hourly.get("is_day") or []
+    if not times or any(len(values) != len(times) for key, values in columns.items() if key != "visibility"):
+        raise ValueError("Open-Meteo returned incomplete hourly data")
+    turns = [(t, "dawn") for t in daily.get("sunrise") or []]
+    turns += [(t, "dusk") for t in daily.get("sunset") or []]
+
+    def number(key, index, default=0.0):
+        values = columns[key]
+        value = values[index] if index < len(values) else None
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            return default
+        return float(value)
+
+    hours = []
+    for index, start in enumerate(times):
+        if start + 3600 <= now:
+            continue
+        if len(hours) == 24:
+            break
+        if number("code", index, None) is None or number("temp", index, None) is None:
+            continue
+        visibility = number("visibility", index, None)
+        hours.append({
+            "from": int(start),
+            "code": int(number("code", index)),
+            "day": bool(number("day", index)),
+            "temp": round(number("temp", index), 1),
+            "wind": round(max(0.0, number("wind", index)), 1),
+            "gust": round(max(0.0, number("gust", index)), 1),
+            "rain": round(max(0.0, number("rain", index)), 2),
+            "chance": round(min(100.0, max(0.0, number("chance", index)))),
+            "cloud": round(min(100.0, max(0.0, number("cloud", index)))),
+            "visibility": None if visibility is None else round(max(0.0, visibility)),
+            "golden": next((name for turn, name in turns if start <= turn < start + 3600), None),
+        })
+    if not hours:
+        raise ValueError("Open-Meteo returned no future hours")
+    return hours
+
+
+def _weather_settings(config=None):
+    config = load_config() if config is None else config
+    settings = {**WEATHER_DEFAULT, **(config.get("weather") or {})}
+    if not isinstance(settings.get("latitude"), (int, float)) or not isinstance(settings.get("longitude"), (int, float)):
+        settings.update(WEATHER_DEFAULT)
+    return settings
+
+
+@app.route("/api/weather/backdrop")
+def weather_backdrop():
+    """Return the next 24 forecast hours that shape the idle backdrop.
+
+    The forecast is fetched at most every half hour, failures back off for five
+    minutes, and the last good forecast keeps serving for six hours so a quiet
+    network never blanks the idle screen. Only the configured coordinates are
+    sent to Open-Meteo; no listening data leaves the display.
+    """
+    settings = _weather_settings()
+    if settings.get("enabled") is False:
+        return jsonify(error="Weather backdrops are disabled"), 404
+    key = (round(float(settings["latitude"]), 4), round(float(settings["longitude"]), 4))
+    now = time.time()
+    with _weather_lock:
+        state = _weather_state
+        if state["key"] != key:
+            state.update(key=key, fetched_at=0.0, failed_at=0.0, payload=None)
+        fresh = state["payload"] and now - state["fetched_at"] < WEATHER_REFRESH_SECONDS
+        backing_off = now - state["failed_at"] < WEATHER_RETRY_SECONDS
+        fetch = not fresh and not backing_off and not state["fetching"]
+        if fetch:
+            state["fetching"] = True
+    if fetch:
+        try:
+            resp = _http.get("https://api.open-meteo.com/v1/forecast", params={
+                "latitude": key[0],
+                "longitude": key[1],
+                "hourly": "is_day," + ",".join(WEATHER_FIELDS.values()),
+                "daily": "sunrise,sunset",
+                "forecast_days": 2,
+                "timezone": "auto",
+                "timeformat": "unixtime",
+            }, headers={"User-Agent": "SpotifyPiDisplay/2.0"}, timeout=4)
+            if resp.status_code != 200:
+                raise requests.RequestException(f"Open-Meteo returned {resp.status_code}")
+            data = resp.json()
+            if not isinstance(data, dict):
+                raise ValueError("Open-Meteo returned invalid JSON")
+            payload = {"location": settings.get("name") or WEATHER_DEFAULT["name"],
+                       "fetched_at": int(now), "hours": _weather_hours(data, now)}
+            with _weather_lock:
+                if state["key"] == key:
+                    state.update(payload=payload, fetched_at=now, failed_at=0.0)
+        except (requests.RequestException, ValueError, TypeError) as e:
+            print(f"Weather lookup failed: {e}")
+            with _weather_lock:
+                state["failed_at"] = now
+        finally:
+            with _weather_lock:
+                state["fetching"] = False
+    with _weather_lock:
+        payload = state["payload"] if state["key"] == key else None
+        fetched_at = state["fetched_at"]
+    if not payload or now - fetched_at > WEATHER_STALE_SECONDS:
+        return jsonify(error="Forecast is temporarily unavailable"), 503
+    # Drop hours that have finished since the cached fetch.
+    hours = [hour for hour in payload["hours"] if hour["from"] + 3600 > now]
+    if not hours:
+        return jsonify(error="Forecast is temporarily unavailable"), 503
+    return jsonify({**payload, "hours": hours, "stale": now - fetched_at >= WEATHER_REFRESH_SECONDS})
 
 
 def _start_background_services():

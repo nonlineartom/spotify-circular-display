@@ -28,6 +28,11 @@
 
 #idle-backdrop { position:absolute; inset:0; display:none; pointer-events:none; background:var(--record-backdrop); }
 #idle-backdrop.active { display:block; }
+#idle-backdrop.standby { z-index:100; background:#050810; }
+#idle-backdrop.standby canvas { opacity:0.52; }
+/* Weather looks cross-fade through the record backdrop when they change. */
+#idle-backdrop canvas { transition:opacity .7s ease; }
+#idle-backdrop.switching canvas { opacity:0; }
 #idle-backdrop::after {
   content:""; position:absolute; inset:0; pointer-events:none;
   background:radial-gradient(ellipse at 50% 50%, rgba(5,8,16,.58), rgba(5,8,16,.18) 64%, rgba(5,8,16,.48));

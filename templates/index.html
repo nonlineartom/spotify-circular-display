@@ -1793,10 +1793,26 @@
   const FLAG_REFLECT = FLAGS.get("reflect") === "1";
   const FLAG_DIAGNOSTICS = FLAGS.get("diag") === "1";
   const REDUCED_MOTION = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const idleBackdrop = createIdleBackdrop($("idle-backdrop"), { enabled: FLAGS.get("ambient") !== "off" });
+  const FLAG_AMBIENT = FLAGS.get("ambient") !== "off";
+  const idleBackdrop = createIdleBackdrop($("idle-backdrop"), { enabled: FLAG_AMBIENT });
+  // The idle shader follows the next 24 hours of forecast. The server caches
+  // Open-Meteo for half an hour, so this local poll is cheap; a failure keeps
+  // whatever looks the display already has (blue-sky clouds by default).
+  let forecastCheckedAt = 0;
+  async function refreshForecast() {
+    if (!FLAG_AMBIENT || document.hidden || Date.now() - forecastCheckedAt < 9 * 60 * 1000) return;
+    forecastCheckedAt = Date.now();
+    try {
+      const response = await fetch("/api/weather/backdrop", { cache: "no-store" });
+      if (response.ok) idleBackdrop.setForecast(await response.json());
+    } catch (e) { /* offline: keep the current looks */ }
+  }
+  refreshForecast();
+  setInterval(refreshForecast, 10 * 60 * 1000);
   function syncIdleBackdrop() {
-    idleBackdrop.setActive(!state.trackId && !screenDimmed && !utilityPanelOpen &&
-      !$("wled-modal").classList.contains("open") && !document.hidden);
+    const ambientStandby = screenDimmed && FLAG_STANDBY_CLOCK && !state.isPlaying;
+    idleBackdrop.setActive((!state.trackId || ambientStandby) && !utilityPanelOpen &&
+      !$("wled-modal").classList.contains("open") && !document.hidden, ambientStandby);
   }
 
   // Local diagnostics deliberately contain no account or track metadata.
@@ -2012,6 +2028,7 @@
       `quality     ${diagnostics.quality}`,
       `motion      ${REDUCED_MOTION ? "reduced" : "full"}`,
       `backdrop    ${idleBackdrop.status()}`,
+      `weather     ${idleBackdrop.weather()}`,
       `server      ${backendDiagnosticsState}`,
     ];
     if (backendDiagnostics) {
@@ -5585,7 +5602,7 @@
   document.addEventListener("visibilitychange", () => {
     syncIdleBackdrop();
     if (document.hidden) abortAllInput();
-    else { noteActivity(); poll("visible"); fetchBrightnessState(); }
+    else { noteActivity(); poll("visible"); fetchBrightnessState(); refreshForecast(); }
   });
 
   // ── Wake from screen dim ──

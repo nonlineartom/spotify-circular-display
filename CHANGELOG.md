@@ -8,6 +8,20 @@ numbers, so audit remediation is recorded under `Unreleased`.
 
 ### Added
 
+- Weather-driven idle backdrops. `GET /api/weather/backdrop` returns the next
+  24 hours of Open-Meteo values for Selby (configurable under `weather` in
+  `config.json`): weather code, temperature, wind, gusts, rain rate and chance,
+  cloud, visibility and sunrise/sunset. The idle shader is generated from those
+  numbers instead of presets: the weather type picks one of nine
+  gradient-backdrop styles (sky, sunburst, flow, falling columns, watercolour,
+  ripples, mist, swirl, crescent moon) and wind, rain rate, cloud and
+  temperature continuously set its speed, turbulence, slant, density, contrast
+  and palette. Awake, it plays the hour now and then three-hour windows for a
+  minute each, gliding parameters within a shader and cross-fading between
+  shaders on the one capped WebGL context; standby shows only the hour now.
+  Forecasts are cached for 30 minutes, back off after failures and serve stale
+  for up to six hours; without one the existing blue-sky clouds remain.
+
 - WLED hostnames are resolved once and cached, not on every datagram.
   `socket.sendto()` given a name resolves it through getaddrinfo on each call,
   so an mDNS device like `lamp.local` cost 30 lookups a second at
@@ -40,11 +54,14 @@ numbers, so audit remediation is recorded under `Unreleased`.
   backdrop, using distinct hues from the existing 24×24 artwork sample.
   The gradient-backdrops CSS recipe uses OKLab with an older-browser fallback,
   darkens colours for legibility and restores a neutral mesh for missing art.
-  The idle shelf adds a flowing teal, violet and peach shader mesh capped at
+  The idle shelf adds a blue sky with flowing, evolving white clouds capped at
   378×378 and 30 draws/second. It releases its WebGL context during playback,
-  menus, dimming, hidden tabs and reduced motion; sustained slow frames reduce
+  menus, hidden tabs and reduced motion; sustained slow frames reduce
   it to 270×270 at 15 draws/second, then a static fallback. `?ambient=off`
   disables it. The browser and controls retain the static album mesh.
+  Standby keeps dim 216×216 clouds at 12 draws/second behind the clock, with
+  an 180×180 / 8 fps pressure fallback. Maximum cloud wind and 3.2× animation speed make movement visible within
+  a few seconds while retaining the same rendering and memory caps.
 
 - Panel performance and memory pass for the 1 GB Pi:
   - All outbound HTTP (Spotify API, LRCLIB, the go-librespot loopback, WLED

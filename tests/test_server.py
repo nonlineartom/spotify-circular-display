@@ -47,6 +47,7 @@ def client(tmp_path, monkeypatch):
     server._lyrics_failure_times.clear()
     server._lyrics_inflight.clear()
     server._lyrics_breaker_until = 0
+    server._weather_state.update(key=None, fetched_at=0.0, failed_at=0.0, fetching=False, payload=None)
     server._track_cache.clear()
     server._album_cache.clear()
     server._album_tracks_cache.clear()
@@ -2744,3 +2745,105 @@ def test_control_queue_scopes_uris_and_degrades_when_receiver_is_down(client, mo
     monkeypatch.setattr(server._http, "post", down)
     outage = web.post("/api/control/queue", json={"uri": "spotify:album:alb2"})
     assert outage.status_code == 503
+
+
+def _open_meteo(start, codes, *, sunrise=(), sunset=(), **columns):
+    count = len(codes)
+    defaults = {"is_day": 1, "temperature_2m": 12, "wind_speed_10m": 8, "wind_gusts_10m": 15,
+                "precipitation": 0, "precipitation_probability": 0, "cloud_cover": 50, "visibility": 20000}
+    hourly = {"time": [start + hour * 3600 for hour in range(count)], "weather_code": codes}
+    for name, default in defaults.items():
+        hourly[name] = columns.get(name, [default] * count)
+    return {"hourly": hourly, "daily": {"sunrise": list(sunrise), "sunset": list(sunset)}}
+
+
+def test_weather_hours_return_the_next_24_measured_hours():
+    now = 1_760_000_000
+    start = now - 1800 - 3 * 3600  # three finished hours, one under way
+    count = 40
+    data = _open_meteo(
+        start, [61] * count,
+        is_day=[1] * 8 + [0] * 32,
+        temperature_2m=[float(n) for n in range(count)],
+        wind_gusts_10m=[42.5] * count,
+        precipitation=[2.345] * count,
+        precipitation_probability=[150] * count,
+        cloud_cover=[-5] * count,
+        visibility=[None] * count,
+        sunset=[start + 7 * 3600 + 900],
+    )
+    hours = server._weather_hours(data, now)
+    assert len(hours) == 24
+    assert hours[0] == {
+        "from": start + 3 * 3600, "code": 61, "day": True, "temp": 3.0, "wind": 8.0, "gust": 42.5,
+        "rain": 2.35, "chance": 100, "cloud": 0, "visibility": None, "golden": None,
+    }
+    assert hours[4]["golden"] == "dusk" and hours[5]["day"] is False
+    del data["hourly"]["visibility"]
+    assert server._weather_hours(data, now)[0]["visibility"] is None, "visibility is optional"
+    with pytest.raises(ValueError):
+        server._weather_hours({"hourly": {"time": [now], "weather_code": []}}, now)
+    with pytest.raises(ValueError):
+        server._weather_hours(_open_meteo(start, [61]), now)
+
+
+def test_weather_backdrop_caches_forecast_and_serves_stale_on_failure(client, monkeypatch):
+    web, _ = client
+    clock = [1_760_000_000.0]
+    monkeypatch.setattr(server.time, "time", lambda: clock[0])
+    calls = []
+    responses = [FakeResponse(payload=_open_meteo(int(clock[0]) - 600, [61] * 48, precipitation=[1.2] * 48))]
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        response = responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    monkeypatch.setattr(server._http, "get", fake_get)
+    first = web.get("/api/weather/backdrop").get_json()
+    assert first["location"] == "Selby"
+    assert first["stale"] is False
+    assert len(first["hours"]) == 24
+    assert first["hours"][0]["rain"] == 1.2 and first["hours"][0]["code"] == 61
+    assert "precipitation" in calls[0][1]["params"]["hourly"]
+    assert "wind_speed_10m" in calls[0][1]["params"]["hourly"]
+    assert calls[0][0] == "https://api.open-meteo.com/v1/forecast"
+    assert calls[0][1]["params"]["latitude"] == 53.7837
+    assert calls[0][1]["params"]["longitude"] == -1.0672
+
+    clock[0] += 10 * 60
+    assert web.get("/api/weather/backdrop").status_code == 200
+    assert len(calls) == 1, "a fresh forecast should not be fetched again"
+
+    clock[0] += 30 * 60
+    responses.append(server.requests.Timeout("slow"))
+    stale = web.get("/api/weather/backdrop").get_json()
+    assert stale["stale"] is True and stale["hours"]
+    assert len(calls) == 2
+    web.get("/api/weather/backdrop")
+    assert len(calls) == 2, "a failed fetch should back off before retrying"
+
+    clock[0] += 7 * 60 * 60
+    responses.append(FakeResponse(status_code=500))
+    assert web.get("/api/weather/backdrop").status_code == 503
+
+
+def test_weather_backdrop_uses_configured_place_and_can_be_disabled(client, monkeypatch):
+    web, _ = client
+    config = server.load_config()
+    config["weather"] = {"name": "York", "latitude": 53.959, "longitude": -1.0815}
+    server.save_config(config)
+    calls = []
+    monkeypatch.setattr(server._http, "get", lambda url, **kwargs: calls.append(kwargs) or FakeResponse(
+        payload=_open_meteo(int(server.time.time()) - 600, [0] * 48)))
+    assert web.get("/api/weather/backdrop").get_json()["location"] == "York"
+    assert calls[0]["params"]["latitude"] == 53.959
+
+    config["weather"] = {"latitude": "north", "longitude": 999}
+    assert server._normalize_config(config)["weather"] == {}
+    config["weather"] = {"enabled": False}
+    server.save_config(config)
+    assert web.get("/api/weather/backdrop").status_code == 404
+    assert len(calls) == 1
