@@ -12,15 +12,18 @@ numbers, so audit remediation is recorded under `Unreleased`.
   24 hours of Open-Meteo values for Selby (configurable under `weather` in
   `config.json`): weather code, temperature, wind, gusts, rain rate and chance,
   cloud, visibility and sunrise/sunset. The idle shader is generated from those
-  numbers instead of presets: the weather type picks one of nine
-  gradient-backdrop styles (sky, sunburst, flow, falling columns, watercolour,
-  ripples, mist, swirl, crescent moon) and wind, rain rate, cloud and
+  numbers instead of presets: the weather type picks one of seven
+  gradient-backdrop styles (sky, flow, falling columns, ripples, mist, swirl,
+  crescent moon) and wind, rain rate, cloud and
   temperature continuously set its speed, turbulence, slant, density, contrast
   and palette. Awake, it plays the hour now and then three-hour windows for a
   minute each, gliding parameters within a shader and cross-fading between
   shaders on the one capped WebGL context; standby shows only the hour now.
   Forecasts are cached for 30 minutes, back off after failures and serve stale
   for up to six hours; without one the existing blue-sky clouds remain.
+  Looks were then toned down: narrower palettes, lower contrast and warp and
+  slower motion throughout; sunshine is a clear sky warming to a golden
+  horizon haze instead of a sunburst, and drizzle a low grey sky.
 
 - WLED hostnames are resolved once and cached, not on every datagram.
   `socket.sendto()` given a name resolves it through getaddrinfo on each call,

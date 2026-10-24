@@ -406,16 +406,18 @@ and keeps serving the last good forecast for six hours. Only the configured
 coordinates are sent.
 
 `static/idle-backdrop.js` lets the weather type choose a shader that can
-depict it, then sets that shader's parameters from the numbers:
+depict it, then sets that shader's parameters from the numbers. Palettes keep
+neighbouring colours close in lightness, contrast and turbulence stay low and
+motion is slow, so every look remains a quiet backdrop:
 
 | Weather | Shader | Driven by the values |
 |---|---|---|
 | Clear to overcast day | sky | cloud cover → coverage and greyness; wind → drift, streaks and speed |
 | Hour of sunrise / sunset | sky, dawn or dusk palette | cloud mutes the colour; wind drives drift |
-| Clear, ≥20 °C | sunburst | heat → size, glow and a fiercer palette; wind → motion |
+| Clear, ≥20 °C | sky warming to a golden horizon haze | heat → warmer haze; cloud → wisps; wind → drift |
 | Rain by day | liquid flow | rain rate → darkness, contrast and scale; wind → warp and speed |
 | Downpour (≥4 mm/h) | falling columns | rain rate → more, crisper columns; wind slants them |
-| Drizzle | watercolour | chance → wetness; wind → motion |
+| Drizzle | low grey sky | wind → drift and speed |
 | Rain at night | ripples | rain rate → ring count, depth and glow; wind → speed |
 | Snow / snowy night | pale columns / snowy night sky | snowfall → density; wind slants and drifts |
 | Fog or visibility <1 km | misty ridges | visibility → haze; wind → drift; sun only by day |
