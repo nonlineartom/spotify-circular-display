@@ -22,8 +22,11 @@ numbers, so audit remediation is recorded under `Unreleased`.
   Forecasts are cached for 30 minutes, back off after failures and serve stale
   for up to six hours; without one the existing blue-sky clouds remain.
   Looks were then toned down: narrower palettes, lower contrast and warp and
-  slower motion throughout; sunshine is a clear sky warming to a golden
-  horizon haze instead of a sunburst, and drizzle a low grey sky.
+  slower motion throughout; drizzle is a low grey sky. Hot sunshine replaces
+  the sunburst with `heat`, a shader written for the display in the vendored
+  runtime: soft bloom and slow rays from a sun just beyond the frame, a deep
+  blue sky warming to a golden horizon, and rising heat shimmer, all
+  strengthening with temperature.
 
 - WLED hostnames are resolved once and cached, not on every datagram.
   `socket.sendto()` given a name resolves it through getaddrinfo on each call,

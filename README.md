@@ -414,7 +414,7 @@ motion is slow, so every look remains a quiet backdrop:
 |---|---|---|
 | Clear to overcast day | sky | cloud cover → coverage and greyness; wind → drift, streaks and speed |
 | Hour of sunrise / sunset | sky, dawn or dusk palette | cloud mutes the colour; wind drives drift |
-| Clear, ≥20 °C | sky warming to a golden horizon haze | heat → warmer haze; cloud → wisps; wind → drift |
+| Clear, ≥20 °C | heat (the display's own shader): light raying from a sun just off the edge over a golden, shimmering horizon | heat → bloom, rays, shimmer and warmth; cloud → faint wisps; wind → pace |
 | Rain by day | liquid flow | rain rate → darkness, contrast and scale; wind → warp and speed |
 | Downpour (≥4 mm/h) | falling columns | rain rate → more, crisper columns; wind slants them |
 | Drizzle | low grey sky | wind → drift and speed |

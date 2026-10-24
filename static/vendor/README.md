@@ -18,7 +18,8 @@ for QR generation. No runtime package install or CDN is required.
 `gradient-backdrops.js` comes from the local `gradient-backdrops` skill's
 `assets/backdrop.js` (2026-10-05). It retains its technique credits in the
 header. The appliance copy adds `maxFps` to cap shader draws and explicitly
-stops its scheduler while the document is hidden. No external assets or
+stops its scheduler while the document is hidden. It also adds a project-specific `heat`
+style (sun bloom, rays and horizon shimmer) used for hot, clear weather. No external assets or
 dependencies are loaded. `static/idle-backdrop.js` mounts just one 378×378
 scene in idle mode, re-parameterises it from forecast values on that same context,
 releases it on exit and reduces quality under frame pressure.

@@ -651,6 +651,53 @@ void main() {
   gl_FragColor = finishLab(rampLab(clamp(v, 0.0, 1.0)));
 }`,
     },
+
+    // Appliance style: a hot summer sky. No sun disc, only what heat looks like:
+    // a soft bloom with slow faint rays from a sun beyond the frame, the sky
+    // warming into a golden haze, and heat shimmer rising off the horizon.
+    heat: {
+      label: 'Heat',
+      order: 'zenith blue first → horizon haze, then the sun light last. 4–6 colours.',
+      quality: 0.45,
+      params: {
+        sunx: [0.72, -0.2, 1.2, 0.01], suny: [0.92, 0.3, 1.3, 0.01], glow: [1, 0.3, 2, 0.05],
+        rays: [0.5, 0, 1.5, 0.05], shimmer: [0.6, 0, 2, 0.05], wisps: [0.2, 0, 1, 0.02],
+      },
+      frag: `
+uniform float u_sunx, u_suny, u_glow, u_rays, u_shimmer, u_wisps;
+void main() {
+  vec2 uv = fragUV();
+  float asp = aspect();
+  float t = u_time;
+  // Rising heat shimmer, strongest near the horizon and fading upwards.
+  float low = 1.0 - smoothstep(0.0, 0.5, uv.y);
+  vec2 wob = vec2(snoise(vec3(uv.x * 7.0, uv.y * 13.0 - t * 0.8, t * 0.2 + u_seed)),
+                  snoise(vec3(uv.x * 6.0 + 3.1, uv.y * 11.0 - t * 0.6, t * 0.17)));
+  vec2 s = uv + wob * 0.014 * u_shimmer * low * low;
+  // Sky ramp over every stop but the last: zenith at the top, haze at the bottom.
+  float h = 1.0 - s.y + 0.05 * fbmLo(vec3(s * 1.3, t * 0.015 + u_seed));
+  float stops = max(u_count - 1.0, 1.0);
+  // Hold the deep blue across the upper sky; warmth gathers low down.
+  vec3 L = rampLab(pow(clamp(h, 0.0, 1.0), 1.7) * (stops - 1.0) / stops);
+  // The sun: a breathing bloom and slow faint rays, never a hard disc.
+  vec2 d = vec2((s.x - u_sunx) * asp, s.y - u_suny);
+  float r = length(d);
+  float g = u_glow * (1.0 + 0.04 * sin(t * 0.35));
+  float bloom = exp(-r * 2.4 / g);
+  float core = exp(-r * 7.0 / g);
+  vec2 dir = d / max(r, 1e-4);
+  float ray = 0.5 + 0.5 * snoise(vec3(dir * 1.8, t * 0.03 + u_seed));
+  ray = ray * ray * exp(-r * 0.9) * u_rays;
+  vec3 sunL = lab(lastIndex());
+  L = mix(L, sunL, clamp(bloom * 0.5 + core * 0.55 + ray * 0.35, 0.0, 1.0));
+  // Faint high wisps, stretched sideways, only in the upper sky.
+  vec2 q = vec2(s.x * asp * 0.8 + t * 0.008, s.y * 3.2);
+  float wv = 0.5 + 0.5 * fbmLo(vec3(q, t * 0.012 + u_seed));
+  float wisp = smoothstep(0.5, 0.78, wv) * u_wisps * smoothstep(0.25, 0.75, s.y);
+  L = mix(L, mix(L, LAB_WHITE, 0.55), wisp);
+  gl_FragColor = finishLab(L);
+}`,
+    },
   };
 
   // ---------------------------------------------------------------------------

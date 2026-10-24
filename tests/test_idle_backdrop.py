@@ -163,8 +163,10 @@ assert.ok(w({code:65, rain:8, day:false}).params.rings > w({code:61, rain:0.3, d
 assert.ok(w({gust:95, wind:60}).params.twist > w({gust:55}).params.twist, 'stronger gales should twist harder');
 const warmth = (hex) => parseInt(hex.slice(1, 3), 16) - parseInt(hex.slice(5, 7), 16);
 const scorching = w({code:0, cloud:5, temp:31}), mild = w({code:0, cloud:5, temp:20});
-assert.equal(scorching.style, 'sky', 'sunshine is a clear sky, not a shape');
+assert.equal(scorching.style, 'heat', 'hot weather uses the appliance heat shader');
 assert.ok(warmth(scorching.colors[2]) > warmth(mild.colors[2]), 'heat should warm the horizon haze');
+assert.ok(scorching.params.shimmer > mild.params.shimmer && scorching.params.glow > mild.params.glow);
+assert.ok(w({code:0, cloud:20, temp:26}).params.wisps > w({code:0, cloud:2, temp:26}).params.wisps);
 // Every look stays quiet: no palette spans more than half the lightness range.
 const light = (hex) => [1, 3, 5].reduce((sum, i) => sum + parseInt(hex.slice(i, i + 2), 16), 0) / 765;
 for (const o of [{}, {code:0, cloud:5, temp:30}, {code:63, rain:6, gust:80}, {code:65, rain:12}, {code:95, rain:8},

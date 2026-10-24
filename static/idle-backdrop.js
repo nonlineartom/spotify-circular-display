@@ -27,8 +27,8 @@
     dawn: ["#fff2e4", "#f8d6bd", "#e8b3a8", "#8e86aa"],
     dusk: ["#fde3c4", "#f0b28a", "#cf8077", "#5c4a74"],
     nightCloud: ["#7d89a0", "#55627e", "#33405e", "#1a2440"],
-    sunHaze: ["#fff8ec", "#ffe4bd", "#a9cdee", "#4f8dd2"],
-    sunHot: ["#fff3df", "#ffd49c", "#c9cfd8", "#6a94c8"],
+    heatMild: ["#3a72c6", "#78a8de", "#b9cfe4", "#f2d9b4", "#fff5e4"],
+    heatHot: ["#4176c2", "#8eb0d8", "#d3d1c8", "#f5c68a", "#ffefd2"],
     moon: ["#0b1530", "#111c3e", "#22386f", "#7f9dd2", "#cfdcf5"],
     frost: ["#08131f", "#0d2234", "#1f4f68", "#8cc6dc", "#dff4fb"],
     lightRain: ["#b3c1ce", "#98a9b9", "#7e91a4", "#66798e"],
@@ -126,9 +126,11 @@
         colors: mixPalette(PALETTES.dusk, PALETTES.grey, 0.6 * cloud ** 1.4) }),
       "cloudy-night": () => ({ style: "sky", speed: 0.5 + 2 * wind, params: skyParams,
         colors: mixPalette(PALETTES.nightCloud, PALETTES.moon.slice(1), 0.5 * (1 - cloud)) }),
-      // A clear sky warming towards a golden haze at the horizon; heat warms it further.
-      sun: () => ({ style: "sky", speed: 0.5 + 1.2 * wind, colors: mixPalette(PALETTES.sunHaze, PALETTES.sunHot, heat),
-        params: { scale: 1.1, cover: 0.06 + 0.3 * cloud, wind: 0.3 + 1.5 * wind, streak: 0.5 + wind } }),
+      // The appliance's own "heat" shader: light from a sun just beyond the frame
+      // and shimmer off a golden horizon. Heat strengthens all of it.
+      sun: () => ({ style: "heat", speed: 0.5 + 0.8 * wind, colors: mixPalette(PALETTES.heatMild, PALETTES.heatHot, heat),
+        params: { sunx: 0.72, suny: 0.92, glow: 0.9 + 0.45 * heat, rays: 0.45 + 0.3 * heat,
+          shimmer: 0.4 + 0.7 * heat, wisps: Math.min(0.6, 1.8 * cloud) } }),
       "clear-night": () => ({ style: "glow", speed: 0.4 + 0.6 * wind, colors: mixPalette(PALETTES.moon, PALETTES.frost, cold),
         params: { blobs: 1, crescent: 1, size: 0.45, rim: 0.7 + 0.4 * cold, light: 30, x: -0.4, y: -0.3 } }),
       rain: () => ({ style: "flow", speed: 0.5 + 0.6 * rain + 1.2 * wind,
