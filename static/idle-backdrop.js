@@ -82,7 +82,20 @@
       chance: max("chance"), cloud: mean("cloud"),
       visibility: seen.length ? Math.min(...seen) : null,
       golden: (hours.find((hour) => hour.golden) || {}).golden || null,
+      direction: meanDirection(hours),
+      from: hours[0].from, to: hours[hours.length - 1].from + 3600,
     };
+  }
+
+  // Wind-weighted circular mean, so a calm hour cannot swing the direction.
+  function meanDirection(hours) {
+    let x = 0, y = 0;
+    for (const hour of hours) {
+      if (!Number.isFinite(hour.direction)) continue;
+      const weight = Math.max(hour.wind, 0.1), angle = hour.direction * Math.PI / 180;
+      x += weight * Math.sin(angle); y += weight * Math.cos(angle);
+    }
+    return x || y ? (Math.atan2(x, y) * 180 / Math.PI + 360) % 360 : null;
   }
 
   function valid(hour) {
@@ -165,6 +178,24 @@
       `rain ${w.rain.toFixed(1)} mm/h (${Math.round(w.chance)}%), cloud ${Math.round(w.cloud)}%`;
   }
 
+  const LABELS = { dawn: "Sunrise", dusk: "Sunset", sun: "Sunny", drizzle: "Drizzle", rain: "Rain",
+    downpour: "Heavy rain", "rain-night": "Rain", snow: "Snow", "snow-night": "Snow", fog: "Fog",
+    gale: "Gale", storm: "Thunder", "clear-night": "Clear", "cloudy-night": "Cloudy" };
+  const COMPASS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+  const clock = (seconds) => new Date(seconds * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+
+  // The two lines of the on-screen caption for one forecast frame.
+  function describe(w, now) {
+    const name = condition(w);
+    const label = name === "sky" ? (w.cloud < 30 ? "Clear" : w.cloud < 75 ? "Partly cloudy" : "Overcast") : LABELS[name];
+    const when = now || !Number.isFinite(w.from) ? "Now" : `${clock(w.from)}–${clock(w.to || w.from + 3600)}`;
+    const wet = name === "snow" || name === "snow-night" ? "snow" : "rain";
+    const wind = `Wind ${Math.round(w.wind)} km/h` + (Number.isFinite(w.direction) ? ` ${COMPASS[Math.round(w.direction / 45) % 8]}` : "");
+    const detail = [wind, `gusts ${Math.round(w.gust)}`, `${wet} ${Math.round(w.chance)}%`];
+    if (w.rain >= 0.1) detail.push(`${w.rain.toFixed(1)} mm/h`);
+    return { when, headline: `${when} · ${label} · ${Math.round(w.temp)}°`, detail: detail.join(" · ") };
+  }
+
   // Awake, the idle screen plays through the coming day: the hour now, then
   // three-hour windows. Standby only ever shows the hour now.
   const ROTATE_MS = 60 * 1000;
@@ -236,6 +267,7 @@
       const weather = wantedWeather();
       const target = design(weather);
       element.dataset.weather = summary(weather);
+      caption();
       if (target.style !== shown.style) {
         element.classList.add("switching");
         changeTimer = setTimeout(() => {
@@ -268,6 +300,13 @@
       changeTimer = setTimeout(glide, TWEEN_STEP_MS);
     }
 
+    // Awake and idle with a forecast: say what the backdrop is showing.
+    function caption() {
+      if (!options.onCaption) return;
+      const show = scene && !standby && frames.length;
+      options.onCaption(show ? describe(wantedWeather(), frameIndex === 0) : null);
+    }
+
     function stop() {
       if (monitorRaf !== null) cancelAnimationFrame(monitorRaf);
       monitorRaf = null;
@@ -281,6 +320,7 @@
       scene = null;
       element.classList.remove("active");
       element.dataset.mode = failed ? "static fallback" : "stopped";
+      if (options.onCaption) options.onCaption(null);
       lastFrameAt = frameAverage = frameCount = slowWindows = 0;
     }
 
@@ -343,6 +383,7 @@
         shown = target;
         element.dataset.mode = label();
         element.dataset.weather = frames.length ? summary(weather) : "no forecast";
+        caption();
         monitorRaf = requestAnimationFrame(monitor);
         scheduleRotation();
       } catch (error) { fallback(); }
@@ -369,6 +410,7 @@
         changeWeather();
       },
       status() { return element.dataset.mode || "stopped"; },
+      describe,
       weather() { return element.dataset.weather || "no forecast"; },
       design,
     };

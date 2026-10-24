@@ -5493,6 +5493,7 @@ WEATHER_FIELDS = {
     "temp": "temperature_2m",
     "wind": "wind_speed_10m",
     "gust": "wind_gusts_10m",
+    "direction": "wind_direction_10m",
     "rain": "precipitation",
     "chance": "precipitation_probability",
     "cloud": "cloud_cover",
@@ -5513,7 +5514,7 @@ def _weather_hours(data, now):
     times = hourly.get("time") or []
     columns = {key: hourly.get(name) or [] for key, name in WEATHER_FIELDS.items()}
     columns["day"] = hourly.get("is_day") or []
-    if not times or any(len(values) != len(times) for key, values in columns.items() if key != "visibility"):
+    if not times or any(len(values) != len(times) for key, values in columns.items() if key not in ("visibility", "direction")):
         raise ValueError("Open-Meteo returned incomplete hourly data")
     turns = [(t, "dawn") for t in daily.get("sunrise") or []]
     turns += [(t, "dusk") for t in daily.get("sunset") or []]
@@ -5534,6 +5535,7 @@ def _weather_hours(data, now):
         if number("code", index, None) is None or number("temp", index, None) is None:
             continue
         visibility = number("visibility", index, None)
+        direction = number("direction", index, None)
         hours.append({
             "from": int(start),
             "code": int(number("code", index)),
@@ -5541,6 +5543,7 @@ def _weather_hours(data, now):
             "temp": round(number("temp", index), 1),
             "wind": round(max(0.0, number("wind", index)), 1),
             "gust": round(max(0.0, number("gust", index)), 1),
+            "direction": None if direction is None else round(direction) % 360,
             "rain": round(max(0.0, number("rain", index)), 2),
             "chance": round(min(100.0, max(0.0, number("chance", index)))),
             "cloud": round(min(100.0, max(0.0, number("cloud", index)))),

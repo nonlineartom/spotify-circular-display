@@ -132,8 +132,10 @@ function runUntil(done, limit = 40) {
   for (let n = 0; n < limit && !done(); n++) fire();
   assert.ok(done(), 'timers never reached the expected state');
 }
-const control = window.createIdleBackdrop(element);
-const {design} = control;
+const captions = [];
+const control = window.createIdleBackdrop(element, {onCaption: (text) => captions.push(text)});
+const {design, describe} = control;
+const lastCaption = () => captions[captions.length - 1];
 const base = {code:2, day:true, temp:12, wind:5, gust:10, rain:0, chance:0, cloud:30, visibility:20000, golden:null};
 const w = (o) => design({...base, ...o});
 const lum = (hex) => [1, 3, 5].reduce((sum, i) => sum + parseInt(hex.slice(i, i + 2), 16), 0);
@@ -190,6 +192,8 @@ assert.equal(creates, 1);
 assert.equal(latest.opts.style, 'flow', 'idle should open on the weather right now');
 assert.equal(control.status(), 'rain 378px / 30 fps');
 assert.match(control.weather(), /rain 3\.0 mm\/h/);
+assert.equal(lastCaption().headline, 'Now · Rain · 12°');
+assert.match(lastCaption().detail, /^Wind 5 km\/h · gusts 10 · rain 0% · 3\.0 mm\/h$/);
 const heavyContrast = latest.opts.params.contrast;
 assert.equal(timers.size, 1);
 assert.equal([...timers.values()][0].ms, 60000);
@@ -200,6 +204,7 @@ runUntil(() => [...timers.values()].some(job => job.ms === 60000));
 assert.equal(creates, 1, 'a weather change must not allocate another WebGL scene');
 assert.ok(latest.opts.params.contrast < heavyContrast, 'lighter rain should calm the contrast');
 assert.match(control.weather(), /rain 0\.5 mm\/h/, 'a window shows its heaviest rain');
+assert.match(lastCaption().headline, /^\d\d:\d\d–\d\d:\d\d · Rain · 12°$/, 'later windows show their time span');
 
 fire();  // rotation to a different shader: fade, swap, fade in
 assert.ok(classes.has('switching'));
@@ -214,6 +219,7 @@ assert.equal(control.status(), 'rain 378px / 30 fps', 'rotation should loop back
 // Standby shows only the hour now and never rotates.
 control.setActive(true, true);
 assert.equal(control.status(), 'standby rain 216px / 12 fps');
+assert.equal(lastCaption(), null, 'standby keeps the clock face clean');
 assert.equal(timers.size, 0);
 
 // A changed forecast moves the live scene to the new hour now.
@@ -226,4 +232,20 @@ assert.equal(timers.size, 0, 'a single-hour forecast should not rotate');
 control.setActive(false);
 assert.equal(timers.size, 0);
 assert.ok(!classes.has('switching'));
+assert.equal(lastCaption(), null, 'leaving idle hides the caption');
+
+// Caption wording: compass direction from the wind, snow named as snow, no false north.
+const sample = {...base, from:0, wind:18.4, gust:31, chance:40, direction:225};
+assert.equal(describe(sample, true).detail, 'Wind 18 km/h SW · gusts 31 · rain 40%');
+assert.equal(describe({...sample, direction:null}, true).detail, 'Wind 18 km/h · gusts 31 · rain 40%');
+assert.equal(describe({...sample, direction:350}, true).detail.split(' · ')[0], 'Wind 18 km/h N');
+assert.match(describe({...sample, code:73, rain:1.2, temp:-1}, true).detail, /snow 40% · 1\.2 mm\/h$/);
+assert.equal(describe({...sample, code:0, cloud:5, temp:26}, true).headline, 'Now · Sunny · 26°');
+assert.equal(describe({...sample, cloud:90}, true).headline, 'Now · Overcast · 12°');
+// No forecast, no caption.
+const quiet = [];
+const bare = window.createIdleBackdrop(element, {onCaption: (text) => quiet.push(text)});
+bare.setActive(true);
+assert.ok(quiet.every((text) => text === null));
+bare.setActive(false);
 """, str(source)], check=True, capture_output=True, text=True)

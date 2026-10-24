@@ -27,6 +27,10 @@ numbers, so audit remediation is recorded under `Unreleased`.
   runtime: soft bloom and slow rays from a sun just beyond the frame, a deep
   blue sky warming to a golden horizon, and rising heat shimmer, all
   strengthening with temperature.
+  A discreet two-line caption on the idle screen names the window being
+  shown: time (or "Now"), condition and temperature, then wind speed and
+  compass direction, gusts, rain (or snow) chance and rate. The forecast now
+  carries an optional wind direction; a missing value never reads as north.
 
 - WLED hostnames are resolved once and cached, not on every datagram.
   `socket.sendto()` given a name resolves it through getaddrinfo on each call,

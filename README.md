@@ -399,7 +399,7 @@ from the forecast's measured values rather than picked from presets.
 
 `GET /api/weather/backdrop` returns the next 24 hours from
 [Open-Meteo](https://open-meteo.com/) (no API key): WMO weather code,
-day/night, temperature, mean wind, gusts, precipitation (mm/h), precipitation
+day/night, temperature, mean wind, gusts, wind direction, precipitation (mm/h), precipitation
 chance, cloud cover, visibility and the hours holding sunrise or sunset. The
 server fetches at most every 30 minutes, backs off five minutes after a failure
 and keeps serving the last good forecast for six hours. Only the configured
@@ -430,7 +430,11 @@ While the screen is awake and idle it opens on the hour now, then plays
 through the day in three-hour windows (the worst weather and strongest wind in
 each) for a minute apiece. When the shader stays the same, speed, palette and
 parameters glide over about five seconds; a new shader cross-fades on the same
-WebGL context. Standby behind the clock shows only the hour now. Without a
+WebGL context. Standby behind the clock shows only the hour now. A small two-line caption
+between the bezel and the section chips names what the backdrop is showing,
+for example `NOW · RAIN · 9°` over `Wind 30 km/h SW · gusts 55 · rain 95% ·
+3.2 mm/h`; later windows show their time span instead of "Now". It hides in
+standby, during playback and without a forecast. Without a
 forecast it keeps the blue-sky clouds; `?ambient=off` disables the shader
 entirely. Diagnostics show the current shader and the values behind it.
 

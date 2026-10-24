@@ -2749,7 +2749,7 @@ def test_control_queue_scopes_uris_and_degrades_when_receiver_is_down(client, mo
 
 def _open_meteo(start, codes, *, sunrise=(), sunset=(), **columns):
     count = len(codes)
-    defaults = {"is_day": 1, "temperature_2m": 12, "wind_speed_10m": 8, "wind_gusts_10m": 15,
+    defaults = {"is_day": 1, "temperature_2m": 12, "wind_speed_10m": 8, "wind_gusts_10m": 15, "wind_direction_10m": 225,
                 "precipitation": 0, "precipitation_probability": 0, "cloud_cover": 50, "visibility": 20000}
     hourly = {"time": [start + hour * 3600 for hour in range(count)], "weather_code": codes}
     for name, default in defaults.items():
@@ -2766,6 +2766,7 @@ def test_weather_hours_return_the_next_24_measured_hours():
         is_day=[1] * 8 + [0] * 32,
         temperature_2m=[float(n) for n in range(count)],
         wind_gusts_10m=[42.5] * count,
+        wind_direction_10m=[360.4] * count,
         precipitation=[2.345] * count,
         precipitation_probability=[150] * count,
         cloud_cover=[-5] * count,
@@ -2775,12 +2776,14 @@ def test_weather_hours_return_the_next_24_measured_hours():
     hours = server._weather_hours(data, now)
     assert len(hours) == 24
     assert hours[0] == {
-        "from": start + 3 * 3600, "code": 61, "day": True, "temp": 3.0, "wind": 8.0, "gust": 42.5,
+        "from": start + 3 * 3600, "code": 61, "day": True, "temp": 3.0, "wind": 8.0, "gust": 42.5, "direction": 0,
         "rain": 2.35, "chance": 100, "cloud": 0, "visibility": None, "golden": None,
     }
     assert hours[4]["golden"] == "dusk" and hours[5]["day"] is False
     del data["hourly"]["visibility"]
     assert server._weather_hours(data, now)[0]["visibility"] is None, "visibility is optional"
+    del data["hourly"]["wind_direction_10m"]
+    assert server._weather_hours(data, now)[0]["direction"] is None, "direction is optional, never a false north"
     with pytest.raises(ValueError):
         server._weather_hours({"hourly": {"time": [now], "weather_code": []}}, now)
     with pytest.raises(ValueError):
@@ -2809,6 +2812,8 @@ def test_weather_backdrop_caches_forecast_and_serves_stale_on_failure(client, mo
     assert first["hours"][0]["rain"] == 1.2 and first["hours"][0]["code"] == 61
     assert "precipitation" in calls[0][1]["params"]["hourly"]
     assert "wind_speed_10m" in calls[0][1]["params"]["hourly"]
+    assert "wind_direction_10m" in calls[0][1]["params"]["hourly"]
+    assert first["hours"][0]["direction"] == 225
     assert calls[0][0] == "https://api.open-meteo.com/v1/forecast"
     assert calls[0][1]["params"]["latitude"] == 53.7837
     assert calls[0][1]["params"]["longitude"] == -1.0672

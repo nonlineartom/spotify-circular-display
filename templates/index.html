@@ -793,6 +793,46 @@
       inset 0 1px 0 rgba(255,255,255,0.16);
   }
 
+  /* Weather caption for the idle backdrop: what it is showing, kept quiet in
+     the band between the bezel and the section chips. */
+  #weather-caption {
+    position: absolute;
+    top: 150px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 640px;
+    text-align: center;
+    pointer-events: none;
+    z-index: 5;
+    opacity: 0;
+    transition: opacity 0.6s ease;
+    text-shadow: 0 1px 10px rgba(0,0,0,0.55);
+    font-variant-numeric: tabular-nums;
+  }
+  #weather-caption.visible { opacity: 1; }
+  /* A soft local shade so the text holds up over bright cloud. */
+  #weather-caption::before {
+    content: "";
+    position: absolute;
+    inset: -28px -70px;
+    z-index: -1;
+    background: radial-gradient(ellipse at 50% 50%, rgba(5,8,16,0.42), rgba(5,8,16,0) 70%);
+  }
+  #weather-caption .wc-head {
+    font-size: 12.5px;
+    font-weight: 500;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.66);
+  }
+  #weather-caption .wc-detail {
+    margin-top: 6px;
+    font-size: 14.5px;
+    font-weight: 300;
+    letter-spacing: 0.02em;
+    color: rgba(255,255,255,0.62);
+  }
+
   /* Caption for the focused record */
   #crate-caption {
     position: absolute;
@@ -1556,6 +1596,10 @@
     <div id="crate-chips" role="tablist" aria-label="Record shelf sections"></div>
     <div id="crate" role="listbox" aria-label="Record shelf" tabindex="0"><div id="crate-belt"></div></div>
     <div id="crate-reflection"></div>
+    <div id="weather-caption" aria-live="off">
+      <div class="wc-head"></div>
+      <div class="wc-detail"></div>
+    </div>
     <div id="crate-caption">
       <div class="cap-title"></div>
       <div class="cap-sub"></div>
@@ -1794,7 +1838,20 @@
   const FLAG_DIAGNOSTICS = FLAGS.get("diag") === "1";
   const REDUCED_MOTION = matchMedia("(prefers-reduced-motion: reduce)").matches;
   const FLAG_AMBIENT = FLAGS.get("ambient") !== "off";
-  const idleBackdrop = createIdleBackdrop($("idle-backdrop"), { enabled: FLAG_AMBIENT });
+  // The caption fades out, changes text, then fades back with the backdrop.
+  let weatherCaptionTimer = null;
+  function showWeatherCaption(text) {
+    const el = $("weather-caption");
+    clearTimeout(weatherCaptionTimer);
+    el.classList.remove("visible");
+    if (!text) return;
+    weatherCaptionTimer = setTimeout(() => {
+      el.querySelector(".wc-head").textContent = text.headline;
+      el.querySelector(".wc-detail").textContent = text.detail;
+      el.classList.add("visible");
+    }, el.querySelector(".wc-head").textContent ? 600 : 0);
+  }
+  const idleBackdrop = createIdleBackdrop($("idle-backdrop"), { enabled: FLAG_AMBIENT, onCaption: showWeatherCaption });
   // The idle shader follows the next 24 hours of forecast. The server caches
   // Open-Meteo for half an hour, so this local poll is cheap; a failure keeps
   // whatever looks the display already has (blue-sky clouds by default).

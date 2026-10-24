@@ -452,13 +452,13 @@ for track_id, line in (
 def mock_forecast():
     """A scripted Open-Meteo day that walks the idle screen through varied weather."""
     start = int(time.time()) // 3600 * 3600
-    # (hours, code, is_day, temp °C, wind, gust km/h, rain mm/h, chance %, cloud %, visibility m)
-    script = [(2, 63, 1, 9, 30, 55, 3.2, 95, 100, 8000), (2, 61, 1, 10, 20, 35, 0.6, 70, 100, 15000),
-              (2, 3, 1, 10, 12, 22, 0, 20, 90, 20000), (1, 2, 1, 9, 8, 15, 0, 10, 60, 25000),
-              (4, 0, 0, 4, 5, 10, 0, 0, 10, 30000), (6, 45, 0, 2, 3, 6, 0, 0, 100, 300),
-              (1, 1, 1, 3, 6, 12, 0, 0, 20, 4000), (6, 0, 1, 14, 18, 30, 0, 0, 15, 40000)]
+    # (hours, code, is_day, temp °C, wind, gust km/h, direction °, rain mm/h, chance %, cloud %, visibility m)
+    script = [(2, 63, 1, 9, 30, 55, 230, 3.2, 95, 100, 8000), (2, 61, 1, 10, 20, 35, 245, 0.6, 70, 100, 15000),
+              (2, 3, 1, 10, 12, 22, 260, 0, 20, 90, 20000), (1, 2, 1, 9, 8, 15, 280, 0, 10, 60, 25000),
+              (4, 0, 0, 4, 5, 10, 300, 0, 0, 10, 30000), (6, 45, 0, 2, 3, 6, 320, 0, 0, 100, 300),
+              (1, 1, 1, 3, 6, 12, 340, 0, 0, 20, 4000), (6, 0, 1, 24, 18, 30, 200, 0, 0, 15, 40000)]
     fields = ("time", "weather_code", "is_day", "temperature_2m", "wind_speed_10m", "wind_gusts_10m",
-              "precipitation", "precipitation_probability", "cloud_cover", "visibility")
+              "wind_direction_10m", "precipitation", "precipitation_probability", "cloud_cover", "visibility")
     hourly = {name: [] for name in fields}
     for hours, *values in script:
         for _ in range(hours):
